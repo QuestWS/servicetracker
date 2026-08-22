@@ -33,6 +33,7 @@ import { SITE_URL } from '../assets/lib/config.js';
 import { ENTRY_LABEL, STATUSES, STATUS_LABEL, STATUS_PILL, formatHours } from '../assets/lib/entry-types.js';
 import { extractPdf } from '../assets/lib/extract.js';
 import { parseWorkOrder, FIELD_LABELS } from '../assets/lib/parse-work-order.js';
+import { parseInvoiceTotals, formatMoney } from '../assets/lib/parse-invoice.js';
 import { stampWorkOrder, qrSvg } from '../assets/lib/stamp.js';
 import { trackingUrl } from '../assets/lib/tracking.js';
 import { $, esc, toast, formatDate, formatDateTime, relativeDays, driveImageUrl, driveFileUrl, bytesToBase64 } from '../assets/lib/ui.js';
@@ -219,6 +220,16 @@ async function renderJob(id) {
           </div>
         </section>
 
+        ${job.amountDue !== null ? `<section class="card">
+          <h2>What the customer owes</h2>
+          <div class="hourstotal">${formatMoney(job.amountDue)}</div>
+          ${job.grandTotal !== null ? `<div class="kv"><span class="k">Grand total</span>
+            <b style="font-family:var(--mono)">${formatMoney(job.grandTotal)}</b></div>` : ''}
+          ${job.deposits ? `<div class="kv"><span class="k">Deposits already paid</span>
+            <b style="font-family:var(--mono)">${formatMoney(job.deposits)}</b></div>` : ''}
+          <p class="hint">Shown on their tracking page and in the Done email, next to the payment link.</p>
+        </section>` : ''}
+
         <section class="card">
           <h2>Labor logged</h2>
           ${hours.total ? `
@@ -239,6 +250,16 @@ async function renderJob(id) {
             ${job.invoiceFile ? `<p class="hint">On file:
               <a href="${driveFileUrl(job.invoiceFile)}" target="_blank" rel="noreferrer">invoice-${esc(job.id)}.pdf</a>
               — uploading again replaces it.</p>` : ''}
+            <p class="msg" id="totalsmsg"></p>
+
+            <label class="fld" for="amountDue">Amount due${job.deposits ? ` (after ${formatMoney(job.deposits)} in deposits)` : ''}</label>
+            <input class="txt mono" id="amountDue" inputmode="decimal" placeholder="read from the invoice"
+              value="${job.amountDue === null ? '' : job.amountDue.toFixed(2)}">
+            <input type="hidden" id="grandTotal" value="${job.grandTotal === null ? '' : job.grandTotal}">
+            <input type="hidden" id="deposits" value="${job.deposits === null ? '' : job.deposits}">
+            <p class="hint">Read off the invoice when you upload it, and shown to the customer with
+              the payment link. Deposits mean this is not the grand total — check it before you send.</p>
+
             <label class="fld" for="paymentLink">POS+ payment link</label>
             <input class="txt mono" id="paymentLink" placeholder="https://..." value="${esc(job.paymentLink || '')}">
             <p class="hint">Generate the link in POS+ and paste it here — we only store it.</p>
@@ -327,6 +348,34 @@ async function renderJob(id) {
     } catch (error) { notice('warn', error.message); }
   };
 
+  // Reading the invoice as soon as it is chosen, so the figures are on screen
+  // to be checked rather than discovered by the customer.
+  $('invoice').onchange = async () => {
+    const file = $('invoice').files[0];
+    const message = $('totalsmsg');
+    if (!file) return;
+    message.className = 'msg';
+    message.innerHTML = '<span class="spinner"></span> Reading the invoice…';
+    try {
+      const totals = parseInvoiceTotals(await extractPdf(new Uint8Array(await file.arrayBuffer())));
+      if (totals.amountDue === null) {
+        message.className = 'msg err';
+        message.textContent = 'Could not find an amount due on that invoice — type it in below.';
+        return;
+      }
+      $('amountDue').value = totals.amountDue.toFixed(2);
+      $('grandTotal').value = totals.grandTotal === null ? '' : totals.grandTotal;
+      $('deposits').value = totals.deposits === null ? '' : totals.deposits;
+      message.className = 'msg ok';
+      message.textContent = totals.deposits
+        ? `Grand total ${formatMoney(totals.grandTotal)}, less ${formatMoney(totals.deposits)} in deposits — ${formatMoney(totals.amountDue)} due.`
+        : `${formatMoney(totals.amountDue)} due.`;
+    } catch (error) {
+      message.className = 'msg err';
+      message.textContent = `Could not read that invoice: ${error.message}`;
+    }
+  };
+
   $('invoiceform').onsubmit = async (event) => {
     event.preventDefault();
     const file = $('invoice').files[0];
@@ -343,7 +392,12 @@ async function renderJob(id) {
           reader.readAsDataURL(file);
         });
       }
-      await api('saveInvoice', [job.id, $('paymentLink').value.trim(), base64]);
+      const number = (id) => ($(id).value.trim() === '' ? null : Number($(id).value));
+      await api('saveInvoice', [job.id, $('paymentLink').value.trim(), base64, {
+        grandTotal: number('grandTotal'),
+        deposits: number('deposits'),
+        amountDue: number('amountDue'),
+      }]);
       renderJob(job.id);
       toast('Invoice and payment link saved.');
     } catch (error) {

@@ -3,21 +3,22 @@ import { PDFDocument, StandardFonts } from '../../assets/vendor/pdf-lib.esm.min.
 /**
  * A practice work order laid out the way BiT actually lays one out.
  *
- * The geometry here is measured from a real BiT invoice: the shop's own
- * details across the top, "Sold To:" and "Invoice #" side by side at y=616,
- * the customer block down the left at x=31, the unit headings down the right
- * at x=218, and — the part that matters — the unit fields printed as bare
- * headings with NO colons ("Year Make Model", "Serial # Reg #").
+ * The geometry is measured from two real BiT documents: the shop's own details
+ * across the top, "Sold To:" and "Invoice #" side by side at y=616, the
+ * customer block down the left at x=31, and the unit down the right at x=218.
  *
- * Two things follow from that and are worth not "fixing":
- *  - The shop's own phone and email are on every form, above the customer's.
- *    A parser that falls back to "first phone on the page" gets the shop's.
- *  - With no unit filled in, the right answer is to report the unit missing,
- *    not to read a heading row as a value.
+ * Two things learned from the real ones and worth not "fixing":
+ *  - **Empty fields simply do not print.** A customer with no trailer has no
+ *    trailer rows at all; there is no placeholder text. So a blank unit means
+ *    an empty column, and the honest answer is to flag it for the writer.
+ *  - **The shop's own phone and email are on every form**, above the
+ *    customer's. A parser that falls back to "first phone on the page" gets
+ *    the shop's, and then emails the shop instead of the customer.
  *
- * Pass `unit` to get a document with the unit filled in. WHERE BiT puts those
- * values is a guess — the real sample we have was left blank — so treat that
- * variant as provisional until a filled work order turns up.
+ * `unitPlaceholders` reproduces a form where somebody typed the field
+ * descriptions into the fields themselves ("Serial # Reg #") to show what goes
+ * where. That is not BiT's doing, but it happened once and the parser has to
+ * refuse to read it as a unit.
  */
 export async function makeWorkOrderPdf(overrides = {}) {
   const data = {
@@ -28,7 +29,10 @@ export async function makeWorkOrderPdf(overrides = {}) {
     phone: '815-555-0142',
     email: 'jsmith@example.com',
     description: 'Customer reports port engine stalling at idle. 100 hour service.',
-    unit: null,
+    // The common case: a unit with something in it. Pass `unit: null` for a
+    // customer who has none of it filled out.
+    unit: { year: '2003', make: 'Four Winns', serial: 'GFNMJ001E102 IL4215LA', engine: 'MERCRUISER 496 m061588' },
+    unitPlaceholders: false,
     omitEmail: false,
     ...overrides,
   };
@@ -56,13 +60,21 @@ export async function makeWorkOrderPdf(overrides = {}) {
   write(data.street, 31, 582);
   write(data.city, 31, 571);
 
-  // BiT prints the field NAMES into empty unit slots. A filled unit shows the
-  // values in their place — which is the guessed half of this fixture.
-  write(data.unit ? `${data.unit.year} ${data.unit.make} ${data.unit.model}` : 'Year Make Model', 218, 593);
-  write(data.unit ? `${data.unit.serial}` : 'Serial # Reg #', 218, 582);
-  write(data.unit ? `${data.unit.engine}` : 'Eng Make Eng Model Eng Serial #', 218, 571);
-  write('Trailer Make Trailer', 218, 559);
-  write('Trailer Serial #', 218, 548);
+  if (data.unitPlaceholders) {
+    // Somebody typed the field descriptions into the fields.
+    write('Year Make Model', 218, 593);
+    write('Serial # Reg #', 218, 582);
+    write('Eng Make Eng Model Eng Serial #', 218, 571);
+    write('Trailer Make Trailer', 218, 559);
+    write('Trailer Serial #', 218, 548);
+  } else if (data.unit) {
+    // A real unit. Rows the customer has nothing for are simply absent —
+    // this one has no trailer, like the real invoice it is measured from.
+    const model = [data.unit.year, data.unit.make, data.unit.model].filter(Boolean).join(' ');
+    if (model) write(model, 218, 593);
+    if (data.unit.serial) write(data.unit.serial, 218, 582);
+    if (data.unit.engine) write(data.unit.engine, 218, 571);
+  }
 
   write(`MP ${data.phone}`, 31, 537);
   if (!data.omitEmail) write(data.email, 116, 537);
@@ -86,5 +98,46 @@ export async function makeWorkOrderPdf(overrides = {}) {
   write('Amount Due', 428, 76);
   write('0.00', 575, 76);
 
+  return doc.save();
+}
+
+/**
+ * A finished invoice: the same head, a table of line items, and the totals
+ * block down the right of the LAST page. Measured from a real one that carried
+ * a deposit — Grand Total 16,917.79, Deposits 15,285.32, Amount Due 1,632.47 —
+ * which is the case the customer most needs telling about.
+ */
+export async function makeInvoicePdf(overrides = {}) {
+  const data = {
+    invoice: '01-7153',
+    saleTotal: 15765.06,
+    shopSupplies: 200.0,
+    tax: 952.73,
+    grandTotal: 16917.79,
+    deposits: 15285.32,
+    amountDue: 1632.47,
+    ...overrides,
+  };
+
+  const bytes = await makeWorkOrderPdf({ invoice: data.invoice, ...(overrides.workOrder || {}) });
+  const { PDFDocument: Doc, StandardFonts: Fonts } = await import('../../assets/vendor/pdf-lib.esm.min.js');
+  const doc = await Doc.load(bytes);
+  const page = doc.getPage(0);
+  const font = await doc.embedFont(Fonts.Helvetica);
+  const money = (n) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const row = (label, value, y) => {
+    // The legal text runs down the left on these same rows, which is why the
+    // flattened line reads "...upon completion of Amount Due 1,632.47".
+    page.drawText('Standard terms and conditions text continues along this line.', { x: 31, y, size: 7, font });
+    page.drawText(label, { x: 428, y, size: 9, font });
+    page.drawText(money(value), { x: 560, y, size: 9, font });
+  };
+
+  row('Sale Total', data.saleTotal, 134);
+  row('Shop Supplies, Freight', data.shopSupplies, 122);
+  row('Tax', data.tax, 111);
+  row('Grand Total', data.grandTotal, 100);
+  row('Deposits', data.deposits, 88);
+  row('Amount Due', data.amountDue, 76);
   return doc.save();
 }

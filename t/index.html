@@ -30,6 +30,7 @@
 import { api } from '../assets/lib/api.js';
 import { STATUSES, STATUS_CUSTOMER } from '../assets/lib/entry-types.js';
 import { $, esc, formatDate, formatDateTime, driveImageUrl } from '../assets/lib/ui.js';
+import { formatMoney } from '../assets/lib/parse-invoice.js';
 
 const STEP_LABELS = {
   received: 'Received',
@@ -84,9 +85,15 @@ function render(data) {
     ${job.status === 'done' ? `
       <section class="card gold" style="margin-top:18px">
         <h2 style="color:#8a6516">Invoice &amp; payment</h2>
+        ${job.amountDue !== null && job.amountDue !== undefined ? `
+          <div class="kv" style="border:0;padding-top:0">
+            <span class="k" style="font-size:16px">Amount due</span>
+            <b style="font-family:var(--mono);font-size:26px">${formatMoney(job.amountDue)}</b>
+          </div>` : ''}
         <div class="stack">
           ${invoiceUrl ? `<a class="btn navy" href="${invoiceUrl}" target="_blank" rel="noreferrer">View your invoice (PDF)</a>` : ''}
-          ${job.paymentLink ? `<a class="btn gold" href="${esc(job.paymentLink)}" target="_blank" rel="noreferrer">Pay online</a>` : ''}
+          ${job.paymentLink ? `<a class="btn gold" href="${esc(job.paymentLink)}" target="_blank" rel="noreferrer">
+            ${job.amountDue !== null && job.amountDue !== undefined ? `Pay ${formatMoney(job.amountDue)}` : 'Pay online'}</a>` : ''}
           ${!invoiceUrl && !job.paymentLink ? `<p class="hint">Your invoice is on its way — give the shop a call if you need it right now.</p>` : ''}
         </div>
       </section>` : ''}

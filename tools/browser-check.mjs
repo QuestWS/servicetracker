@@ -11,7 +11,7 @@
  */
 import fs from 'node:fs';
 import { chromium } from 'playwright-core';
-import { makeWorkOrderPdf } from '../scripts/lib/sample-work-order.mjs';
+import { makeWorkOrderPdf, makeInvoicePdf } from '../scripts/lib/sample-work-order.mjs';
 
 const BASE = process.env.BASE || 'http://localhost:8787';
 const PASSWORD = process.env.ADMIN_PASSWORD || 'shop';
@@ -134,6 +134,33 @@ await mech.waitForSelector('.entry.part', { timeout: 15000 });
 check('logs a part', (await mech.textContent('.entry.part')).includes('6BH-44352-00-00'));
 await mech.screenshot({ path: `${SHOTS}/43-mech-job.png`, fullPage: true });
 
+/* --------------------------------------------------------------- close out */
+console.log('\n== close out ==');
+const INVOICE_PDF = 'scratch/browser-check-invoice.pdf';
+fs.writeFileSync(INVOICE_PDF, await makeInvoicePdf({ invoice: INVOICE }));
+
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
+await admin.setInputFiles('#invoice', INVOICE_PDF);
+await admin.waitForFunction(() => {
+  const el = document.getElementById('totalsmsg');
+  return el && el.textContent && !el.textContent.includes('Reading');
+}, { timeout: 30000 });
+const totalsMessage = await admin.textContent('#totalsmsg');
+console.log('  read off the invoice:', totalsMessage.trim());
+check('reads the balance off the invoice', /1,632\.47/.test(totalsMessage), totalsMessage);
+check('shows the deposit it was netted against', /15,285\.32/.test(totalsMessage), totalsMessage);
+check('fills the amount due field', (await admin.inputValue('#amountDue')) === '1632.47');
+
+await admin.fill('#paymentLink', 'https://pay.pospluslogin.com/questwatersports/abc123');
+await admin.click('#invoiceform button[type=submit]');
+await admin.waitForSelector('text=What the customer owes', { timeout: 20000 });
+check('stores the balance on the job', (await admin.textContent('.hourstotal')).includes('1,632.47'));
+await admin.screenshot({ path: `${SHOTS}/45-closeout.png`, fullPage: true });
+
+await admin.click('#markdone');
+await admin.waitForSelector('text=Marked done', { timeout: 30000 });
+check('marks the job done', (await admin.content()).includes('Marked done'));
+
 /* ----------------------------------------------------------------- customer */
 console.log('\n== customer ==');
 const public_ = await browser.newContext({ viewport: { width: 430, height: 900 } });
@@ -150,7 +177,11 @@ check('hides the labor description', !seen.includes('impeller housing'));
 check('hides the hours figure', !seen.includes('1.5 h'));
 check('hides the part number', !seen.includes('6BH-44352'));
 check('hides the mechanic name', !seen.includes('Dale'));
-check('offers no invoice before done', !seen.includes('View your invoice'));
+check('offers the invoice now the job is done', seen.includes('View your invoice'));
+// The number that matters: what they owe after their deposit, not the total.
+check('shows the balance, not the grand total', seen.includes('$1,632.47'), seen.slice(0, 300));
+check('never shows the grand total', !seen.includes('16,917.79'));
+check('the pay button carries the figure', seen.includes('Pay $1,632.47'));
 
 // And the wire itself, since a page can only render what it was sent.
 const wire = await customer.evaluate(async (base) => {

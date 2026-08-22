@@ -66,7 +66,8 @@ const ENTRY_LABEL = {
 const SHEETS = {
   Jobs: ['id', 'token', 'customer_name', 'customer_phone', 'customer_email', 'boat_info',
          'status', 'needs_review', 'work_order_file', 'invoice_file', 'payment_link',
-         'created_at', 'updated_at', 'work_started_at', 'work_finished_at', 'done_at'],
+         'created_at', 'updated_at', 'work_started_at', 'work_finished_at', 'done_at',
+         'grand_total', 'deposits', 'amount_due'],
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
                'transcript_id', 'transcript_error', 'notified_at', 'created_at'],
@@ -254,7 +255,7 @@ function doPost(e) {
     listJobs:         function (a) { return listJobs(data.token, a[0]); },
     getJob:           function (a) { return getJob(data.token, a[0]); },
     saveJobDetails:   function (a) { return saveJobDetails(data.token, a[0], a[1]); },
-    saveInvoice:      function (a) { return saveInvoice(data.token, a[0], a[1], a[2]); },
+    saveInvoice:      function (a) { return saveInvoice(data.token, a[0], a[1], a[2], a[3]); },
     markDone:         function (a) { return markDone(data.token, a[0]); },
     resendDoneEmail:  function (a) { return resendDoneEmail(data.token, a[0]); },
     setStatus:        function (a) { return setStatusByWriter(data.token, a[0], a[1]); },
@@ -349,11 +350,20 @@ function jobSummary_(job) {
     workOrderFile: job.work_order_file || null,
     invoiceFile: job.invoice_file || null,
     paymentLink: job.payment_link || null,
+    grandTotal: numberOrNull_(job.grand_total),
+    deposits: numberOrNull_(job.deposits),
+    amountDue: numberOrNull_(job.amount_due),
     trackingUrl: trackingUrl_(job),
     createdAt: job.created_at,
     updatedAt: job.updated_at,
     doneAt: job.done_at || null
   };
+}
+
+function numberOrNull_(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  const number = Number(value);
+  return isFinite(number) ? number : null;
 }
 
 const REVIEW_FIELDS = ['customerName', 'customerPhone', 'customerEmail', 'boatInfo'];
@@ -487,7 +497,14 @@ function saveJobDetails(token, id, fields) {
   return { job: jobSummary_(jobRow_(id)) };
 }
 
-function saveInvoice(token, id, paymentLink, invoicePdf) {
+/**
+ * The final invoice, its payment link, and what the customer actually owes.
+ *
+ * The figures are read off the PDF in the service writer's browser and
+ * confirmed by them before they land here — a deposit means the amount due is
+ * nothing like the grand total, and that is the number the customer wants.
+ */
+function saveInvoice(token, id, paymentLink, invoicePdf, totals) {
   requireAdmin_(token);
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
@@ -497,6 +514,11 @@ function saveInvoice(token, id, paymentLink, invoicePdf) {
   const patch = { payment_link: paymentLink || '', updated_at: nowIso_() };
   if (invoicePdf) {
     patch.invoice_file = saveFile_(id, 'invoice-' + id + '.pdf', 'application/pdf', invoicePdf);
+  }
+  if (totals) {
+    patch.grand_total = numberOrNull_(totals.grandTotal) === null ? '' : Number(totals.grandTotal);
+    patch.deposits = numberOrNull_(totals.deposits) === null ? '' : Number(totals.deposits);
+    patch.amount_due = numberOrNull_(totals.amountDue) === null ? '' : Number(totals.amountDue);
   }
   updateRow_('Jobs', job._row, patch);
   return { job: jobSummary_(jobRow_(id)) };
@@ -912,8 +934,11 @@ function publicJob(trackingToken) {
       status: job.status,
       createdAt: job.created_at,
       // Only ever offered once the job is done and the writer attached them.
+      // The balance is the customer's own figure off their own invoice — it
+      // is not shop bookkeeping, and it is the thing they most want to know.
       invoiceFile: job.status === 'done' ? (job.invoice_file || null) : null,
-      paymentLink: job.status === 'done' ? (job.payment_link || null) : null
+      paymentLink: job.status === 'done' ? (job.payment_link || null) : null,
+      amountDue: job.status === 'done' ? numberOrNull_(job.amount_due) : null
     },
     entries: customerView_(entriesForJob_(job.id)),
     shop: { name: SHOP_NAME, phone: SHOP_PHONE }
@@ -959,6 +984,13 @@ function saveFile_(jobId, name, mime, base64) {
 }
 
 /* =============================== email ================================= */
+
+/** Money the way an invoice says it. */
+function money_(value) {
+  const number = numberOrNull_(value);
+  if (number === null) return '';
+  return '$' + number.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
 
 function esc_(value) {
   return String(value == null ? '' : value)
@@ -1067,6 +1099,20 @@ function sendDoneEmail_(job) {
 
   const link = trackingUrl_(job);
   const first = String(job.customer_name || '').split(' ')[0];
+  const due = numberOrNull_(job.amount_due);
+  const deposits = numberOrNull_(job.deposits);
+
+  // A job with a deposit against it owes nothing like its total, so the
+  // balance gets said plainly rather than left for them to work out.
+  const balance = due === null ? '' :
+    '<div style="background:#FDFCF7;border:1px solid #C7D5E0;border-radius:8px;padding:14px 18px;margin:4px 0 16px">' +
+      '<table width="100%" cellpadding="0" cellspacing="0">' +
+        (deposits ? '<tr><td style="padding:3px 0;color:#5C7185;font-size:13px">Deposits already paid</td>' +
+          '<td align="right" style="padding:3px 0;color:#5C7185;font-size:13px">' + money_(deposits) + '</td></tr>' : '') +
+        '<tr><td style="padding:4px 0;font-weight:bold;color:#14293E">Amount due</td>' +
+          '<td align="right" style="padding:4px 0;font-weight:bold;color:#14293E;font-size:17px">' + money_(due) + '</td></tr>' +
+      '</table></div>';
+
   return send_({
     to: job.customer_email,
     jobId: job.id,
@@ -1077,12 +1123,14 @@ function sendDoneEmail_(job) {
       greeting: first,
       intro: 'The work on ' + (job.boat_info ? esc_('your ' + job.boat_info) : 'your boat') + ' is complete. ' +
         (attachments.length ? 'Your final invoice is attached' : 'Everything is wrapped up') +
-        (job.payment_link ? ', and you can pay online with the button below.' : '.'),
+        (job.payment_link ? ', and you can pay online with the button below.' : '.') + balance,
       meta: 'INVOICE# ' + job.id + (job.boat_info ? ' · ' + job.boat_info : ''),
       buttons: button_(link, 'View your job') +
-        (job.payment_link ? button_(job.payment_link, 'Pay online', '#C08A22') : '')
+        (job.payment_link ? button_(job.payment_link, due === null ? 'Pay online' : 'Pay ' + money_(due), '#C08A22') : '')
     }),
-    text: 'The work on your boat is complete.\n\nJob status: ' + link +
+    text: 'The work on your boat is complete.' +
+      (due === null ? '' : '\n\nAmount due: ' + money_(due)) +
+      '\n\nJob status: ' + link +
       (job.payment_link ? '\nPay your invoice: ' + job.payment_link : '') +
       '\n\nInvoice ' + job.id + '\n' + SHOP_NAME,
     attachments: attachments

@@ -70,21 +70,34 @@ describe('reading a BiT work order', () => {
     expect(parsed.customerPhone).not.toBe('(815) 433-2200');
   });
 
-  it('reports a blank unit rather than reading the headings as one', async () => {
-    // The unit fields print as "Year Make Model" when empty. "Make Trailer"
-    // on a customer's page is worse than an honest blank.
+  it('reads the unit out of the column beside the customer', async () => {
     const parsed = await parse();
+    expect(parsed.boatInfo).toContain('2003 Four Winns');
+    expect(parsed.boatInfo).toContain('GFNMJ001E102');
+    expect(parsed.boatInfo).toContain('MERCRUISER 496');
+    expect(parsed.missing).toEqual([]);
+  });
+
+  it('copes with a customer who has only some of it filled out', async () => {
+    // Rows with nothing in them are simply absent — the real invoice this is
+    // measured from belongs to a customer with no trailer.
+    const parsed = await parse({ unit: { year: '2018', make: 'Yamaha AR195' } });
+    expect(parsed.boatInfo).toBe('2018 Yamaha AR195');
+    expect(parsed.missing).toEqual([]);
+  });
+
+  it('reports an empty unit rather than guessing at one', async () => {
+    const parsed = await parse({ unit: null });
     expect(parsed.boatInfo).toBeNull();
     expect(parsed.missing).toEqual(['boatInfo']);
   });
 
-  it('reads a unit that has actually been filled in', async () => {
-    const parsed = await parse({
-      unit: { year: '2019', make: 'Yamaha', model: '242X E-Series', serial: 'YAM12345K819', engine: 'Yamaha 1.8L HO' },
-    });
-    expect(parsed.boatInfo).toContain('2019 Yamaha 242X E-Series');
-    expect(parsed.boatInfo).toContain('YAM12345K819');
-    expect(parsed.missing).toEqual([]);
+  it('refuses to read field descriptions as a unit', async () => {
+    // One form came through with the descriptions typed into the fields
+    // themselves. "Make Trailer" on a customer's page is worse than a blank.
+    const parsed = await parse({ unitPlaceholders: true, unit: null });
+    expect(parsed.boatInfo).toBeNull();
+    expect(parsed.missing).toEqual(['boatInfo']);
   });
 
   it('normalises a phone number written any of the usual ways', async () => {

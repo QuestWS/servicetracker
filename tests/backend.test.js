@@ -69,17 +69,24 @@ describe('what the customer is allowed to see', () => {
     expect(note.partIdentifier).toBeNull();
   });
 
-  it('withholds the invoice and payment link until the job is done', () => {
+  it('withholds the invoice, payment link and balance until the job is done', () => {
     const { id, token } = seedJob();
-    backend.fn('saveInvoice', adminToken, id, 'https://pos.example.com/pay/abc', 'JVBERi0=');
+    backend.fn('saveInvoice', adminToken, id, 'https://pos.example.com/pay/abc', 'JVBERi0=', {
+      grandTotal: 16917.79, deposits: 15285.32, amountDue: 1632.47,
+    });
 
     expect(backend.fn('publicJob', token).job.paymentLink).toBeNull();
     expect(backend.fn('publicJob', token).job.invoiceFile).toBeNull();
+    expect(backend.fn('publicJob', token).job.amountDue).toBeNull();
 
     backend.fn('markDone', adminToken, id);
     const done = backend.fn('publicJob', token);
     expect(done.job.paymentLink).toBe('https://pos.example.com/pay/abc');
     expect(done.job.invoiceFile).toBeTruthy();
+    // Their own balance off their own invoice — not the grand total, because
+    // this job carried a deposit.
+    expect(done.job.amountDue).toBe(1632.47);
+    expect(JSON.stringify(done)).not.toContain('16917.79');
   });
 
   it('holds a voice note back until its transcript lands', () => {
@@ -222,6 +229,20 @@ describe('the customer email', () => {
     // Never the shop's own numbers.
     expect(mail.opts.htmlBody).not.toContain('6BH-44352');
     expect(mail.opts.htmlBody).not.toContain('1.5 h');
+  });
+
+  it('says what the customer owes, not what the job cost', () => {
+    const { id } = seedJob();
+    backend.fn('saveInvoice', adminToken, id, 'https://pos.example.com/pay/abc', 'JVBERi0=', {
+      grandTotal: 16917.79, deposits: 15285.32, amountDue: 1632.47,
+    });
+    backend.fn('markDone', adminToken, id);
+
+    const html = backend.sentMail[0].opts.htmlBody;
+    expect(html).toContain('$1,632.47');
+    expect(html).toContain('$15,285.32');
+    expect(html).toContain('Pay $1,632.47');
+    expect(backend.sentMail[0].body).toContain('Amount due: $1,632.47');
   });
 
   it('refuses to mark done with no address on file', () => {

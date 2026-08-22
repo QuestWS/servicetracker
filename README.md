@@ -33,9 +33,11 @@ change; the logging does.
    customer notes, internal notes, parts, photos — typed or spoken.
 6. When the boat is physically done they mark **Work finished**.
 7. **Service writer** writes the job up in BiT as today, downloads the final
-   invoice, uploads it here with the POS+ payment link.
+   invoice, uploads it here with the POS+ payment link. The browser reads the
+   totals off it — a job with a deposit against it owes nothing like its grand
+   total — and the writer confirms the balance before it goes anywhere.
 8. They **Mark done**. That is the one moment a customer-facing email fires:
-   tracking link, invoice PDF, payment link.
+   tracking link, invoice PDF, payment link, and what they actually owe.
 
 ```
 Received ──scan──▶ Work underway ──mechanic──▶ Work finished ──writer──▶ Done
@@ -120,6 +122,11 @@ is in [docs/DEPLOY.md](docs/DEPLOY.md).
   busy Saturday of per-entry emails would eat that and then fail silently.
 - **Voice notes** go to AssemblyAI in the background; the audio is kept either
   way, and the words fill in underneath the entry when the transcript lands.
+- **Deposits are normal**, so the amount due is routinely a fraction of the
+  total. The customer is shown their balance, never the grand total, and the
+  Pay button carries the figure. If the invoice cannot be read, the field is
+  simply blank for the writer to fill — never a guessed number beside a Pay
+  button.
 - **Nothing is queued offline.** A mechanic needs to know their note landed, so
   a failed save is a visible error, never a silent "saved".
 

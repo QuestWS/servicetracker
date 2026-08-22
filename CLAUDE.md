@@ -13,11 +13,16 @@ short list of things that are easy to get wrong.
    pages and every QR code already printed on paper. Update the existing
    deployment — the Actions workflow is built so you cannot do otherwise.
 3. **The customer sees customer notes and nothing else.** Internal notes,
-   labor hours, part numbers, quantities, mechanic names and pricing never
-   reach `/t/`, at any status. The filter is `customerView_`, it is the only
-   thing `publicJob` returns entries through, and `tools/verify.sh` fails the
-   deploy if either of those stops being true. If a new field is added to a log
-   entry, decide its visibility there, not in a page template.
+   labor hours, part numbers, quantities, mechanic names and the shop's own
+   figures never reach `/t/`, at any status. The filter is `customerView_`, it
+   is the only thing `publicJob` returns entries through, and
+   `tools/verify.sh` fails the deploy if either of those stops being true. If
+   a new field is added to a log entry, decide its visibility there, not in a
+   page template.
+
+   The one money figure they do see is **their own balance**, and only once the
+   job is Done — at which point they are being handed the invoice anyway.
+   `amountDue` is the number after deposits, never the grand total.
 4. **`SITE_URL` is printed onto paper.** Changing it after work orders are in
    the folder invalidates every QR code already printed.
 5. **No credential ever lands in this repo.** It is public. Passwords and API
@@ -73,30 +78,36 @@ column goes on the END and `setup()` writes it into the header on the next run.
 
 ## What a real BiT form actually looks like
 
-Measured from a real invoice (`Invoice_018893`), and encoded in
+Measured from two real documents — a work order (`01-8893`) and a completed
+invoice with a deposit against it (`01-7153`) — and encoded in
 `scripts/lib/sample-work-order.mjs` so every test runs against the real shape:
 
 - **Two columns, both headings on one row.** `Sold To:` at x=31 and
   `Invoice # 01-8893` at x=218, same y. The customer block runs down the left,
-  the unit fields down the right. Flattened into lines they read as one run-on
+  the unit down the right. Flattened into lines they read as one run-on
   sentence, which is why `labelledColumnBlock` takes the column boundary from
   the label's own row rather than guessing a width.
-- **No colons on the unit fields.** An empty unit prints as `Year Make Model`,
-  `Serial # Reg #`, `Eng Make Eng Model Eng Serial #` — the field NAMES sit in
-  the empty slots. A `#` is part of the heading, never a value separator:
-  reading `Serial # Reg #` as serial="Reg #" put "Make Trailer" on a job.
-- **The shop's own details are on every form**, above the customer's:
-  Quest's address, `815-433-2200`, `service@questwatersports.com`. Any
-  "first phone on the page" fallback finds the SHOP — and then emails the shop
-  instead of the customer. Fallbacks are restricted to lines below the
-  `Sold To:` anchor for exactly this reason.
-- **`Invoice #` appears twice**, top right and again in the table row, which
-  makes the invoice number the most reliable field on the document.
-
-Still unconfirmed: **where a filled-in unit's values land.** The one real
-sample had a blank unit. `findUnitColumn` assumes the values replace the
-headings in the same slots, which is the likely reading — if a filled work
-order ever parses oddly, start there.
+- **Empty fields simply do not print.** There is no placeholder text. A
+  customer with no trailer has no trailer rows at all, and a unit with nothing
+  filled in leaves an empty column — which `findUnitColumn` reports as missing
+  rather than guessing at.
+  *(An earlier note here claimed BiT prints field names into empty slots. It
+  does not. That form had the descriptions typed into the fields by hand to
+  show what goes where. The parser still refuses to read such a row as a unit,
+  because "Make Trailer" on a customer's page is worse than a blank.)*
+- **A `#` is part of a heading, never a value separator.** Reading
+  `Serial # Reg #` as serial="Reg #" is how "Make Trailer" got onto a job.
+- **The shop's own details are on every form**, above the customer's: Quest's
+  address, `815-433-2200`, `service@questwatersports.com`. Any "first phone on
+  the page" fallback finds the SHOP — and then emails the shop instead of the
+  customer. Fallbacks are confined to lines below the `Sold To:` anchor.
+- **Names arrive as separate text runs** — "John" and "Purnell" at different
+  x on one row — so line grouping, not the raw items, is what the parser reads.
+- **The totals block is on the LAST page**, down the right, sharing rows with
+  the legal text down the left. A job can carry a deposit: one real invoice
+  reads Grand Total 16,917.79, Deposits 15,285.32, **Amount Due 1,632.47**. The
+  balance is what the customer owes and what `parse-invoice.js` is for; the
+  grand total is not.
 
 ## Facts established with the shop
 
@@ -104,6 +115,9 @@ order ever parses oddly, start there.
   safe as a job's primary key.
 - **Hours are deliberately uncapped.** The same screen is used to work up an
   estimate, where a figure covers a whole job rather than one stint.
+- **Deposits are normal.** Boats get worked on over a winter and paid down as
+  they go, so the amount due is routinely a fraction of the total. Never put
+  the grand total next to a Pay button.
 - **Customer email is copied from the winter services app**, down to the
   wordmark over the gold rule and the navy footer, sent under the shop name
   with `Reply-To: service@questwatersports.com`. Copied convention, not shared
