@@ -3,9 +3,9 @@ type Bucket = { count: number; resetAt: number };
 const buckets = new Map<string, Bucket>();
 
 /**
- * Small in-memory limiter, sized for one shop on one server. It exists to
- * make a four-digit PIN impractical to guess over the network, not to survive
- * a distributed attack.
+ * Small in-memory limiter, sized for one shop on one server. It keeps a
+ * misbehaving script from flooding the roster or the lookup endpoint; it is
+ * not built to survive a distributed attack.
  */
 export function rateLimit(key: string, limit: number, windowMs: number): boolean {
   const now = Date.now();

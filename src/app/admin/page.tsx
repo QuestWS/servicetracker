@@ -5,7 +5,8 @@ import { countByStatus, listJobs, needsReview } from '@/lib/jobs';
 import { requireAdminPage } from '@/lib/page-guards';
 import { STATUSES, STATUS_LABEL, isStatus, type Status } from '@/lib/status';
 import { formatDate, relativeDays } from '@/lib/format';
-import { countEntries } from '@/lib/entries';
+import { formatHours } from '@/lib/entry-types';
+import { jobListStats } from '@/lib/entries';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Jobs' };
@@ -22,6 +23,7 @@ export default async function JobsPage({
 
   const jobs = listJobs({ status, search });
   const counts = countByStatus();
+  const stats = jobListStats();
 
   const filterHref = (value: Status | 'all') => {
     const params = new URLSearchParams();
@@ -94,6 +96,7 @@ export default async function JobsPage({
           <div className="joblist">
             {jobs.map((job) => {
               const flags = needsReview(job);
+              const stat = stats.get(job.id) ?? { entries: 0, hours: 0 };
               return (
                 <Link key={job.id} className="jobrow" href={`/admin/jobs/${encodeURIComponent(job.id)}`}>
                   <div style={{ minWidth: 84 }}>
@@ -106,7 +109,8 @@ export default async function JobsPage({
                   </div>
                   <div className="row tight" style={{ justifyContent: 'flex-end' }}>
                     {flags.length > 0 && <span className="pill red">{flags.length} to fill in</span>}
-                    <span className="pill grey">{countEntries(job.id)} log</span>
+                    {stat.hours > 0 && <span className="pill frost">{formatHours(stat.hours)}</span>}
+                    <span className="pill grey">{stat.entries} log</span>
                     <StatusPill status={job.status} />
                     <span className="sub" style={{ minWidth: 78, textAlign: 'right' }}>
                       {relativeDays(job.updated_at)}

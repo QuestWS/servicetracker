@@ -48,6 +48,12 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ token:
     return jsonError('Quantity must be a number greater than zero.', 400);
   }
 
+  const hoursRaw = str(form.get('hours'));
+  const hours = hoursRaw ? Number(hoursRaw) : null;
+  if (hours !== null && (!Number.isFinite(hours) || hours <= 0 || hours > 24)) {
+    return jsonError('Hours must be a number between 0 and 24.', 400);
+  }
+
   const audio = form.get('audio');
   const photos = form.getAll('photos').filter((f): f is File => f instanceof File && f.size > 0);
 
@@ -55,7 +61,11 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ token:
     return jsonError('Scan or type the part number.', 400);
   }
   const hasAudio = audio instanceof File && audio.size > 0;
-  if (entryType !== 'part' && !text && !hasAudio && !photos.length) {
+  if (entryType === 'labor') {
+    if (hours === null) return jsonError('How many hours did this take?', 400);
+    // Hours with no description are useless to whoever writes the invoice.
+    if (!text && !hasAudio) return jsonError('Say what you did with that time.', 400);
+  } else if (entryType !== 'part' && !text && !hasAudio && !photos.length) {
     return jsonError('Add a note, a recording or a photo before saving.', 400);
   }
   if (photos.length > MAX_PHOTOS) return jsonError(`Up to ${MAX_PHOTOS} photos per entry.`, 400);
@@ -103,6 +113,7 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ token:
     transcriptStatus: audioFileId && !text ? 'pending' : null,
     partIdentifier,
     quantity,
+    hours,
     photoFileIds,
   });
 

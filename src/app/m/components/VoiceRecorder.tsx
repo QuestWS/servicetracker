@@ -18,11 +18,13 @@ export function VoiceRecorder({
   onRecorded,
   onClear,
   disabled,
+  label = 'Record a voice note',
 }: {
   recording: Blob | null;
   onRecorded: (blob: Blob) => void;
   onClear: () => void;
   disabled?: boolean;
+  label?: string;
 }) {
   const [active, setActive] = useState(false);
   const [seconds, setSeconds] = useState(0);
@@ -129,7 +131,7 @@ export function VoiceRecorder({
         onClick={active ? stop : () => void start()}
         disabled={disabled}
       >
-        {active ? `Stop recording (${seconds}s)` : 'Record a voice note'}
+        {active ? `Stop recording (${seconds}s)` : label}
       </button>
       {active && (
         <div className="reclevel">

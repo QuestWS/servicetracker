@@ -1,5 +1,12 @@
-import { ENTRY_LABEL, type LogEntryView } from '@/lib/entry-types';
+import { ENTRY_LABEL, formatHours, type EntryType, type LogEntryView } from '@/lib/entry-types';
 import { formatDateTime } from '@/lib/format';
+
+const ENTRY_PILL: Record<EntryType, string> = {
+  customer_note: 'green',
+  internal_note: 'blue',
+  labor: 'frost',
+  part: 'gold',
+};
 
 function Photos({ photos }: { photos: LogEntryView['photos'] }) {
   if (!photos.length) return null;
@@ -41,7 +48,7 @@ export function ShopFeed({ entries }: { entries: LogEntryView[] }) {
       {entries.map((entry) => (
         <article key={entry.id} className={`entry ${entry.entry_type}`}>
           <div className="meta">
-            <span className={`pill ${entry.entry_type === 'part' ? 'gold' : entry.entry_type === 'customer_note' ? 'green' : 'blue'}`}>
+            <span className={`pill ${ENTRY_PILL[entry.entry_type]}`}>
               {ENTRY_LABEL[entry.entry_type]}
             </span>
             <span>{entry.mechanic_name ?? 'Unknown'}</span>
@@ -53,6 +60,9 @@ export function ShopFeed({ entries }: { entries: LogEntryView[] }) {
               {entry.part_identifier ?? '(no identifier)'}
               {entry.quantity ? ` × ${entry.quantity}` : ''}
             </div>
+          )}
+          {entry.entry_type === 'labor' && entry.hours !== null && (
+            <div className="hoursline">{formatHours(entry.hours)}</div>
           )}
           <Body entry={entry} />
           {entry.audio_url && <audio controls preload="none" src={entry.audio_url} />}

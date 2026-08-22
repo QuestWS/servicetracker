@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { requireAdmin, str } from '@/lib/guards';
-import { authenticateByPin, getMechanic, setMechanicActive, setMechanicPin } from '@/lib/mechanics';
+import { getMechanic, renameMechanic, setMechanicActive } from '@/lib/mechanics';
 
 export async function POST(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const denied = await requireAdmin();
@@ -23,13 +23,12 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
     setMechanicActive(mechanic.id, true);
     return back('saved=activated');
   }
-  if (action === 'reset_pin') {
-    const pin = str(form.get('pin'));
-    if (!pin || !/^\d{4,6}$/.test(pin)) return back('error=pin');
-    const owner = authenticateByPin(pin);
-    if (owner && owner.id !== mechanic.id) return back('error=pin_taken');
-    setMechanicPin(mechanic.id, pin);
-    return back('saved=pin');
+  if (action === 'rename') {
+    // Renaming keeps every entry they have already logged attached to them —
+    // the log points at the row, not at the spelling.
+    const name = str(form.get('name'));
+    if (!name) return back('error=name');
+    return back(renameMechanic(mechanic.id, name) ? 'saved=renamed' : 'error=name_taken');
   }
   return back('error=unknown');
 }

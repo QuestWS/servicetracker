@@ -224,6 +224,7 @@ export async function sendEntryNotification(input: {
   const subject = `${job.id} — ${kind.toLowerCase()} from ${input.mechanicName ?? 'the shop'}`;
 
   const detail = [
+    entry.hours ? `Hours: ${entry.hours}` : '',
     entry.part_identifier ? `Part: ${entry.part_identifier}` : '',
     entry.quantity ? `Qty: ${entry.quantity}` : '',
     entry.text ? entry.text : '',

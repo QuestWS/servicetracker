@@ -109,7 +109,7 @@ export default function MechanicHome() {
           {busy && <p style={{ color: '#9fc3dc' }}>Looking that job up…</p>}
           <p style={{ color: '#9fc3dc', fontSize: 14, lineHeight: 1.5 }}>
             Scan the QR code printed on the paper work order. Scanning starts the job — you will be
-            asked for your PIN next.
+            asked who you are next.
           </p>
         </div>
       )}

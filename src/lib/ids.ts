@@ -24,11 +24,3 @@ export function newId(prefix: string): string {
 export function newTrackingToken(): string {
   return randomString(20);
 }
-
-export function randomPin(): string {
-  // 4 digits, uniformly distributed.
-  let pin = '';
-  const bytes = crypto.randomBytes(8);
-  for (let i = 0; i < 4; i++) pin += (bytes[i] % 10).toString();
-  return pin;
-}

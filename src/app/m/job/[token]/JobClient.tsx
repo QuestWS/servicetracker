@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ShopFeed } from '@/components/Feed';
 import type { LogEntryView, EntryType } from '@/lib/entry-types';
-import { PinPad } from '../../components/PinPad';
+import { SignIn } from '../../components/SignIn';
 import { Scanner } from '../../components/Scanner';
 import { VoiceRecorder } from '../../components/VoiceRecorder';
 
@@ -23,20 +23,25 @@ type Mechanic = { id: string; name: string };
 const TABS: { value: EntryType; label: string }[] = [
   { value: 'customer_note', label: 'Customer' },
   { value: 'internal_note', label: 'Internal' },
+  { value: 'labor', label: 'Hours' },
   { value: 'part', label: 'Part' },
 ];
 
 const TAB_HELP: Record<EntryType, string> = {
   customer_note: 'The customer sees this, word for word, on their tracking page.',
   internal_note: 'Shop only. The customer never sees internal notes.',
+  labor: 'Your time and what you did with it. Shop only — this is what gets billed.',
   part: 'Shop only. Parts never appear on the customer page.',
 };
 
+const HOUR_STEPS = ['0.25', '0.5', '1', '1.5', '2', '4'];
+
 export function JobClient({ token, initialJob }: { token: string; initialJob: JobSummary }) {
   const [mechanic, setMechanic] = useState<Mechanic | null>(null);
+  const [roster, setRoster] = useState<{ id: string; name: string }[]>([]);
   const [checking, setChecking] = useState(true);
-  const [pinBusy, setPinBusy] = useState(false);
-  const [pinError, setPinError] = useState<string | null>(null);
+  const [signInBusy, setSignInBusy] = useState(false);
+  const [signInError, setSignInError] = useState<string | null>(null);
 
   const [job, setJob] = useState<JobSummary>(initialJob);
   const [entries, setEntries] = useState<LogEntryView[]>([]);
@@ -47,6 +52,7 @@ export function JobClient({ token, initialJob }: { token: string; initialJob: Jo
   const [photos, setPhotos] = useState<File[]>([]);
   const [partId, setPartId] = useState('');
   const [quantity, setQuantity] = useState('');
+  const [hours, setHours] = useState('');
   const [scanningPart, setScanningPart] = useState(false);
 
   const [saving, setSaving] = useState(false);
@@ -72,6 +78,7 @@ export function JobClient({ token, initialJob }: { token: string; initialJob: Jo
     (async () => {
       const res = await fetch('/api/mechanic/auth');
       const json = await res.json();
+      setRoster(json.roster ?? []);
       if (json.mechanic) {
         setMechanic(json.mechanic);
         await load();
@@ -88,23 +95,23 @@ export function JobClient({ token, initialJob }: { token: string; initialJob: Jo
     return () => clearInterval(timer);
   }, [entries, load]);
 
-  async function submitPin(pin: string) {
-    setPinBusy(true);
-    setPinError(null);
+  async function submitName(name: string, remember: boolean) {
+    setSignInBusy(true);
+    setSignInError(null);
     try {
       const res = await fetch('/api/mechanic/auth', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ pin }),
+        body: JSON.stringify({ name, remember }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? 'That PIN was not recognised.');
+      if (!res.ok) throw new Error(json.error ?? 'Could not sign you in.');
       setMechanic(json.mechanic);
       await load();
     } catch (err) {
-      setPinError((err as Error).message);
+      setSignInError((err as Error).message);
     } finally {
-      setPinBusy(false);
+      setSignInBusy(false);
     }
   }
 
@@ -114,6 +121,7 @@ export function JobClient({ token, initialJob }: { token: string; initialJob: Jo
     setPhotos([]);
     setPartId('');
     setQuantity('');
+    setHours('');
     if (photoInput.current) photoInput.current.value = '';
   }
 
@@ -134,6 +142,7 @@ export function JobClient({ token, initialJob }: { token: string; initialJob: Jo
         body.append('part_identifier', partId.trim());
         if (quantity.trim()) body.append('quantity', quantity.trim());
       }
+      if (tab === 'labor') body.append('hours', hours.trim());
 
       const res = await fetch(`/api/mechanic/jobs/${token}/entries`, { method: 'POST', body });
       const json = await res.json();
@@ -188,7 +197,7 @@ export function JobClient({ token, initialJob }: { token: string; initialJob: Jo
             <b>{job.boatInfo ?? '—'}</b>
           </div>
         </div>
-        <PinPad onSubmit={submitPin} busy={pinBusy} error={pinError} />
+        <SignIn roster={roster} onSubmit={submitName} busy={signInBusy} error={signInError} />
         <p style={{ marginTop: 14 }}>
           <Link href="/m">Back to scanning</Link>
         </p>
@@ -196,11 +205,14 @@ export function JobClient({ token, initialJob }: { token: string; initialJob: Jo
     );
   }
 
+  const said = text.trim().length > 0 || Boolean(audio);
   const canSave =
     !saving &&
     (tab === 'part'
       ? partId.trim().length > 0
-      : text.trim().length > 0 || Boolean(audio) || photos.length > 0);
+      : tab === 'labor'
+        ? Number(hours) > 0 && said
+        : said || photos.length > 0);
 
   return (
     <main>
@@ -240,6 +252,33 @@ export function JobClient({ token, initialJob }: { token: string; initialJob: Jo
           ))}
         </div>
         <p className="hint" style={{ marginTop: 0 }}>{TAB_HELP[tab]}</p>
+
+        {tab === 'labor' && (
+          <>
+            <label className="fld" htmlFor="hours">
+              Hours on this job
+            </label>
+            <input
+              className="txt mono"
+              id="hours"
+              inputMode="decimal"
+              value={hours}
+              onChange={(e) => setHours(e.target.value.replace(/[^0-9.]/g, ''))}
+              placeholder="1.5"
+            />
+            <div className="hourchips">
+              {HOUR_STEPS.map((step) => (
+                <button key={step} type="button" onClick={() => setHours(step)}>
+                  {step} h
+                </button>
+              ))}
+            </div>
+            <p className="hint">
+              Log the time as you finish a stint. Several entries in a day is normal — they add up
+              on the job.
+            </p>
+          </>
+        )}
 
         {tab === 'part' && (
           <>
@@ -285,14 +324,24 @@ export function JobClient({ token, initialJob }: { token: string; initialJob: Jo
         )}
 
         <label className="fld" htmlFor="text">
-          {tab === 'part' ? 'Note about this part (optional)' : 'Note'}
+          {tab === 'part'
+            ? 'Note about this part (optional)'
+            : tab === 'labor'
+              ? 'What you did with that time — type it or say it'
+              : 'Note'}
         </label>
         <textarea
           className="txt"
           id="text"
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={tab === 'customer_note' ? 'What should the customer know?' : 'What did you find or do?'}
+          placeholder={
+            tab === 'customer_note'
+              ? 'What should the customer know?'
+              : tab === 'labor'
+                ? 'Pulled and reset the impeller housing, re-torqued the mounts…'
+                : 'What did you find or do?'
+          }
         />
 
         <div style={{ marginTop: 12 }}>
@@ -301,9 +350,12 @@ export function JobClient({ token, initialJob }: { token: string; initialJob: Jo
             onRecorded={setAudio}
             onClear={() => setAudio(null)}
             disabled={saving}
+            label={tab === 'labor' ? 'Say what you did' : 'Record a voice note'}
           />
           <p className="hint">
-            Speak it and we will type it up. The recording is kept on the job either way.
+            {tab === 'labor'
+              ? 'Talk instead of typing and we will type it up — the hours still go in above. The recording is kept on the job.'
+              : 'Speak it and we will type it up. The recording is kept on the job either way.'}
           </p>
         </div>
 

@@ -31,10 +31,11 @@ CREATE INDEX IF NOT EXISTS jobs_created_idx ON jobs (created_at DESC);
 CREATE TABLE IF NOT EXISTS mechanics (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
-  pin_hash   TEXT NOT NULL,
   active     INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
+-- Names are how a mechanic signs in, so two people cannot share one.
+CREATE UNIQUE INDEX IF NOT EXISTS mechanics_name_idx ON mechanics (name COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS files (
   id         TEXT PRIMARY KEY,
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS log_entries (
   assembly_transcript_id TEXT,
   part_identifier        TEXT,
   quantity               REAL,
+  hours                  REAL,
   created_at             TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS log_entries_job_idx ON log_entries (job_id, created_at);

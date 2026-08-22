@@ -54,7 +54,7 @@ export default async function LoginPage({
             </div>
           </form>
           <p className="hint" style={{ marginTop: 14 }}>
-            Mechanics do not sign in here — they use the app on their phone and their PIN.
+            Mechanics do not sign in here — they open the app on their phone and tap their name.
           </p>
         </div>
       </main>

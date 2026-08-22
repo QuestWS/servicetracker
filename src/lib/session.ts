@@ -79,8 +79,18 @@ export function checkAdminPassword(candidate: string): boolean {
 
 export type MechanicSession = { id: string; name: string };
 
-export async function startMechanicSession(mechanic: MechanicSession): Promise<void> {
-  const maxAge = config.mechanicSessionHours * 60 * 60;
+/**
+ * `remember` is the checkbox on the sign-in screen: a mechanic's own phone
+ * keeps them signed in for weeks, the shared shop iPad forgets them at the
+ * end of the shift.
+ */
+export async function startMechanicSession(
+  mechanic: MechanicSession,
+  remember: boolean,
+): Promise<void> {
+  const maxAge = remember
+    ? config.mechanicRememberDays * 24 * 60 * 60
+    : config.mechanicSessionHours * 60 * 60;
   const exp = Date.now() + maxAge * 1000;
   (await cookies()).set(
     MECHANIC_COOKIE,
@@ -97,21 +107,4 @@ export async function currentMechanic(): Promise<MechanicSession | null> {
   const payload = unseal((await cookies()).get(MECHANIC_COOKIE)?.value);
   if (!payload || typeof payload.id !== 'string' || typeof payload.name !== 'string') return null;
   return { id: payload.id, name: payload.name };
-}
-
-/* ------------------------------------------------------------------ PIN --- */
-
-export function hashPin(pin: string): string {
-  const salt = crypto.randomBytes(16);
-  const derived = crypto.scryptSync(pin, salt, 32);
-  return `scrypt$${salt.toString('hex')}$${derived.toString('hex')}`;
-}
-
-export function verifyPin(pin: string, stored: string): boolean {
-  const [scheme, saltHex, hashHex] = stored.split('$');
-  if (scheme !== 'scrypt' || !saltHex || !hashHex) return false;
-  const derived = crypto.scryptSync(pin, Buffer.from(saltHex, 'hex'), 32);
-  const expected = Buffer.from(hashHex, 'hex');
-  if (derived.length !== expected.length) return false;
-  return crypto.timingSafeEqual(derived, expected);
 }

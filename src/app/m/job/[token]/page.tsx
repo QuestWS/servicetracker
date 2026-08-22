@@ -9,7 +9,7 @@ export const metadata = { title: 'Job', robots: { index: false, follow: false } 
 /**
  * The token in the URL came off the paper, so it is enough to name the job on
  * screen. Everything past that — the log, and the ability to add to it —
- * waits for a PIN.
+ * waits until somebody says who they are.
  */
 export default async function MechanicJobPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;

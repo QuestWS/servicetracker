@@ -4,7 +4,8 @@ import { AdminChrome } from '@/components/AdminChrome';
 import { CopyField } from '@/components/CopyField';
 import { ShopFeed } from '@/components/Feed';
 import { StatusPill } from '@/components/StatusPill';
-import { listEntries } from '@/lib/entries';
+import { hoursByMechanic, listEntries, totalHours } from '@/lib/entries';
+import { formatHours } from '@/lib/entry-types';
 import { listEmails } from '@/lib/email';
 import { formatDateTime } from '@/lib/format';
 import { getJob, listStatusEvents, needsReview, trackingUrl } from '@/lib/jobs';
@@ -75,6 +76,8 @@ export default async function JobDetailPage({
   const notice = noticeKey ? NOTICES[noticeKey] : null;
 
   const entries = listEntries(job.id);
+  const labor = totalHours(job.id);
+  const laborByMechanic = hoursByMechanic(job.id);
   const events = listStatusEvents(job.id);
   const emails = listEmails(job.id);
   const flags = needsReview(job);
@@ -192,6 +195,30 @@ export default async function JobDetailPage({
             </section>
 
             <section className="card">
+              <h2>Labor logged</h2>
+              {labor > 0 ? (
+                <>
+                  <div className="hourstotal">{formatHours(labor)}</div>
+                  {laborByMechanic.map((row) => (
+                    <div className="kv" key={row.name}>
+                      <span className="k">{row.name}</span>
+                      <b style={{ fontFamily: 'var(--mono)' }}>{formatHours(row.hours)}</b>
+                    </div>
+                  ))}
+                  <p className="hint">
+                    This is what the mechanics logged as they worked — key it into BiT with the
+                    parts when you write the invoice up. The customer never sees it.
+                  </p>
+                </>
+              ) : (
+                <p className="hint" style={{ margin: 0 }}>
+                  No hours logged yet. Mechanics add them from the job screen as they finish each
+                  stint.
+                </p>
+              )}
+            </section>
+
+            <section className="card">
               <h2>Close out</h2>
               {!readyToClose && (
                 <p className="hint" style={{ marginBottom: 10 }}>
@@ -290,7 +317,9 @@ export default async function JobDetailPage({
 
           <div className="stack">
             <section className="card">
-              <h2>Shop log ({entries.length})</h2>
+              <h2>
+                Shop log ({entries.length}){labor > 0 ? ` · ${formatHours(labor)} logged` : ''}
+              </h2>
               <ShopFeed entries={entries} />
             </section>
 

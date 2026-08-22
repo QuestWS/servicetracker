@@ -11,9 +11,9 @@ This file is the short list of things that are easy to get wrong.
 2. **No code, database or infrastructure is shared with
    `QuestWS/winter-quotes_26-27`.** The house style was copied on purpose; do
    not turn that into an import, a submodule or a shared deployment.
-3. **The customer sees customer notes and nothing else.** Internal notes, part
-   numbers, quantities, mechanic names and pricing never reach `/t/<token>`,
-   at any status. The filter lives in `listCustomerEntries` and in
+3. **The customer sees customer notes and nothing else.** Internal notes,
+   labor hours, part numbers, quantities, mechanic names and pricing never
+   reach `/t/<token>`, at any status. The filter lives in `listCustomerEntries` and in
    `publiclyVisible` in the file route — both are covered by tests. If a new
    field is added to a log entry, decide its visibility there, not in a
    template.
@@ -45,9 +45,22 @@ Follows the spec's starting point with two deliberate changes:
 
 - `LogEntry.photo_url` became a `entry_photos` table — the spec asks for photos
   (plural) on any entry.
+- A fourth entry type, `labor`, carries `hours` plus the description of what
+  the time went on. Like `part`, it is internal-only; `createEntry` pins
+  `hours` to null for every other type so the figure cannot ride along on a
+  customer note.
+- `Mechanic.pin` is gone. Mechanics identify themselves by name, and names are
+  unique (case-insensitively) because the name is the whole of the identity.
 - Files are rows in `files` and are served only through `/api/files/[id]`, so
   access control has exactly one home. `audio_url` and `photos[].url` in API
   responses point there.
+
+## Schema changes
+
+`SCHEMA` is all `CREATE ... IF NOT EXISTS`, which cannot alter a table that
+already exists. Anything added or removed after the first deploy goes in
+`migrate()` in `db.ts`, guarded by what the database actually has, and gets a
+case in `tests/migration.test.ts`.
 
 ## Operational facts worth remembering
 

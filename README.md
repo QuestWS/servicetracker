@@ -30,8 +30,9 @@ change; the logging does.
 3. They print that copy and put it in the folder, same as today.
 4. **Mechanic** opens the app on their phone, scans the QR straight off the
    paper. The job moves to `Work underway` on that scan.
-5. They enter their PIN, then log as they go: customer notes, internal notes,
-   parts, photos — typed or spoken.
+5. They tap their name (or type it once), then log as they go: hours and what
+   they did with them, customer notes, internal notes, parts, photos — typed
+   or spoken.
 6. When the boat is physically done they mark **Work finished**.
 7. **Service writer** writes the job up in BiT as today, downloads the final
    invoice, uploads it here with the POS+ payment link.
@@ -50,13 +51,13 @@ Status never runs backwards.
 | Path | Who | What |
 |---|---|---|
 | `/admin` | Service writer | Job list, intake, full log, close-out, mechanics roster |
-| `/m` | Mechanics | Installable PWA: scan → PIN → log → finish |
+| `/m` | Mechanics | Installable PWA: scan → name → log → finish |
 | `/t/<token>` | Customer | Public, unguessable URL. Status and customer-facing notes only |
 
 ### The customer never sees
 
-Internal notes, part numbers, quantities, who logged what, or any pricing —
-at any status. Before `Done` there is no invoice and no payment link either.
+Internal notes, labor hours, part numbers, quantities, who logged what, or any
+pricing — at any status. Before `Done` there is no invoice and no payment link either.
 That boundary is enforced in the query (`listCustomerEntries`), not in the
 template, and it is covered by tests.
 
@@ -69,7 +70,7 @@ npm run build
 npm start                 # http://localhost:3000
 ```
 
-Then, in the portal: **Mechanics** → add each mechanic and their PIN;
+Then, in the portal: **Mechanics** → add the crew so they have a name to tap;
 **App setup** → the one-time QR and install instructions for their phones.
 
 Development: `npm run dev`. Tests: `npm test`. Types: `npm run typecheck`.
@@ -120,8 +121,27 @@ with the reason.
 - **Voice notes** upload to AssemblyAI in the background — the mechanic never
   waits on the network. The raw audio is kept on the job either way, and a
   transcript still in flight when the server restarts is picked back up at boot.
+- **Hours** are logged as the mechanic finishes each stint, with a line saying
+  what the time went on — typed, or dictated like any other note, in which case
+  the hours count immediately and the words fill in when the transcript lands.
+  They total up on the job, and that total with the parts is what the service
+  writer keys into BiT at invoicing time.
 - **Nothing is queued offline.** A mechanic needs to know their note landed, so
   a failed save is a visible error, never a silent "saved".
+
+### Who logged it
+
+A mechanic signs in by tapping their name, or typing it the first time. There
+is no PIN and no password: the app is reached from a QR code on a work order
+already sitting in the shop, so a secret on the sign-in screen would guard a
+door that is propped open anyway — what the name is for is attributing the log.
+"Remember me" keeps a mechanic signed in on their own phone for a month; left
+unticked, the shared shop iPad forgets them at the end of the shift.
+
+A name nobody has used before joins the roster rather than being turned away —
+nobody should be stuck behind an admin screen with a boat in front of them. The
+service writer can rename anyone (their entries follow the rename) or switch
+someone off, which refuses that name at sign-in.
 
 ## Relationship to the winter services app
 

@@ -15,7 +15,7 @@ export async function requireMechanic(): Promise<
   { mechanic: MechanicSession; error: null } | { mechanic: null; error: NextResponse }
 > {
   const mechanic = await currentMechanic();
-  if (!mechanic) return { mechanic: null, error: jsonError('Enter your PIN to continue.', 401) };
+  if (!mechanic) return { mechanic: null, error: jsonError('Enter your name to continue.', 401) };
   return { mechanic, error: null };
 }
 

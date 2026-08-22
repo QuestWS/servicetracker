@@ -1,75 +1,104 @@
 import { db, nowIso } from './db';
 import { newId } from './ids';
-import { hashPin, verifyPin } from './session';
 
 export type Mechanic = {
   id: string;
   name: string;
-  pin_hash: string;
   active: number;
   created_at: string;
 };
 
-export type MechanicView = Omit<Mechanic, 'pin_hash'>;
+/** Collapses the ways the same person types their own name. */
+export function normalizeName(raw: string): string {
+  return raw.trim().replace(/\s+/g, ' ');
+}
 
-export function listMechanics(includeInactive = false): MechanicView[] {
+/**
+ * A name is a name, not a free-text field. Long enough to identify someone,
+ * short enough to fit the log, and letters rather than a barcode someone
+ * scanned into the wrong box.
+ */
+export function isUsableName(name: string): boolean {
+  if (name.length < 2 || name.length > 40) return false;
+  return /^[\p{L}][\p{L}\p{M}'’.\- ]*$/u.test(name);
+}
+
+export function listMechanics(includeInactive = false): Mechanic[] {
   const where = includeInactive ? '' : 'WHERE active = 1';
   return db()
     .prepare(`SELECT id, name, active, created_at FROM mechanics ${where} ORDER BY name`)
-    .all() as MechanicView[];
+    .all() as Mechanic[];
 }
 
-export function getMechanic(id: string): MechanicView | null {
+export function getMechanic(id: string): Mechanic | null {
   return (
     (db()
       .prepare('SELECT id, name, active, created_at FROM mechanics WHERE id = ?')
-      .get(id) as MechanicView) ?? null
+      .get(id) as Mechanic) ?? null
   );
 }
 
-export function createMechanic(name: string, pin: string): MechanicView {
+export function findMechanicByName(name: string): Mechanic | null {
+  return (
+    (db()
+      .prepare('SELECT id, name, active, created_at FROM mechanics WHERE name = ? COLLATE NOCASE')
+      .get(normalizeName(name)) as Mechanic) ?? null
+  );
+}
+
+export function createMechanic(name: string): Mechanic {
   const row = {
     id: newId('mech'),
-    name: name.trim(),
-    pin_hash: hashPin(pin),
+    name: normalizeName(name),
     active: 1,
     created_at: nowIso(),
   };
   db()
     .prepare(
-      `INSERT INTO mechanics (id, name, pin_hash, active, created_at)
-       VALUES (@id, @name, @pin_hash, @active, @created_at)`,
+      `INSERT INTO mechanics (id, name, active, created_at)
+       VALUES (@id, @name, @active, @created_at)`,
     )
     .run(row);
-  const { pin_hash: _pin, ...view } = row;
-  return view;
+  return row;
 }
 
-export function setMechanicPin(id: string, pin: string): void {
-  db().prepare('UPDATE mechanics SET pin_hash = ? WHERE id = ?').run(hashPin(pin), id);
+export type SignInResult =
+  | { ok: true; mechanic: Mechanic; created: boolean }
+  | { ok: false; reason: 'invalid' | 'inactive' };
+
+/**
+ * Sign-in is typing your name. There is no secret: the app is reached from
+ * the QR code on a work order that is already sitting in the shop, and the
+ * point of the name is to attribute the log, not to guard it.
+ *
+ * A name nobody has used before joins the roster rather than being turned
+ * away — a mechanic on a job should never be stuck behind an admin screen.
+ * A name the service writer has deactivated is refused, because that is a
+ * decision someone made on purpose.
+ */
+export function signInByName(raw: string): SignInResult {
+  const name = normalizeName(raw);
+  if (!isUsableName(name)) return { ok: false, reason: 'invalid' };
+
+  const existing = findMechanicByName(name);
+  if (existing) {
+    if (!existing.active) return { ok: false, reason: 'inactive' };
+    return { ok: true, mechanic: existing, created: false };
+  }
+  return { ok: true, mechanic: createMechanic(name), created: true };
 }
 
 export function setMechanicActive(id: string, active: boolean): void {
   db().prepare('UPDATE mechanics SET active = ? WHERE id = ?').run(active ? 1 : 0, id);
 }
 
-/**
- * PIN-only sign-in: the mechanic types four digits and we find whose they are.
- * Every active row is checked even after a hit so a wrong PIN costs the same
- * time as a right one, and a PIN shared by two people identifies neither.
- */
-export function authenticateByPin(pin: string): MechanicView | null {
-  const rows = db().prepare('SELECT * FROM mechanics WHERE active = 1').all() as Mechanic[];
-  let found: Mechanic | null = null;
-  let hits = 0;
-  for (const row of rows) {
-    if (verifyPin(pin, row.pin_hash)) {
-      hits += 1;
-      found = row;
-    }
-  }
-  if (hits !== 1 || !found) return null;
-  return { id: found.id, name: found.name, active: found.active, created_at: found.created_at };
+export function renameMechanic(id: string, name: string): boolean {
+  const normalized = normalizeName(name);
+  if (!isUsableName(normalized)) return false;
+  const clash = findMechanicByName(normalized);
+  if (clash && clash.id !== id) return false;
+  db().prepare('UPDATE mechanics SET name = ? WHERE id = ?').run(normalized, id);
+  return true;
 }
 
 /** Names for the log, resolved in one query rather than per entry. */

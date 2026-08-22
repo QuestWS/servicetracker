@@ -1,30 +1,26 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { requireAdmin, str } from '@/lib/guards';
-import { authenticateByPin, createMechanic, listMechanics } from '@/lib/mechanics';
+import { createMechanic, findMechanicByName, isUsableName, normalizeName } from '@/lib/mechanics';
 
-function isPin(value: string | null): value is string {
-  return Boolean(value && /^\d{4,6}$/.test(value));
-}
-
+/**
+ * Adding someone here is a convenience, not a gate: a mechanic who types a
+ * name nobody has used before joins the roster on the spot. What this screen
+ * really controls is the list they tap from, and who is switched off.
+ */
 export async function POST(request: NextRequest) {
   const denied = await requireAdmin();
   if (denied) return denied;
 
   const form = await request.formData();
-  const name = str(form.get('name'));
-  const pin = str(form.get('pin'));
+  const name = normalizeName(str(form.get('name')) ?? '');
   const back = (query: string) =>
     NextResponse.redirect(new URL(`/admin/mechanics?${query}`, request.url), 303);
 
-  if (!name) return back('error=name');
-  if (!isPin(pin)) return back('error=pin');
-  // Two people with the same PIN would make the log ambiguous about who
-  // logged what, so the PIN has to be unique across the active roster.
-  if (authenticateByPin(pin)) return back('error=pin_taken');
-  if (listMechanics(true).some((m) => m.name.toLowerCase() === name.toLowerCase())) {
-    return back('error=name_taken');
-  }
+  if (!isUsableName(name)) return back('error=name');
+  // One name, one person — the log has to stay unambiguous about who logged
+  // what, and the name is the whole of the identity now.
+  if (findMechanicByName(name)) return back('error=name_taken');
 
-  createMechanic(name, pin);
+  createMechanic(name);
   return back('saved=created');
 }

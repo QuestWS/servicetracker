@@ -16,7 +16,7 @@ export default async function SetupPage() {
         <h1 className="page-title">Put the app on a phone</h1>
         <p className="lead">
           Do this once per phone or iPad. After it is on the home screen, the daily routine is: tap
-          the icon, scan the work order, type your PIN.
+          the icon, scan the work order, tap your name.
         </p>
 
         <section className="card">

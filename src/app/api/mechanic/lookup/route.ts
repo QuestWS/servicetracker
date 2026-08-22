@@ -21,9 +21,9 @@ function summary(job: Job) {
  * Turns a scan (or a typed invoice number) into a job.
  *
  * A scan is the mechanic physically picking the job up off the shelf, so this
- * is where a job auto-advances to "Work underway" — before the PIN prompt,
+ * is where a job auto-advances to "Work underway" — before anyone signs in,
  * exactly as the paper-first workflow implies. Only a summary comes back; the
- * log itself needs a PIN.
+ * log itself needs a name against it.
  */
 export async function GET(request: NextRequest) {
   if (!rateLimit(clientKey(request, 'lookup'), 60, 60 * 1000)) {

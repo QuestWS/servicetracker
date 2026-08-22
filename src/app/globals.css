@@ -299,6 +299,15 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
 .kv .k { color: var(--muted); }
 .kv b { text-align: right; color: var(--navy); overflow-wrap: anywhere; }
 
+.hourstotal {
+  font-family: var(--mono);
+  font-size: 34px;
+  font-weight: 700;
+  color: var(--navy);
+  line-height: 1.1;
+  margin-bottom: 8px;
+}
+
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 @media (max-width: 620px) { .stats { grid-template-columns: repeat(2, 1fr); } }
 .stat { background: #fafcfe; border: 1px solid var(--line); border-radius: 11px; padding: 10px 12px; text-align: center; text-decoration: none; }
@@ -316,6 +325,7 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
 }
 .entry.customer_note { border-left-color: var(--green); }
 .entry.internal_note { border-left-color: var(--frost); }
+.entry.labor { border-left-color: var(--navy); background: #fafcfe; }
 .entry.part { border-left-color: var(--gold); background: #fffdf8; }
 .entry .meta {
   display: flex;
@@ -329,6 +339,13 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
 .entry .body { font-size: 15px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .entry .body.pending { color: var(--muted); font-style: italic; }
 .entry .partline { font-family: var(--mono); font-size: 14px; color: var(--navy); font-weight: 600; }
+.entry .hoursline {
+  font-family: var(--mono);
+  font-size: 18px;
+  color: var(--navy);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
 .photos { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .photos a { display: block; }
 .photos img {
@@ -458,28 +475,50 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
   text-shadow: 0 1px 3px #000;
 }
 
-.pinpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.pinpad button {
-  font-family: var(--mono);
-  font-size: 26px;
-  font-weight: 600;
-  padding: 16px 0;
+/* Sign-in: the roster as tap targets, sized for a gloved hand on an iPad. */
+.namegrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.namegrid button {
+  font-family: var(--body);
+  font-size: 18px;
+  font-weight: 700;
+  padding: 18px 12px;
   border-radius: 12px;
   border: 1.5px solid var(--line);
   background: #fff;
   color: var(--navy);
   cursor: pointer;
+  min-height: 60px;
 }
-.pinpad button:active { background: var(--ice); }
-.pindots { display: flex; gap: 12px; justify-content: center; margin: 8px 0 16px; }
-.pindots i {
-  width: 16px;
-  height: 16px;
-  border-radius: 99px;
-  border: 2px solid var(--frost);
-  display: block;
+.namegrid button:active { background: var(--frost-soft); border-color: var(--navy); }
+.namegrid button:disabled { opacity: 0.5; }
+
+.checkline {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ice);
+  font-size: 14.5px;
+  cursor: pointer;
 }
-.pindots i.on { background: var(--navy); border-color: var(--navy); }
+.checkline input { width: 22px; height: 22px; margin-top: 1px; accent-color: var(--navy); flex: none; }
+.checkline small { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.4; }
+
+/* Quick hour amounts — most jobs are logged in quarter-hour steps. */
+.hourchips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.hourchips button {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1.5px solid var(--line);
+  background: #fff;
+  color: var(--navy);
+  cursor: pointer;
+}
+.hourchips button:active { background: var(--frost-soft); }
 
 .segmented { display: flex; border: 1.5px solid var(--navy); border-radius: 11px; overflow: hidden; }
 .segmented button {

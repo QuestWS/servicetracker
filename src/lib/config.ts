@@ -15,8 +15,10 @@ export const config = {
   adminPassword: env('ADMIN_PASSWORD'),
   /** HMAC key for session cookies. Changing it logs everyone out. */
   sessionSecret: env('SESSION_SECRET'),
-  /** Hours a mechanic's PIN unlock stays valid on their phone. */
+  /** How long a mechanic stays signed in when they did not tick "remember me". */
   mechanicSessionHours: Number(env('MECHANIC_SESSION_HOURS', '10')) || 10,
+  /** And how long when they did — their own phone, not the shared iPad. */
+  mechanicRememberDays: Number(env('MECHANIC_REMEMBER_DAYS', '30')) || 30,
 
   assemblyAiKey: env('ASSEMBLYAI_API_KEY'),
 
