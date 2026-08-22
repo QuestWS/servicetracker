@@ -43,6 +43,31 @@ const FROM_ALIAS = '';
 /** The Quest mark, embedded in every email. Same file the winter app uses. */
 const LOGO_URL = SITE_URL + '/assets/quest-wordmark.png';
 
+/**
+ * Test mode. ON until somebody deliberately turns it off, so a fresh
+ * deployment cannot email a customer by accident while the shop is still
+ * finding its feet.
+ *
+ * What it changes, and only this:
+ *   - The customer's "job is done" email goes to TEST_EMAIL instead, marked
+ *     as what WOULD have been sent, so it can be read and checked.
+ *   - The public tracking page shows a holding notice to anyone who is not
+ *     signed in on the shop side. Staff still see the real thing, so the page
+ *     can be debugged against live jobs.
+ *
+ * What it does NOT change: everything else. Jobs, scanning, logging, hours,
+ * photos, the invoice, the status lifecycle and the hourly digest all behave
+ * exactly as they will in production — otherwise it would not be a rehearsal.
+ */
+function testMode_() {
+  return String(props_().getProperty('TEST_MODE') || 'true') !== 'false';
+}
+
+/** Where a suppressed customer email goes so somebody can read it. */
+function testEmail_() {
+  return props_().getProperty('TEST_EMAIL') || SERVICE_EMAIL;
+}
+
 /** Hours a mechanic stays signed in: their own phone vs the shared iPad. */
 const REMEMBER_DAYS = 30;
 const SHIFT_HOURS = 10;
@@ -55,6 +80,13 @@ const STATUS_LABEL = {
   work_finished: 'Work finished (pending invoice)',
   done: 'Done'
 };
+/** Why a part is on the list. */
+const PART_REASON_LABEL = {
+  job: 'For this job',
+  restock: 'Restock',
+  stock: 'Stock'
+};
+
 const ENTRY_LABEL = {
   customer_note: 'Customer note',
   internal_note: 'Internal note',
@@ -67,10 +99,18 @@ const SHEETS = {
   Jobs: ['id', 'token', 'customer_name', 'customer_phone', 'customer_email', 'boat_info',
          'status', 'needs_review', 'work_order_file', 'invoice_file', 'payment_link',
          'created_at', 'updated_at', 'work_started_at', 'work_finished_at', 'done_at',
-         'grand_total', 'deposits', 'amount_due'],
+         'grand_total', 'deposits', 'amount_due',
+         'parts_ordered_at', 'paid_at'],
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
-               'transcript_id', 'transcript_error', 'notified_at', 'created_at'],
+               'transcript_id', 'transcript_error', 'notified_at', 'created_at',
+               'logged_at'],
+  // A part somebody needs: off a work order, or a bare stock request. One row
+  // per part; rows ordered together share a vendor and order number, and the
+  // group is done when every row in it has been received.
+  PartsOrders: ['id', 'job_id', 'source_entry', 'part_identifier', 'description', 'quantity',
+                'reason', 'status', 'vendor', 'order_number', 'notes', 'requested_by',
+                'created_at', 'ordered_at', 'received_at'],
   Mechanics: ['id', 'name', 'active', 'created_at'],
   StatusEvents: ['id', 'job_id', 'from_status', 'to_status', 'actor_type', 'actor', 'note', 'created_at'],
   EmailLog: ['id', 'job_id', 'kind', 'recipient', 'subject', 'status', 'error', 'created_at']
@@ -259,10 +299,20 @@ function doPost(e) {
     markDone:         function (a) { return markDone(data.token, a[0]); },
     resendDoneEmail:  function (a) { return resendDoneEmail(data.token, a[0]); },
     setStatus:        function (a) { return setStatusByWriter(data.token, a[0], a[1]); },
+    markLogged:       function (a) { return markEntriesLogged(data.token, a[0]); },
+    setJobFlag:       function (a) { return setJobFlag(data.token, a[0], a[1], a[2]); },
     listMechanics:    function (a) { return listMechanicsAdmin(data.token); },
     addMechanic:      function (a) { return addMechanic(data.token, a[0]); },
     renameMechanic:   function (a) { return renameMechanic(data.token, a[0], a[1]); },
     setMechanicActive:function (a) { return setMechanicActive(data.token, a[0], a[1]); },
+
+    /* parts */
+    listParts:        function (a) { return listPartsOrders(data.token); },
+    requestPart:      function (a) { return requestPart(data.token, a[0]); },
+    partsOrdered:     function (a) { return markPartsOrdered(data.token, a[0], a[1], a[2]); },
+    partReceived:     function (a) { return markPartReceived(data.token, a[0], a[1]); },
+    partNote:         function (a) { return setPartNote(data.token, a[0], a[1]); },
+    cancelPart:       function (a) { return cancelPartOrder(data.token, a[0]); },
 
     /* mechanic app */
     roster:           function (a) { return roster(); },
@@ -273,7 +323,9 @@ function doPost(e) {
     finishWork:       function (a) { return finishWork(data.token, a[0]); },
 
     /* customer page — the token in the URL is the only credential */
-    publicJob:        function (a) { return publicJob(a[0]); }
+    publicJob:        function (a) { return publicJob(a[0], data.token); },
+    setTestMode:      function (a) { return setTestMode(data.token, a[0]); },
+    config:           function (a) { return config(data.token); }
   };
 
   if (!FNS[data.fn]) return json_({ error: 'Unknown function.' });
@@ -353,6 +405,8 @@ function jobSummary_(job) {
     grandTotal: numberOrNull_(job.grand_total),
     deposits: numberOrNull_(job.deposits),
     amountDue: numberOrNull_(job.amount_due),
+    partsOrderedAt: job.parts_ordered_at || null,
+    paidAt: job.paid_at || null,
     trackingUrl: trackingUrl_(job),
     createdAt: job.created_at,
     updatedAt: job.updated_at,
@@ -464,7 +518,7 @@ function listJobs(token, filter) {
   rows_('Jobs').forEach(function (job) {
     byStatus[job.status] = (byStatus[job.status] || 0) + 1;
   });
-  return { jobs: jobs, counts: byStatus };
+  return { jobs: jobs, counts: byStatus, testMode: testMode_() };
 }
 
 function getJob(token, id) {
@@ -473,6 +527,7 @@ function getJob(token, id) {
   if (!job) throw new Error('No such job.');
   const entries = entriesForJob_(id);
   return {
+    testMode: testMode_(),
     job: jobSummary_(job),
     entries: entries,
     hours: laborTotals_(entries),
@@ -591,6 +646,7 @@ function entryView_(entry) {
     photos: parsePhotos_(entry.photos),
     transcriptStatus: entry.transcript_status || null,
     transcriptError: entry.transcript_error || null,
+    loggedAt: entry.logged_at || null,
     createdAt: entry.created_at
   };
 }
@@ -699,6 +755,14 @@ function addEntry(token, jobToken, payload) {
     throw new Error('Add a note, a recording or a photo before saving.');
   }
 
+  const orderQty = payload.orderQty ? Number(payload.orderQty) : null;
+  const restockQty = payload.restockQty ? Number(payload.restockQty) : null;
+  [['order', orderQty], ['restock', restockQty]].forEach(function (pair) {
+    if (pair[1] !== null && (!isFinite(pair[1]) || pair[1] <= 0)) {
+      throw new Error('How many to ' + pair[0] + '? It needs to be a number greater than zero.');
+    }
+  });
+
   return withLock_(function () {
     const stored = photos.slice(0, 8).map(function (photo, index) {
       return {
@@ -743,6 +807,24 @@ function addEntry(token, jobToken, payload) {
 
     if (entry.transcript_status === 'pending') submitTranscript_(entry.id, audioFile);
 
+    // A part the mechanic says has to be ordered, or put back on the shelf,
+    // becomes a line on the parts list then and there. Both can be true at
+    // once: one off the shelf for this boat, another to replace it.
+    if (type === 'part') {
+      if (orderQty !== null) {
+        addPartOrder_({
+          jobId: job.id, sourceEntry: entry.id, partIdentifier: entry.part_identifier,
+          description: text, quantity: orderQty, reason: 'job', requestedBy: who.name
+        });
+      }
+      if (restockQty !== null) {
+        addPartOrder_({
+          jobId: job.id, sourceEntry: entry.id, partIdentifier: entry.part_identifier,
+          description: text, quantity: restockQty, reason: 'restock', requestedBy: who.name
+        });
+      }
+    }
+
     const entries = entriesForJob_(job.id);
     // The job comes back too: logging the first entry moves the status, and
     // the phone should not go on showing "Received" after it has.
@@ -763,6 +845,177 @@ function finishWork(token, jobToken) {
   setStatus_(job, 'work_finished', 'mechanic', who.name, '');
   const updated = jobRow_(job.id);
   return { status: updated.status, statusLabel: STATUS_LABEL[updated.status] };
+}
+
+/* =========================== parts orders ============================== */
+
+function partView_(part) {
+  return {
+    id: part.id,
+    jobId: part.job_id || null,
+    partIdentifier: part.part_identifier || null,
+    description: part.description || null,
+    quantity: numberOrNull_(part.quantity),
+    reason: part.reason,
+    reasonLabel: PART_REASON_LABEL[part.reason] || part.reason,
+    status: part.status,
+    vendor: part.vendor || null,
+    orderNumber: part.order_number || null,
+    notes: part.notes || '',
+    requestedBy: part.requested_by || null,
+    createdAt: part.created_at,
+    orderedAt: part.ordered_at || null,
+    receivedAt: part.received_at || null
+  };
+}
+
+function partRow_(id) {
+  const all = rows_('PartsOrders');
+  for (let i = 0; i < all.length; i++) {
+    if (all[i].id === id) return all[i];
+  }
+  return null;
+}
+
+function addPartOrder_(fields) {
+  const row = {
+    id: newId_('part'),
+    job_id: fields.jobId || '',
+    source_entry: fields.sourceEntry || '',
+    part_identifier: fields.partIdentifier || '',
+    description: fields.description || '',
+    quantity: fields.quantity === null || fields.quantity === undefined ? '' : fields.quantity,
+    reason: fields.reason,
+    status: 'needed',
+    vendor: '',
+    order_number: '',
+    notes: fields.notes || '',
+    requested_by: fields.requestedBy || '',
+    created_at: nowIso_(),
+    ordered_at: '',
+    received_at: ''
+  };
+  appendRow_('PartsOrders', row);
+  return row;
+}
+
+/**
+ * A part somebody wants ordered, with no work order behind it — the usual
+ * case being a mechanic at the shelf noticing stock is low.
+ *
+ * The part number is asked for but not insisted on: somebody standing in
+ * front of an empty hook with a description and no number should still be
+ * able to get it onto the list.
+ */
+function requestPart(token, payload) {
+  const who = requireShop_(token);
+  const description = String((payload && payload.description) || '').trim();
+  const identifier = String((payload && payload.partIdentifier) || '').trim();
+  if (!description && !identifier) {
+    throw new Error('Say which part you need — a number, a description, or both.');
+  }
+  const quantity = payload.quantity ? Number(payload.quantity) : null;
+  if (quantity !== null && (!isFinite(quantity) || quantity <= 0)) {
+    throw new Error('Quantity must be a number greater than zero.');
+  }
+  return withLock_(function () {
+    const part = addPartOrder_({
+      partIdentifier: identifier,
+      description: description,
+      quantity: quantity,
+      reason: 'stock',
+      notes: String((payload && payload.notes) || '').trim(),
+      requestedBy: who.name || 'service writer'
+    });
+    return { part: partView_(part) };
+  });
+}
+
+/** Needed, on order, and the completed orders behind them. */
+function listPartsOrders(token) {
+  requireAdmin_(token);
+  const all = rows_('PartsOrders').map(partView_);
+  const jobs = {};
+  rows_('Jobs').forEach(function (job) { jobs[job.id] = job.customer_name || ''; });
+  all.forEach(function (part) { part.customerName = part.jobId ? (jobs[part.jobId] || null) : null; });
+
+  const byNewest = function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); };
+  const needed = all.filter(function (p) { return p.status === 'needed'; }).sort(byNewest);
+  const ordered = all.filter(function (p) { return p.status === 'ordered'; }).sort(byNewest);
+
+  // An order is finished when every line on it has come in. Lines received
+  // without an order number (walked in, found on the shelf) group on their own.
+  const received = all.filter(function (p) { return p.status === 'received'; });
+  const groups = {};
+  received.forEach(function (part) {
+    const key = part.orderNumber || ('(no order number) ' + part.id);
+    if (!groups[key]) groups[key] = { orderNumber: part.orderNumber, vendor: part.vendor, parts: [], receivedAt: '' };
+    groups[key].parts.push(part);
+    if (String(part.receivedAt) > String(groups[key].receivedAt)) groups[key].receivedAt = part.receivedAt;
+  });
+  // Anything still outstanding on an order keeps that order out of completed.
+  ordered.forEach(function (part) {
+    const key = part.orderNumber || '';
+    if (key && groups[key]) delete groups[key];
+  });
+  const completed = Object.keys(groups)
+    .map(function (key) { return groups[key]; })
+    .sort(function (a, b) { return String(b.receivedAt).localeCompare(String(a.receivedAt)); });
+
+  return { needed: needed, ordered: ordered, completed: completed };
+}
+
+/** Marks a batch as ordered, against a vendor and that vendor's order number. */
+function markPartsOrdered(token, ids, vendor, orderNumber) {
+  requireAdmin_(token);
+  const cleanVendor = String(vendor || '').trim();
+  const cleanNumber = String(orderNumber || '').trim();
+  if (!cleanVendor) throw new Error('Who is it ordered from?');
+  if (!Array.isArray(ids) || !ids.length) throw new Error('Tick the parts that went on the order.');
+
+  return withLock_(function () {
+    const at = nowIso_();
+    ids.forEach(function (id) {
+      const part = partRow_(id);
+      if (!part || part.status !== 'needed') return;
+      updateRow_('PartsOrders', part._row, {
+        status: 'ordered', vendor: cleanVendor, order_number: cleanNumber, ordered_at: at
+      });
+    });
+    return listPartsOrders(token);
+  });
+}
+
+function markPartReceived(token, id, received) {
+  requireAdmin_(token);
+  const part = partRow_(id);
+  if (!part) throw new Error('No such part.');
+  updateRow_('PartsOrders', part._row, received
+    ? { status: 'received', received_at: nowIso_() }
+    : { status: 'ordered', received_at: '' });
+  return listPartsOrders(token);
+}
+
+/**
+ * Free text against a part, at any stage: waiting on the customer to confirm,
+ * on backorder until March, whatever falls outside the normal run.
+ */
+function setPartNote(token, id, note) {
+  requireShop_(token);
+  const part = partRow_(id);
+  if (!part) throw new Error('No such part.');
+  updateRow_('PartsOrders', part._row, { notes: String(note || '').trim() });
+  return { part: partView_(partRow_(id)) };
+}
+
+function cancelPartOrder(token, id) {
+  requireAdmin_(token);
+  const part = partRow_(id);
+  if (!part) throw new Error('No such part.');
+  if (part.status === 'ordered') throw new Error('That one is already on order — mark it received instead.');
+  const sheet = sheet_('PartsOrders');
+  sheet.deleteRow(part._row);
+  return listPartsOrders(token);
 }
 
 /* ============================= mechanics =============================== */
@@ -923,11 +1176,30 @@ function lookupJob(code, source) {
   };
 }
 
-/** The customer page. The token in the URL is the whole of the credential. */
-function publicJob(trackingToken) {
+/**
+ * The customer page. The token in the URL is the whole of the credential.
+ *
+ * In test mode this answers with a holding notice unless the caller is signed
+ * in on the shop side — so a customer who scans the QR off a work order sees
+ * nothing, while the writer previewing the same link sees the real page.
+ */
+function publicJob(trackingToken, shopToken) {
   const job = jobByToken_(String(trackingToken || '').trim().toUpperCase());
   if (!job) throw new Error('That tracking link does not match a job.');
+
+  let staff = false;
+  try {
+    requireShop_(shopToken);
+    staff = true;
+  } catch (err) {
+    staff = false;
+  }
+  if (testMode_() && !staff) {
+    return { notLive: true, shop: { name: SHOP_NAME, phone: SHOP_PHONE } };
+  }
+
   return {
+    testMode: testMode_(),
     job: {
       id: job.id,
       boatInfo: job.boat_info,
@@ -1032,6 +1304,7 @@ function noticeHtml_(parts) {
     '<div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:10px;overflow:hidden;border:1px solid #C7D5E0">' +
       '<div style="padding:22px 28px;border-bottom:4px solid #C08A22">' + logo + '</div>' +
       '<div style="padding:26px 28px">' +
+        (parts.banner || '') +
         (parts.greeting ? '<p style="font-size:16px;color:#1D2B38;margin:0 0 6px">Hi ' + esc_(parts.greeting) + ',</p>' : '') +
         '<div style="font-size:15px;color:#1D2B38;line-height:1.55;margin:0 0 14px">' + parts.intro + '</div>' +
         (parts.meta ? '<div style="font-family:Courier New,monospace;font-size:13px;color:#5C7185;margin-bottom:10px">' + esc_(parts.meta) + '</div>' : '') +
@@ -1070,7 +1343,14 @@ function send_(options) {
 
   try {
     GmailApp.sendEmail(options.to, options.subject, options.text || options.subject, opts);
-    logEmail_(options.jobId, options.kind, options.to, options.subject, 'sent', '');
+    logEmail_(
+      options.jobId,
+      options.kind,
+      options.to,
+      options.subject,
+      options.suppressed ? 'held (test mode)' : 'sent',
+      options.suppressed ? 'would have gone to ' + options.intendedFor : ''
+    );
     return true;
   } catch (err) {
     logEmail_(options.jobId, options.kind, options.to, options.subject, 'failed', err);
@@ -1088,6 +1368,7 @@ function sendDoneEmail_(job) {
     logEmail_(job.id, 'customer_done', '(none on file)', 'Service complete', 'skipped', 'No customer email on the job');
     return false;
   }
+  const rehearsal = testMode_();
   const attachments = [];
   if (job.invoice_file) {
     try {
@@ -1113,13 +1394,26 @@ function sendDoneEmail_(job) {
           '<td align="right" style="padding:4px 0;font-weight:bold;color:#14293E;font-size:17px">' + money_(due) + '</td></tr>' +
       '</table></div>';
 
+  // In test mode the customer's email is sent to the shop instead, headed with
+  // who it was for, so it can be read end to end without anybody outside the
+  // building seeing anything.
+  const banner = rehearsal
+    ? '<div style="background:#FBEEE2;border:1px solid #E4B48F;border-left:4px solid #A6541F;' +
+      'border-radius:8px;padding:12px 14px;margin:0 0 16px;color:#A6541F;font-size:14px">' +
+      '<b>TEST MODE — not sent to the customer.</b><br>This is what ' +
+      esc_(job.customer_email) + ' would have received for job ' + esc_(job.id) + '.</div>'
+    : '';
+
   return send_({
-    to: job.customer_email,
+    to: rehearsal ? testEmail_() : job.customer_email,
     jobId: job.id,
-    kind: 'customer_done',
-    subject: 'Your ' + SHOP_NAME + ' service is complete — ' + job.id,
+    kind: rehearsal ? 'customer_done_test' : 'customer_done',
+    suppressed: rehearsal,
+    intendedFor: job.customer_email,
+    subject: (rehearsal ? '[TEST] ' : '') + 'Your ' + SHOP_NAME + ' service is complete — ' + job.id,
     greeting: first,
     html: noticeHtml_({
+      banner: banner,
       greeting: first,
       intro: 'The work on ' + (job.boat_info ? esc_('your ' + job.boat_info) : 'your boat') + ' is complete. ' +
         (attachments.length ? 'Your final invoice is attached' : 'Everything is wrapped up') +
@@ -1148,7 +1442,7 @@ function markDone(token, id) {
   setStatus_(job, 'done', 'service_writer', '', 'Marked done');
   const fresh = jobRow_(id);
   const sent = sendDoneEmail_(fresh);
-  return { job: jobSummary_(fresh), emailed: sent };
+  return { job: jobSummary_(fresh), emailed: sent, testMode: testMode_(), sentTo: testMode_() ? testEmail_() : fresh.customer_email };
 }
 
 /** The mail server was down, or the address was wrong and has been fixed. */
@@ -1157,7 +1451,62 @@ function resendDoneEmail(token, id) {
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
   if (job.status !== 'done') throw new Error('That job is not marked done yet.');
-  return { emailed: sendDoneEmail_(job) };
+  return { emailed: sendDoneEmail_(job), testMode: testMode_(), sentTo: testMode_() ? testEmail_() : job.customer_email };
+}
+
+/** What the portal needs to know about this deployment. */
+function config(token) {
+  requireAdmin_(token);
+  return { testMode: testMode_(), testEmail: testEmail_(), siteUrl: SITE_URL, serviceEmail: SERVICE_EMAIL };
+}
+
+/**
+ * Going live is one deliberate switch, made by a person who is signed in.
+ * Turning it back on is just as easy if something needs another rehearsal.
+ */
+function setTestMode(token, on) {
+  requireAdmin_(token);
+  props_().setProperty('TEST_MODE', on ? 'true' : 'false');
+  return { testMode: testMode_(), testEmail: testEmail_() };
+}
+
+/* ========================= writer's close-out ========================== */
+
+/**
+ * "Parts and labor logged" is not a flag on the job — it is a line drawn
+ * under everything logged so far.
+ *
+ * Stamping each entry means anything a mechanic adds afterwards shows up
+ * below that line as still needing writing up, which is the thing the writer
+ * actually has to keep track of on a job that is still open.
+ */
+function markEntriesLogged(token, id) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such job.');
+  return withLock_(function () {
+    const at = nowIso_();
+    let count = 0;
+    rows_('LogEntries').forEach(function (entry) {
+      if (String(entry.job_id) !== String(id) || entry.logged_at) return;
+      updateRow_('LogEntries', entry._row, { logged_at: at });
+      count += 1;
+    });
+    return { logged: count, entries: entriesForJob_(id) };
+  });
+}
+
+/** The other two ticks: parts ordered, and paid/closed. */
+function setJobFlag(token, id, flag, on) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such job.');
+  const column = { partsOrdered: 'parts_ordered_at', paid: 'paid_at' }[flag];
+  if (!column) throw new Error('Unknown checkbox.');
+  const patch = { updated_at: nowIso_() };
+  patch[column] = on ? nowIso_() : '';
+  updateRow_('Jobs', job._row, patch);
+  return { job: jobSummary_(jobRow_(id)) };
 }
 
 /* ============================ hourly digest ============================ */
@@ -1222,6 +1571,58 @@ function sendDigest() {
     byJob[jobId].forEach(function (entry) {
       updateRow_('LogEntries', entry._row, { notified_at: at });
     });
+  });
+}
+
+/* ========================== daily order list =========================== */
+
+/**
+ * What is outstanding on parts, in the writer's inbox at 3pm.
+ *
+ * Sent every weekday whether or not anything changed — an empty list is
+ * itself worth seeing, because it is the difference between "nothing to
+ * order" and "the trigger stopped running".
+ */
+function sendDailyOrders() {
+  const all = rows_('PartsOrders').map(partView_);
+  const needed = all.filter(function (p) { return p.status === 'needed'; });
+  const waiting = all.filter(function (p) { return p.status === 'ordered'; });
+
+  const line = function (part) {
+    const bits = [];
+    if (part.quantity) bits.push('<b>' + part.quantity + '&times;</b>');
+    bits.push('<b>' + esc_(part.partIdentifier || '(no part number)') + '</b>');
+    if (part.description) bits.push(esc_(part.description));
+    const tail = [];
+    if (part.jobId) tail.push('job ' + esc_(part.jobId));
+    tail.push(esc_(part.reasonLabel));
+    if (part.vendor) tail.push(esc_(part.vendor) + (part.orderNumber ? ' #' + esc_(part.orderNumber) : ''));
+    if (part.requestedBy) tail.push(esc_(part.requestedBy));
+    return '<tr><td style="padding:6px 0;border-bottom:1px solid #EBF1F6">' +
+      '<div style="font-size:14px;color:#1D2B38">' + bits.join(' ') + '</div>' +
+      '<div style="font-size:12px;color:#5C7185">' + tail.join(' &middot; ') + '</div>' +
+      (part.notes ? '<div style="font-size:13px;color:#A6541F;margin-top:2px">' + esc_(part.notes) + '</div>' : '') +
+      '</td></tr>';
+  };
+
+  const section = function (title, parts) {
+    if (!parts.length) return '<p style="font-size:14px;color:#5C7185;margin:0 0 12px">' + title + ': nothing.</p>';
+    return '<div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#4A81A6;margin:14px 0 4px">' +
+      title + ' (' + parts.length + ')</div>' +
+      '<table width="100%" cellpadding="0" cellspacing="0">' + parts.map(line).join('') + '</table>';
+  };
+
+  send_({
+    to: SERVICE_EMAIL,
+    jobId: '',
+    kind: 'daily_orders',
+    subject: 'Parts to order — ' + Utilities.formatDate(new Date(), 'America/Chicago', 'EEE d MMM'),
+    html: noticeHtml_({
+      intro: '<div style="font-size:16px;font-weight:bold;color:#14293E;margin-bottom:10px">Parts list</div>' +
+        section('To order', needed) + section('On order, not yet in', waiting),
+      buttons: button_(SITE_URL + '/admin/?view=parts', 'Open the parts list')
+    }),
+    text: needed.length + ' to order, ' + waiting.length + ' on order.\n' + SITE_URL + '/admin/?view=parts'
   });
 }
 
@@ -1352,10 +1753,13 @@ function hourly() {
 }
 
 function installTriggers_() {
+  const ours = { hourly: true, sendDailyOrders: true };
   ScriptApp.getProjectTriggers().forEach(function (trigger) {
-    if (trigger.getHandlerFunction() === 'hourly') ScriptApp.deleteTrigger(trigger);
+    if (ours[trigger.getHandlerFunction()]) ScriptApp.deleteTrigger(trigger);
   });
   ScriptApp.newTrigger('hourly').timeBased().everyHours(1).create();
+  // 3pm Central — the script's own timezone, set in appsscript.json.
+  ScriptApp.newTrigger('sendDailyOrders').timeBased().atHour(15).everyDays(1).create();
 }
 
 /* ================================ setup ================================ */

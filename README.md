@@ -127,8 +127,38 @@ is in [docs/DEPLOY.md](docs/DEPLOY.md).
   Pay button carries the figure. If the invoice cannot be read, the field is
   simply blank for the writer to fill — never a guessed number beside a Pay
   button.
+- **Parts get asked for where they are noticed.** A mechanic logging a part can
+  tick "needs ordering for this job" and "took from stock, needs restocking" —
+  each asks how many and each becomes its own line on the parts list. A part
+  for the shelf with no job behind it goes on the same list straight from the
+  phone.
+- **The parts list runs needed → ordered → received**, with a vendor and their
+  order number, a note field at every stage for the things that fall outside
+  the normal run, and an order archiving itself once every line on it is in.
+  It lands in the service writer's inbox at 3pm daily, empty or not.
+- **The writer's checklist** is three ticks per job: parts and labor logged,
+  parts ordered, invoice paid and ticket closed. Ticking the first draws a line
+  under everything logged so far, so anything a mechanic adds later stands out
+  as still needing writing up.
+- **Test mode is on until you turn it off**, so nothing reaches a customer
+  while you are still finding your feet. See below.
 - **Nothing is queued offline.** A mechanic needs to know their note landed, so
   a failed save is a visible error, never a silent "saved".
+
+## Test mode
+
+A fresh deployment starts in test mode, and the portal says so on every screen.
+Run as many real work orders through as you like: scanning, logging, hours,
+photos, parts and the invoice all behave exactly as they will in production.
+Two things differ, and only these two:
+
+- The customer's finished-job email goes to the shop instead, headed with who
+  it was meant for, so you can read exactly what they would have got.
+- Their tracking page shows a holding message to anyone not signed in on the
+  shop side. You can still open the same link and see the real page.
+
+Going live is one button on **App setup**. From that moment, marking a job done
+emails the customer for real.
 
 ## Relationship to the winter services app
 

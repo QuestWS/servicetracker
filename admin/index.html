@@ -19,12 +19,14 @@
   <nav>
     <a class="linkbtn" href="?" data-nav="jobs">Jobs</a>
     <a class="linkbtn" href="?view=intake" data-nav="intake">New work order</a>
+    <a class="linkbtn" href="?view=parts" data-nav="parts">Parts</a>
     <a class="linkbtn" href="?view=mechanics" data-nav="mechanics">Mechanics</a>
     <a class="linkbtn" href="?view=setup" data-nav="setup">App setup</a>
     <button class="linkbtn" type="button" id="signout">Sign out</button>
   </nav>
 </header>
 
+<div id="testbanner" hidden></div>
 <main class="wrap" id="view"><p class="loading">Loading…</p></main>
 
 <script type="module">
@@ -41,6 +43,31 @@ import { $, esc, toast, formatDate, formatDateTime, relativeDays, driveImageUrl,
 const view = $('view');
 const params = new URLSearchParams(location.search);
 let intake = null;
+let testMode = null;
+
+/**
+ * Test mode is loud on purpose. It is the default on a fresh deployment, so
+ * the failure it has to prevent is somebody forgetting it is on and wondering
+ * for a fortnight why no customer has been emailed.
+ */
+function showTestBanner(on) {
+  testMode = on;
+  const banner = $('testbanner');
+  banner.hidden = !on;
+  if (!on) {
+    // Emptied, not just hidden: a banner that is still in the page is a
+    // banner somebody's screen reader still reads out.
+    banner.innerHTML = '';
+    return;
+  }
+  banner.innerHTML = `<div class="wrap" style="padding-top:14px;padding-bottom:0">
+    <div class="banner warn">
+      <b>Test mode.</b> Customers are emailed nothing and see a holding message on their
+      tracking page. Everything else — scanning, logging, hours, the invoice — works for real.
+      <a href="?view=setup" style="margin-left:6px">Go live when you are ready →</a>
+    </div>
+  </div>`;
+}
 
 const go = (query) => { location.search = query; };
 
@@ -80,7 +107,8 @@ async function renderJobs() {
   const status = params.get('status') || 'all';
   const search = params.get('q') || '';
   view.innerHTML = `<p class="loading">Loading jobs…</p>`;
-  const { jobs, counts } = await api('listJobs', [{ status, search }]);
+  const { jobs, counts, testMode: mode } = await api('listJobs', [{ status, search }]);
+  showTestBanner(mode);
 
   const href = (value) => {
     const next = new URLSearchParams();
@@ -167,7 +195,12 @@ function entryHtml(entry) {
 async function renderJob(id) {
   view.innerHTML = `<p class="loading">Loading job ${esc(id)}…</p>`;
   const data = await api('getJob', [id]);
+  showTestBanner(data.testMode);
   const { job, entries, hours, timeline, emails } = data;
+  // A mechanic can add to a job after the writer has written the rest up, so
+  // the split is per entry rather than a flag on the job.
+  const pending = entries.filter((entry) => !entry.loggedAt);
+  const written = entries.filter((entry) => entry.loggedAt);
   const doneEmail = emails.find((mail) => mail.kind === 'customer_done');
   const doneEmailSent = doneEmail && doneEmail.status === 'sent';
 
@@ -217,6 +250,11 @@ async function renderJob(id) {
               <input class="txt mono" readonly value="${esc(job.trackingUrl)}" id="tracklink">
               <button class="btn ghost sm" type="button" id="copy">Copy</button>
             </div>
+            <a class="btn ghost" href="${esc(job.trackingUrl)}" target="_blank" rel="noreferrer">
+              ${data.testMode ? 'Preview the customer page' : 'Open the customer page'}
+            </a>
+            ${data.testMode ? `<p class="hint">You can see it because you are signed in here. A customer
+              opening the same link gets a holding message until you go live.</p>` : ''}
           </div>
         </section>
 
@@ -240,6 +278,27 @@ async function renderJob(id) {
               parts when you write the invoice up. The customer never sees it.</p>`
             : `<p class="hint" style="margin:0">No hours logged yet. Mechanics add them from the job screen
               as they finish each stint.</p>`}
+        </section>
+
+        <section class="card">
+          <h2>Close out checklist</h2>
+          <label class="checkline" style="border-top:0;padding-top:0;margin-top:0">
+            <input type="checkbox" id="ck-logged" ${pending.length === 0 && entries.length ? 'checked' : ''} ${entries.length ? '' : 'disabled'}>
+            <span>Parts and labor logged on the ticket
+              <small>${entries.length
+                ? (pending.length ? `${pending.length} entr${pending.length === 1 ? 'y' : 'ies'} still to write up` : 'All caught up')
+                : 'Nothing logged on this job yet'}</small></span>
+          </label>
+          <label class="checkline">
+            <input type="checkbox" id="ck-parts" ${job.partsOrderedAt ? 'checked' : ''}>
+            <span>Parts ordered
+              <small>${job.partsOrderedAt ? `Ticked ${formatDate(job.partsOrderedAt)}` : 'Anything this job is waiting on is on the parts list'}</small></span>
+          </label>
+          <label class="checkline">
+            <input type="checkbox" id="ck-paid" ${job.paidAt ? 'checked' : ''}>
+            <span>Invoice paid, ticket closed
+              <small>${job.paidAt ? `Ticked ${formatDate(job.paidAt)}` : 'Your own record — it changes nothing the customer sees'}</small></span>
+          </label>
         </section>
 
         <section class="card">
@@ -278,10 +337,11 @@ async function renderJob(id) {
               ${doneEmailSent ? 'Send the customer email again' : 'Try the customer email again'}
             </button>`
           : `
-            <p class="hint" style="margin-bottom:10px">Marking done emails the customer their tracking link,
-              the invoice PDF and the payment link. It is the only email they get.</p>
+            <p class="hint" style="margin-bottom:10px">${data.testMode
+              ? 'Test mode: this closes the job and sends the customer\'s email <b>to the shop</b> instead, so you can read exactly what they would have got. Nothing reaches the customer.'
+              : 'Marking done emails the customer their tracking link, the invoice PDF and the payment link. It is the only email they get.'}</p>
             <button class="btn gold block" type="button" id="markdone"${job.customerEmail ? '' : ' disabled title="Add a customer email address first"'}>
-              Mark done &amp; email the customer
+              ${data.testMode ? 'Mark done (test — email goes to the shop)' : 'Mark done &amp; email the customer'}
             </button>
             <form id="statusform" style="margin-top:12px">
               <label class="fld" for="status">Or set the shop status by hand</label>
@@ -298,7 +358,22 @@ async function renderJob(id) {
       <div class="stack">
         <section class="card">
           <h2>Shop log (${entries.length})${hours.total ? ` · ${formatHours(hours.total)} logged` : ''}</h2>
-          ${entries.length ? `<div class="feed">${entries.map(entryHtml).join('')}</div>`
+          ${entries.length ? `
+            ${pending.length ? `
+              <div class="row" style="justify-content:space-between;margin-bottom:8px">
+                <b style="color:var(--navy)">Still to write up in BiT (${pending.length})</b>
+                <button class="btn ghost sm" type="button" id="marklogged">Mark these written up</button>
+              </div>
+              <div class="feed">${pending.map(entryHtml).join('')}</div>`
+              : `<div class="banner ok" style="margin-bottom:10px">Everything logged so far is written up in BiT.</div>`}
+
+            ${written.length ? `
+              <details style="margin-top:14px">
+                <summary style="cursor:pointer;color:var(--muted);font-weight:600">
+                  Already written up (${written.length})
+                </summary>
+                <div class="feed" style="margin-top:10px;opacity:.72">${written.map(entryHtml).join('')}</div>
+              </details>` : ''}`
             : `<div class="empty">Nothing logged yet. Entries appear here as mechanics add them.</div>`}
         </section>
 
@@ -324,6 +399,31 @@ async function renderJob(id) {
   const notice = (tone, message) => {
     $('notice').innerHTML = `<div class="banner ${tone}" style="margin:14px 0">${esc(message)}</div>`;
   };
+
+  const marklogged = $('marklogged');
+  if (marklogged) marklogged.onclick = async () => {
+    try {
+      const result = await api('markLogged', [job.id]);
+      renderJob(job.id);
+      toast(`${result.logged} written up.`);
+    } catch (error) { notice('warn', error.message); }
+  };
+  const tickLogged = $('ck-logged');
+  if (tickLogged) tickLogged.onclick = (event) => {
+    // The tick is a readout of the entries, not a switch of its own.
+    event.preventDefault();
+    if (pending.length) marklogged && marklogged.click();
+  };
+  [['ck-parts', 'partsOrdered'], ['ck-paid', 'paid']].forEach(([id, flag]) => {
+    const box = $(id);
+    if (!box) return;
+    box.onchange = async () => {
+      try {
+        await api('setJobFlag', [job.id, flag, box.checked]);
+        renderJob(job.id);
+      } catch (error) { box.checked = !box.checked; notice('warn', error.message); }
+    };
+  });
 
   $('copy').onclick = async () => {
     try {
@@ -413,7 +513,9 @@ async function renderJob(id) {
     try {
       const result = await api('markDone', [job.id]);
       renderJob(job.id);
-      toast(result.emailed ? 'Marked done — the customer email has been sent.' : 'Marked done, but the email did not send.');
+      toast(!result.emailed ? 'Marked done, but the email did not send.'
+        : result.testMode ? `Marked done — the customer's email went to ${result.sentTo} instead.`
+        : 'Marked done — the customer email has been sent.');
     } catch (error) {
       markdone.disabled = false;
       markdone.textContent = 'Mark done & email the customer';
@@ -683,11 +785,138 @@ async function renderMechanics() {
   };
 }
 
+/* -------------------------------------------------------------- parts --- */
+
+function partLine(part, options) {
+  const bits = [];
+  if (part.quantity) bits.push(`<b>${part.quantity}&times;</b>`);
+  bits.push(`<b style="font-family:var(--mono)">${esc(part.partIdentifier || '(no part number)')}</b>`);
+  const tail = [];
+  if (part.jobId) tail.push(`<a href="?job=${encodeURIComponent(part.jobId)}">job ${esc(part.jobId)}</a>`);
+  if (part.customerName) tail.push(esc(part.customerName));
+  if (part.requestedBy) tail.push(esc(part.requestedBy));
+  tail.push(formatDate(part.createdAt));
+
+  return `<div class="partrow" data-part="${esc(part.id)}">
+    <div class="row" style="justify-content:space-between;align-items:flex-start;gap:10px">
+      <div style="flex:1;min-width:0">
+        <div>${options.select ? `<input type="checkbox" class="partpick" value="${esc(part.id)}">` : ''}
+          ${bits.join(' ')}
+          <span class="pill ${part.reason === 'restock' ? 'gold' : part.reason === 'stock' ? 'grey' : 'blue'}">${esc(part.reasonLabel)}</span>
+        </div>
+        ${part.description ? `<div class="sub">${esc(part.description)}</div>` : ''}
+        <div class="sub">${tail.join(' · ')}</div>
+        ${part.vendor ? `<div class="sub">${esc(part.vendor)}${part.orderNumber ? ` · order ${esc(part.orderNumber)}` : ''}${part.orderedAt ? ` · ${formatDate(part.orderedAt)}` : ''}</div>` : ''}
+      </div>
+      <div class="row tight" style="justify-content:flex-end">
+        ${options.receive ? `<button class="btn ghost sm" type="button" data-receive="${esc(part.id)}">Received</button>` : ''}
+        ${options.cancel ? `<button class="btn ghost sm" type="button" data-cancel="${esc(part.id)}">Remove</button>` : ''}
+      </div>
+    </div>
+    <div class="row tight" style="flex-wrap:nowrap;margin-top:6px">
+      <input class="txt" data-note="${esc(part.id)}" value="${esc(part.notes)}"
+        placeholder="Note — waiting on the customer, on backorder…" aria-label="Note">
+      <button class="btn ghost sm" type="button" data-savenote="${esc(part.id)}">Save</button>
+    </div>
+  </div>`;
+}
+
+async function renderParts() {
+  view.className = 'wrap';
+  view.innerHTML = `<p class="loading">Loading the parts list…</p>`;
+  const { needed, ordered, completed } = await api('listParts', []);
+
+  view.innerHTML = `
+    <h1 class="page-title">Parts</h1>
+    <p class="lead">
+      Everything the shop needs: asked for off a work order, taken from stock and needing
+      replacing, or just noticed low on the shelf. The list goes out to you at 3pm daily.
+    </p>
+    <div id="notice"></div>
+
+    <section class="card" style="margin-top:16px">
+      <h2>To order (${needed.length})</h2>
+      ${needed.length ? `
+        <div class="partlist">${needed.map((p) => partLine(p, { select: true, cancel: true })).join('')}</div>
+        <div class="card flat" style="margin-top:14px;background:#f4f9fc">
+          <div class="grid2">
+            <div>
+              <label class="fld" for="vendor">Ordered from</label>
+              <input class="txt" id="vendor" placeholder="Vendor">
+            </div>
+            <div>
+              <label class="fld" for="ordernumber">Their order number</label>
+              <input class="txt mono" id="ordernumber" placeholder="Optional">
+            </div>
+          </div>
+          <button class="btn navy" type="button" id="markordered" style="margin-top:12px">
+            Mark the ticked parts ordered
+          </button>
+        </div>`
+        : `<div class="empty">Nothing waiting to be ordered.</div>`}
+    </section>
+
+    <section class="card" style="margin-top:16px">
+      <h2>On order (${ordered.length})</h2>
+      ${ordered.length
+        ? `<div class="partlist">${ordered.map((p) => partLine(p, { receive: true })).join('')}</div>`
+        : `<div class="empty">Nothing outstanding with a vendor.</div>`}
+    </section>
+
+    <section class="card" style="margin-top:16px">
+      <h2>Completed orders (${completed.length})</h2>
+      ${completed.length ? completed.map((group) => `
+        <details style="border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:8px">
+          <summary style="cursor:pointer;color:var(--navy);font-weight:600">
+            ${esc(group.vendor || 'Received')}${group.orderNumber ? ` · order ${esc(group.orderNumber)}` : ''}
+            <span class="sub" style="font-weight:400"> — ${group.parts.length} part${group.parts.length === 1 ? '' : 's'}, ${formatDate(group.receivedAt)}</span>
+          </summary>
+          <div style="margin-top:8px">${group.parts.map((p) => `
+            <div class="kv"><span class="k">${p.quantity ? `${p.quantity}× ` : ''}${esc(p.partIdentifier || p.description || 'part')}</span>
+              <b>${esc(p.description || '')}</b></div>`).join('')}</div>
+        </details>`).join('')
+        : `<div class="empty">No completed orders yet.</div>`}
+    </section>`;
+
+  const fail = (error) => {
+    $('notice').innerHTML = `<div class="banner warn">${esc(error.message)}</div>`;
+  };
+
+  const markordered = $('markordered');
+  if (markordered) markordered.onclick = async () => {
+    const ids = Array.from(view.querySelectorAll('.partpick:checked')).map((box) => box.value);
+    if (!ids.length) return fail(new Error('Tick the parts that went on the order.'));
+    try {
+      await api('partsOrdered', [ids, $('vendor').value, $('ordernumber').value]);
+      renderParts();
+      toast('Moved to on order.');
+    } catch (error) { fail(error); }
+  };
+
+  view.querySelectorAll('[data-receive]').forEach((button) => {
+    button.onclick = () => api('partReceived', [button.dataset.receive, true])
+      .then(() => { renderParts(); toast('Received.'); }).catch(fail);
+  });
+  view.querySelectorAll('[data-cancel]').forEach((button) => {
+    button.onclick = () => api('cancelPart', [button.dataset.cancel])
+      .then(renderParts).catch(fail);
+  });
+  view.querySelectorAll('[data-savenote]').forEach((button) => {
+    button.onclick = () => {
+      const field = view.querySelector(`[data-note="${button.dataset.savenote}"]`);
+      api('partNote', [button.dataset.savenote, field.value])
+        .then(() => toast('Note saved.')).catch(fail);
+    };
+  });
+}
+
 /* -------------------------------------------------------------- setup --- */
 
-function renderSetup() {
+async function renderSetup() {
   view.className = 'wrap narrow';
   const appUrl = `${SITE_URL}/m/`;
+  const settings = await api('config', []);
+  showTestBanner(settings.testMode);
   view.innerHTML = `
     <h1 class="page-title">Put the app on a phone</h1>
     <p class="lead">
@@ -736,6 +965,30 @@ function renderSetup() {
       </div>
     </section>
 
+    <section class="card ${settings.testMode ? 'gold' : ''}" style="margin-top:16px">
+      <h2 ${settings.testMode ? 'style="color:#8a6516"' : ''}>Test mode</h2>
+      ${settings.testMode ? `
+        <p style="font-size:15px;line-height:1.55;margin-bottom:12px">
+          <b>On.</b> Run as many real work orders through as you like. Scanning, logging, hours,
+          photos and the invoice all behave exactly as they will in production — the only
+          differences are that the customer's finished-job email goes to
+          <b>${esc(settings.testEmail)}</b> instead of the customer, and their tracking page shows a
+          holding message to anyone who is not signed in here.
+        </p>
+        <p class="hint" style="margin-bottom:14px">
+          Turn this off when you are happy. From that moment, marking a job done emails the
+          customer for real — so do it when there is nothing half-finished in the list.
+        </p>
+        <button class="btn gold block" type="button" id="golive">Go live — start emailing customers</button>
+      ` : `
+        <p style="font-size:15px;line-height:1.55;margin-bottom:12px">
+          <b>Off — this deployment is live.</b> Marking a job done emails the customer their
+          tracking link, invoice and payment link.
+        </p>
+        <button class="btn ghost block" type="button" id="gotest">Go back to test mode</button>
+      `}
+    </section>
+
     <section class="card" style="margin-top:16px">
       <h2>Step 3 — check the camera works</h2>
       <p style="font-size:15px;line-height:1.55">
@@ -748,6 +1001,20 @@ function renderSetup() {
   $('copyurl').onclick = async () => {
     try { await navigator.clipboard.writeText(appUrl); toast('Address copied.'); }
     catch { $('appurl').select(); }
+  };
+
+  const golive = $('golive');
+  if (golive) golive.onclick = async () => {
+    if (!confirm('Go live? From now on, marking a job done emails the customer for real.')) return;
+    await api('setTestMode', [false]);
+    renderSetup();
+    toast('Live. Customers will now be emailed when a job is marked done.');
+  };
+  const gotest = $('gotest');
+  if (gotest) gotest.onclick = async () => {
+    await api('setTestMode', [true]);
+    renderSetup();
+    toast('Back in test mode. Nothing reaches customers.');
   };
 }
 
@@ -767,9 +1034,10 @@ async function route() {
   try {
     if (job) return await renderJob(job);
     if (which === 'intake') return renderIntake();
+    if (which === 'parts') return await renderParts();
     if (which === 'mechanics') return await renderMechanics();
-    if (which === 'setup') return renderSetup();
-    if (params.get('setup')) return renderSetup();
+    if (which === 'setup') return await renderSetup();
+    if (params.get('setup')) return await renderSetup();
     return await renderJobs();
   } catch (error) {
     if (/Sign in/.test(error.message)) return renderSignIn();

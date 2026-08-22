@@ -125,6 +125,22 @@ invoice with a deposit against it (`01-7153`) — and encoded in
 - **Drive files are link-shared**, matching how the shop already handles unit
   photos. See the comment on `saveFile_` for what actually protects them.
 
+## Parts, and the writer's checklist
+
+- A **part entry** can carry two extra asks: order one for this job, and put one
+  back on the shelf. Both are separate `PartsOrders` rows against the same
+  entry, because they are two different things to buy.
+- A **stock request** has no job behind it. The part number is asked for but
+  not enforced — somebody at an empty hook with only a description still gets
+  it onto the list. Do not add `required` to that field.
+- Order lines go `needed` → `ordered` (with a vendor and that vendor's order
+  number) → `received`. An order is finished, and moves to completed, only when
+  every line sharing its order number is in.
+- **"Parts and labor logged" is not a job flag.** It stamps `logged_at` on each
+  entry, so anything a mechanic adds afterwards shows up below the line as
+  still needing writing up. Parts-ordered and paid/closed are job flags.
+- None of it reaches `/t/` — it is all shop bookkeeping.
+
 ## Quotas to respect
 
 Consumer Gmail, not Workspace, and the account is shared with the winter app:
@@ -133,7 +149,17 @@ Consumer Gmail, not Workspace, and the account is shared with the winter app:
   rather than one per entry. Do not turn that back into per-entry sending.
 - **15 GB of Drive**, shared. Photos are shrunk to ~200 KB before upload.
 - **90 minutes of trigger runtime a day.** One hourly trigger does both the
-  transcript sweep and the digest, for that reason.
+  transcript sweep and the digest, for that reason. The parts list at 3pm is
+  the only other one.
+
+## Test mode
+
+`TEST_MODE` is a script property and defaults to **on**, so a fresh deployment
+cannot email a customer by accident. It changes exactly two things: the
+customer's Done email goes to `TEST_EMAIL` marked as what would have been sent,
+and `/t/` shows a holding notice to anyone not signed in on the shop side.
+Everything else behaves as it will in production — it is a rehearsal, not a
+mock. Going live is one button on the App setup page.
 
 ## Before you push
 

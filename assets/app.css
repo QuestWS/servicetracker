@@ -657,3 +657,15 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
 }
 .dropzone.hot { background: #e2ecf4; border-color: var(--navy); }
 .dropzone b { color: var(--navy); display: block; margin-bottom: 4px; }
+
+/* ------------------------------------------------------------- parts --- */
+.partlist { display: flex; flex-direction: column; gap: 10px; }
+.partrow {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 11px 13px;
+  background: #fff;
+}
+.partrow .sub { font-size: 13px; color: var(--muted); }
+.partrow input[type='checkbox'] { width: 18px; height: 18px; accent-color: var(--navy); vertical-align: -3px; margin-right: 6px; }
+.partrow .txt { font-size: 14px; padding: 8px 10px; }

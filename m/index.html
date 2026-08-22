@@ -193,6 +193,7 @@ function renderHome(message) {
     <div class="stack">
       <button class="btn gold big block" type="button" id="scan">Scan work order</button>
       <button class="btn ghost big block" type="button" id="manual">Type invoice number instead</button>
+      <button class="btn ghost block" type="button" id="reqpart">Request a part for stock</button>
       <p style="color:#9fc3dc;font-size:14px;line-height:1.5">
         Scan the QR code printed on the paper work order. Scanning starts the job — you will be
         asked who you are next.
@@ -212,6 +213,84 @@ function renderHome(message) {
   if (signout) signout.onclick = () => { clearSession(); state.who = null; renderHome(); };
   $('scan').onclick = renderScanning;
   $('manual').onclick = renderManual;
+  $('reqpart').onclick = renderPartRequest;
+}
+
+/**
+ * A part for the shelf, with no job behind it — somebody noticing stock is
+ * low. The part number is asked for plainly; the form goes through without
+ * one, because a description and an empty hook is still worth putting on the
+ * list.
+ */
+function renderPartRequest() {
+  stopScanning();
+  view.innerHTML = `<form class="card" id="form">
+    <h2>Request a part for stock</h2>
+    <div id="notice"></div>
+    <label class="fld" for="pnum">Part number</label>
+    <input class="txt mono" id="pnum" autofocus placeholder="Scan or type">
+    <button class="btn ghost sm block" type="button" id="scanreq" style="margin-top:8px">Scan the barcode</button>
+    <div id="reqscanner"></div>
+    <label class="fld" for="pdesc">What is it</label>
+    <input class="txt" id="pdesc" placeholder="Impeller kit, 3.0L">
+    <label class="fld" for="pqty">How many</label>
+    <input class="txt mono" id="pqty" inputmode="decimal" placeholder="1">
+    <label class="fld" for="pnote">Note (optional)</label>
+    <input class="txt" id="pnote" placeholder="Down to the last one">
+    <div class="row" style="margin-top:14px">
+      <button class="btn navy" type="submit">Add to the parts list</button>
+      <button class="btn ghost" type="button" id="back">Back</button>
+    </div>
+  </form>`;
+
+  $('back').onclick = () => renderHome();
+  $('scanreq').onclick = () => {
+    const holder = $('reqscanner');
+    if (state.scanning) { stopScanning(); holder.innerHTML = ''; return; }
+    holder.innerHTML = `<div style="margin-top:10px">${scannerHtml('Line up the barcode on the box')}</div>`;
+    startScanner(holder.querySelector('.scanner'), 'any', (value) => {
+      $('pnum').value = value;
+      holder.innerHTML = '';
+    }).then((stop) => { state.scanning = stop; });
+  };
+
+  $('form').onsubmit = async (event) => {
+    event.preventDefault();
+    const button = event.target.querySelector('button[type=submit]');
+    const draft = {
+      partIdentifier: $('pnum').value,
+      description: $('pdesc').value,
+      quantity: $('pqty').value,
+      notes: $('pnote').value,
+    };
+    button.disabled = true;
+    try {
+      // A request belongs to somebody, same as a log entry does.
+      if (!state.who || !storedToken()) return signInThen(() => sendPartRequest(draft));
+      await sendPartRequest(draft);
+    } catch (error) {
+      button.disabled = false;
+      $('notice').innerHTML = `<div class="banner warn" style="margin-bottom:12px">${esc(error.message)}</div>`;
+    }
+  };
+}
+
+async function sendPartRequest(draft) {
+  await api('requestPart', [draft]);
+  renderHome();
+  toast('On the parts list.');
+}
+
+/** Sign in, then carry on with whatever the person was doing. */
+async function signInThen(next) {
+  view.innerHTML = `<div class="card"><p class="loading">Loading the crew list…</p></div>`;
+  try {
+    state.roster = (await api('roster', [])).roster;
+  } catch {
+    state.roster = [];
+  }
+  state.afterSignIn = next;
+  drawSignIn(false, null);
 }
 
 function renderScanning() {
@@ -325,6 +404,11 @@ async function signIn(name, remember) {
     const result = await api('signIn', [name, remember]);
     storeSession(result.token, result.mechanic, remember);
     state.who = result.mechanic;
+    if (state.afterSignIn) {
+      const next = state.afterSignIn;
+      state.afterSignIn = null;
+      return next();
+    }
     loadJob();
   } catch (error) {
     drawSignIn(true, error.message);
@@ -474,8 +558,41 @@ function drawFields() {
         <button class="btn ghost sm" type="button" id="scanpart">Scan</button>
       </div>
       <div id="partscanner"></div>
-      <label class="fld" for="qty">Quantity (optional)</label>
-      <input class="txt mono" id="qty" inputmode="decimal" placeholder="1">`;
+      <label class="fld" for="qty">Quantity used (optional)</label>
+      <input class="txt mono" id="qty" inputmode="decimal" placeholder="1">
+
+      <label class="checkline">
+        <input type="checkbox" id="needorder">
+        <span>Needs ordering for this job
+          <small>Goes on the parts list for the service writer.</small></span>
+      </label>
+      <div id="orderqtybox" class="hidden">
+        <label class="fld" for="orderqty">How many to order</label>
+        <input class="txt mono" id="orderqty" inputmode="decimal" placeholder="1">
+      </div>
+
+      <label class="checkline">
+        <input type="checkbox" id="needrestock">
+        <span>Took from stock — needs restocking
+          <small>Puts a replacement on the same list.</small></span>
+      </label>
+      <div id="restockqtybox" class="hidden">
+        <label class="fld" for="restockqty">How many to restock</label>
+        <input class="txt mono" id="restockqty" inputmode="decimal" placeholder="1">
+      </div>`;
+
+    // The quantity is asked for the moment the box is ticked, because a part
+    // on the list with no number against it is a phone call later.
+    [['needorder', 'orderqtybox', 'orderqty'], ['needrestock', 'restockqtybox', 'restockqty']]
+      .forEach(([check, wrap, field]) => {
+        $(check).onchange = () => {
+          $(wrap).classList.toggle('hidden', !$(check).checked);
+          if ($(check).checked) {
+            if (!$(field).value) $(field).value = $('qty').value || '1';
+            $(field).focus();
+          }
+        };
+      });
     $('scanpart').onclick = () => {
       const holder = $('partscanner');
       if (state.scanning) { stopScanning(); holder.innerHTML = ''; return; }
@@ -591,6 +708,8 @@ async function saveEntry() {
   if (state.tab === 'part') {
     payload.partIdentifier = ($('part') || {}).value || '';
     payload.quantity = ($('qty') || {}).value || '';
+    if ($('needorder') && $('needorder').checked) payload.orderQty = $('orderqty').value || '1';
+    if ($('needrestock') && $('needrestock').checked) payload.restockQty = $('restockqty').value || '1';
   }
   if (state.audio) {
     payload.audio = await fileToBase64(state.audio);

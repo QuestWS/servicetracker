@@ -137,6 +137,17 @@ export function loadBackend(options = {}) {
       base64DecodeWebSafe: (text) => Array.from(Buffer.from(text, 'base64url')),
       computeHmacSha256Signature: (value, key) =>
         Array.from(crypto.createHmac('sha256', key).update(value).digest()),
+      /** Enough of Apps Script's formatDate for the patterns this backend uses. */
+      formatDate: (date, timeZone, pattern) => {
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone, weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
+        }).formatToParts(date).reduce((out, part) => ({ ...out, [part.type]: part.value }), {});
+        return pattern
+          .replace(/EEE/g, parts.weekday)
+          .replace(/MMM/g, parts.month)
+          .replace(/yyyy/g, parts.year)
+          .replace(/\bd\b/g, parts.day);
+      },
       newBlob: (bytes, mime, name) => ({
         getBytes: () => bytes,
         getName: () => name,

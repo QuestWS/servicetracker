@@ -63,12 +63,35 @@ function feedHtml(entries) {
     </article>`).join('')}</div>`;
 }
 
+/**
+ * Test mode, seen by somebody who is not shop staff. The job is real and the
+ * link is right — the shop simply is not showing this yet.
+ */
+function holding(shop) {
+  $('main').innerHTML = `
+    <div class="card" style="text-align:center;margin-top:24px">
+      <h1 class="page-title">Not quite ready</h1>
+      <p class="lead" style="margin:12px auto 0">
+        Your job is with us and being worked on — this page just is not switched on yet.
+        We will email you a link the moment it is.
+      </p>
+      <p class="hint" style="margin-top:16px">
+        Anything you need in the meantime, call ${esc(shop.name)}${shop.phone ? ` at ${esc(shop.phone)}` : ''}.
+      </p>
+    </div>`;
+}
+
 function render(data) {
+  if (data.notLive) return holding(data.shop);
   const { job, entries, shop } = data;
   const state = STATUS_CUSTOMER[job.status];
   const invoiceUrl = job.invoiceFile ? `https://drive.google.com/file/d/${encodeURIComponent(job.invoiceFile)}/view` : null;
 
   $('main').innerHTML = `
+    ${data.testMode ? `<div class="banner warn" style="margin-bottom:16px">
+      <b>Test mode — you are seeing this because you are signed in on the shop side.</b>
+      A customer opening this link gets a holding message instead, and no email has been sent.
+    </div>` : ''}
     <div class="card" style="margin-bottom:16px">
       <div class="kv"><span class="k">Your boat</span><b>${esc(job.boatInfo || 'Your unit')}</b></div>
       <div class="kv"><span class="k">Job number</span><b style="font-family:var(--mono)">${esc(job.id)}</b></div>
