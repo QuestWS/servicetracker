@@ -62,6 +62,18 @@ already exists. Anything added or removed after the first deploy goes in
 `migrate()` in `db.ts`, guarded by what the database actually has, and gets a
 case in `tests/migration.test.ts`.
 
+## Facts established with the shop
+
+- **BiT invoice numbers are never recycled.** That is what makes it safe to use
+  the number as a job's primary key.
+- **Hours are deliberately uncapped.** The same screen is used to work up an
+  estimate, where a figure covers a whole job rather than one stint.
+- **Customer email is copied from the winter services app**, down to the
+  wordmark over the gold rule and the navy footer: sent under the shop name
+  from the Gmail account with `Reply-To: service@questwatersports.com`. That is
+  a copied convention, not shared infrastructure — this app has its own SMTP
+  transport and sends nothing through the other project's Apps Script.
+
 ## Operational facts worth remembering
 
 - One instance only. Transcript polling and the PIN rate limiter are in-process,

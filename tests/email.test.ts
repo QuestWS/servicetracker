@@ -58,6 +58,11 @@ function smtpSink() {
   };
 }
 
+/** Undoes quoted-printable soft line breaks so assertions can match plain text. */
+function unwrap(message: string): string {
+  return message.replace(/=\r\n/g, '').replace(/=3D/g, '=');
+}
+
 const sink = smtpSink();
 let email: typeof import('@/lib/email');
 let jobs: typeof import('@/lib/jobs');
@@ -106,7 +111,7 @@ describe('the customer Done email', () => {
     const sent = await email.sendJobDoneEmail(withInvoice);
     expect(sent).toBe(true);
 
-    const message = sink.messages.at(-1)!;
+    const message = unwrap(sink.messages.at(-1)!);
     expect(message).toContain('To: jane@example.com');
     expect(message).toContain(job.tracking_token);
     expect(message).toContain('https://pos.example.com/pay/xyz');
@@ -125,6 +130,37 @@ describe('the customer Done email', () => {
   });
 });
 
+describe('the house style, copied from the winter services app', () => {
+  it('sends under the shop name with replies routed to the service desk', async () => {
+    const job = jobs.createJob({
+      id: '01-7780',
+      customerName: 'Jane Rivers',
+      customerEmail: 'jane@example.com',
+    });
+    await email.sendJobDoneEmail(job);
+
+    const message = unwrap(sink.messages.at(-1)!);
+    expect(message).toMatch(/From: .*Quest Watersports.*<shop@example\.com>/);
+    expect(message).toContain('Reply-To: service@questwatersports.com');
+  });
+
+  it('carries the wordmark inline and the shop address in the footer', async () => {
+    const job = jobs.createJob({
+      id: '01-7781',
+      customerName: 'Jane Rivers',
+      customerEmail: 'jane@example.com',
+    });
+    await email.sendJobDoneEmail(job);
+
+    const message = unwrap(sink.messages.at(-1)!);
+    // Attached rather than hot-linked, so it shows with remote images off.
+    expect(message).toContain('Content-ID: <questlogo>');
+    expect(message).toContain('cid:questlogo');
+    expect(message).toContain('1851 Old Chicago Road, Ottawa, IL');
+    expect(message).toContain('(815) 433-2200');
+  });
+});
+
 describe('the service writer notification', () => {
   it('names the job and links straight to it', async () => {
     const job = jobs.createJob({ id: '01-7779', customerName: 'Jane Rivers' });
@@ -140,7 +176,7 @@ describe('the service writer notification', () => {
       await email.sendEntryNotification({ job, entry, mechanicName: 'Dale', photoCount: 2 }),
     ).toBe(true);
 
-    const message = sink.messages.at(-1)!;
+    const message = unwrap(sink.messages.at(-1)!);
     expect(message).toContain('To: writer@example.com');
     expect(message).toContain('/admin/jobs/01-7779');
     expect(message).toContain('2 photos attached');

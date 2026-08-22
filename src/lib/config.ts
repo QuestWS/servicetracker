@@ -31,9 +31,16 @@ export const config = {
     from: env('MAIL_FROM', env('SMTP_USER')),
   },
   /** Where the per-entry "new log entry" notifications go. */
-  serviceWriterEmail: env('SERVICE_WRITER_EMAIL'),
+  serviceWriterEmail: env('SERVICE_WRITER_EMAIL', 'service@questwatersports.com'),
+  /**
+   * Where a customer's reply lands. The winter services app sends from the
+   * Gmail account with this as Reply-To, so a customer answering an email
+   * reaches the shop rather than the mailbox the robot happens to use.
+   */
+  replyTo: env('REPLY_TO_EMAIL', 'service@questwatersports.com'),
   shopName: env('SHOP_NAME', 'Quest Watersports'),
-  shopPhone: env('SHOP_PHONE', ''),
+  shopPhone: env('SHOP_PHONE', '(815) 433-2200'),
+  shopAddress: env('SHOP_ADDRESS', '1851 Old Chicago Road, Ottawa, IL'),
 };
 
 export const uploadsDir = path.join(config.dataDir, 'uploads');

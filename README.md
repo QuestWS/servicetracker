@@ -100,6 +100,10 @@ bite hardest:
   order is stamped, or the printed sheets point at the wrong host.
 - `SMTP_PASS` on a free Gmail account must be an **App Password**.
 
+Mail goes out under the shop name from the SMTP account, with replies routed
+to `service@questwatersports.com` — the same arrangement the winter services
+app uses, so both send like one shop.
+
 Missing mail or AssemblyAI credentials never break a save: the entry is stored,
 the audio is kept, and the skipped email is recorded in the job's email log
 with the reason.

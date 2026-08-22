@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import nodemailer, { type Transporter } from 'nodemailer';
 import { config } from './config';
 import { db, nowIso } from './db';
@@ -71,27 +73,75 @@ function escapeHtml(value: string): string {
     .replace(/"/g, '&quot;');
 }
 
-/** House style, matched to the Quest quote emails: navy header, gold rule. */
-function shell(title: string, body: string): string {
-  return `<!doctype html><html><body style="margin:0;padding:0;background:#EBF1F6;font-family:'Source Sans 3',Segoe UI,Helvetica,Arial,sans-serif;color:#1D2B38;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EBF1F6;padding:24px 12px;">
-    <tr><td align="center">
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid #C7D5E0;border-radius:12px;overflow:hidden;">
-        <tr><td style="background:#14293E;color:#ffffff;padding:18px 22px;border-bottom:4px solid #C08A22;">
-          <div style="font-size:19px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;">${escapeHtml(config.shopName)}</div>
-          <div style="font-size:12px;color:#B9CDDD;letter-spacing:.08em;text-transform:uppercase;">${escapeHtml(title)}</div>
-        </td></tr>
-        <tr><td style="padding:22px;">${body}</td></tr>
-        <tr><td style="padding:14px 22px;border-top:1px solid #EBF1F6;font-size:12px;color:#5C7185;">
-          ${escapeHtml(config.shopName)}${config.shopPhone ? ` · ${escapeHtml(config.shopPhone)}` : ''} · Ottawa, IL
-        </td></tr>
-      </table>
-    </td></tr>
-  </table></body></html>`;
+const LOGO_CID = 'questlogo';
+const LOGO_FILE = path.join(process.cwd(), 'public', 'quest-wordmark.png');
+
+/** The mark rides along as an inline attachment, so it shows with images off. */
+function logoAttachment(): { filename: string; path: string; cid: string } | null {
+  return fs.existsSync(LOGO_FILE)
+    ? { filename: 'quest-watersports.png', path: LOGO_FILE, cid: LOGO_CID }
+    : null;
 }
 
-function button(href: string, label: string, color = '#14293E'): string {
-  return `<a href="${escapeHtml(href)}" style="display:inline-block;background:${color};color:#ffffff;text-decoration:none;font-weight:700;letter-spacing:.04em;padding:12px 22px;border-radius:9px;">${escapeHtml(label)}</a>`;
+/**
+ * Copied from the winter services app's customer emails so both arrive
+ * looking like the same shop: the wordmark over a gold rule, one card on
+ * ice-blue, a navy footer carrying the address and phone.
+ *
+ * The width and height attributes on the logo are load-bearing — Outlook's
+ * renderer ignores the CSS and prints the full-size image without them.
+ */
+function notice(input: {
+  greeting?: string;
+  intro: string;
+  meta?: string;
+  buttons?: string;
+}): string {
+  const logo = logoAttachment()
+    ? `<img src="cid:${LOGO_CID}" alt="${escapeHtml(config.shopName)}" width="104" height="56" style="width:104px;height:56px;display:block;border:0">`
+    : `<div style="font-family:Arial Black,Arial;font-size:24px;color:#14293E;letter-spacing:1px">${escapeHtml(
+        config.shopName.toUpperCase(),
+      )}</div>`;
+
+  return (
+    '<div style="background:#EBF1F6;padding:24px 12px;font-family:Arial,Helvetica,sans-serif">' +
+    '<div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:10px;overflow:hidden;border:1px solid #C7D5E0">' +
+    `<div style="padding:22px 28px;border-bottom:4px solid #C08A22">${logo}</div>` +
+    '<div style="padding:26px 28px">' +
+    (input.greeting
+      ? `<p style="font-size:16px;color:#1D2B38;margin:0 0 6px">Hi ${escapeHtml(input.greeting)},</p>`
+      : '') +
+    `<div style="font-size:15px;color:#1D2B38;line-height:1.55;margin:0 0 14px">${input.intro}</div>` +
+    (input.meta
+      ? `<div style="font-family:Courier New,monospace;font-size:13px;color:#5C7185;margin-bottom:10px">${escapeHtml(
+          input.meta,
+        )}</div>`
+      : '') +
+    (input.buttons ?? '') +
+    (config.shopPhone
+      ? `<p style="font-size:13px;color:#5C7185;line-height:1.5;margin:12px 0 0">Questions? Call us at ${escapeHtml(
+          config.shopPhone,
+        )}.</p>`
+      : '') +
+    '</div>' +
+    `<div style="background:#14293E;color:#B9CDDD;padding:14px 28px;font-size:12px">${[
+      config.shopName,
+      config.shopAddress,
+      config.shopPhone,
+    ]
+      .filter(Boolean)
+      .map(escapeHtml)
+      .join(' · ')}</div>` +
+    '</div></div>'
+  );
+}
+
+function button(href: string, label: string, bg = '#14293E'): string {
+  return (
+    `<a href="${escapeHtml(href)}" style="display:inline-block;background:${bg};` +
+    'color:#ffffff;text-decoration:none;font-weight:bold;font-size:15px;' +
+    `padding:12px 22px;border-radius:8px;margin:4px 6px 4px 0">${escapeHtml(label)}</a>`
+  );
 }
 
 async function send(input: {
@@ -108,14 +158,19 @@ async function send(input: {
     logEmail({ ...input, recipient: input.to, status: 'skipped', error: 'SMTP not configured' });
     return false;
   }
+  const logo = logoAttachment();
   try {
     await transport.sendMail({
-      from: config.smtp.from || config.smtp.user,
+      // Same shape as the winter services app: a display name the customer
+      // recognises, and replies routed to the shop rather than to whichever
+      // mailbox the app authenticates with.
+      from: { name: config.shopName, address: config.smtp.from || config.smtp.user },
+      replyTo: config.replyTo || undefined,
       to: input.to,
       subject: input.subject,
       text: input.text,
       html: input.html,
-      attachments: input.attachments,
+      attachments: [...(input.attachments ?? []), ...(logo ? [logo] : [])],
     });
     logEmail({ ...input, recipient: input.to, status: 'sent' });
     return true;
@@ -144,7 +199,7 @@ export async function sendJobDoneEmail(job: Job): Promise<boolean> {
   }
 
   const link = trackingUrl(job);
-  const subject = `${config.shopName}: service complete — invoice ${job.id}`;
+  const subject = `Your ${config.shopName} service is complete — ${job.id}`;
   const attachments: { filename: string; content: Buffer; contentType: string }[] = [];
   if (job.invoice_file_id) {
     const file = getFile(job.invoice_file_id);
@@ -157,20 +212,17 @@ export async function sendJobDoneEmail(job: Job): Promise<boolean> {
     }
   }
 
-  const body = `
-    <p style="margin:0 0 14px;font-size:16px;">Hi${job.customer_name ? ` ${escapeHtml(job.customer_name.split(' ')[0])}` : ''},</p>
-    <p style="margin:0 0 16px;font-size:15px;line-height:1.5;">The work on ${
-      job.boat_info ? `your ${escapeHtml(job.boat_info)}` : 'your boat'
-    } is complete. Your final invoice is attached${
-      job.payment_link ? ', and you can pay online with the button below' : ''
-    }.</p>
-    <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 18px;">
-      <tr><td style="padding:0 10px 10px 0;">${button(link, 'View your job')}</td>
-      ${job.payment_link ? `<td style="padding:0 0 10px 0;">${button(job.payment_link, 'Pay invoice', '#C08A22')}</td>` : ''}</tr>
-    </table>
-    <p style="margin:0;font-size:13px;color:#5C7185;">Invoice ${escapeHtml(job.id)}${
-      job.boat_info ? ` · ${escapeHtml(job.boat_info)}` : ''
-    }</p>`;
+  const html = notice({
+    greeting: job.customer_name?.split(' ')[0],
+    intro:
+      `The work on ${job.boat_info ? escapeHtml(`your ${job.boat_info}`) : 'your boat'} is complete. ` +
+      (attachments.length ? 'Your final invoice is attached' : 'Everything is wrapped up') +
+      (job.payment_link ? ', and you can pay online with the button below.' : '.'),
+    meta: `INVOICE# ${job.id}${job.boat_info ? ` · ${job.boat_info}` : ''}`,
+    buttons:
+      button(link, 'View your job') +
+      (job.payment_link ? button(job.payment_link, 'Pay online', '#C08A22') : ''),
+  });
 
   const text = [
     `The work on your boat is complete.`,
@@ -187,7 +239,7 @@ export async function sendJobDoneEmail(job: Job): Promise<boolean> {
   return send({
     to: job.customer_email,
     subject,
-    html: shell('Service complete', body),
+    html,
     text,
     kind: 'customer_done',
     jobId: job.id,
@@ -234,25 +286,27 @@ export async function sendEntryNotification(input: {
     .filter(Boolean)
     .join('\n');
 
-  const body = `
-    <p style="margin:0 0 6px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#4A81A6;">${escapeHtml(kind)}</p>
-    <p style="margin:0 0 12px;font-size:16px;font-weight:700;color:#14293E;">${escapeHtml(job.id)}${
-      job.customer_name ? ` · ${escapeHtml(job.customer_name)}` : ''
-    }</p>
-    <div style="background:#F4F9FC;border:1px solid #C7D5E0;border-radius:10px;padding:12px 14px;font-size:15px;line-height:1.5;white-space:pre-wrap;">${escapeHtml(
-      detail || '(no text)',
-    )}</div>
-    <p style="margin:14px 0 18px;font-size:13px;color:#5C7185;">Logged by ${escapeHtml(
-      input.mechanicName ?? 'unknown',
-    )} · ${escapeHtml(new Date(entry.created_at).toLocaleString('en-US'))}</p>
-    ${button(adminLink, 'Open the job')}`;
+  const html = notice({
+    intro:
+      `<div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#4A81A6;margin-bottom:4px">${escapeHtml(
+        kind,
+      )}</div>` +
+      `<div style="font-size:16px;font-weight:bold;color:#14293E;margin-bottom:10px">${escapeHtml(job.id)}${
+        job.customer_name ? ` · ${escapeHtml(job.customer_name)}` : ''
+      }</div>` +
+      `<div style="background:#F4F9FC;border:1px solid #C7D5E0;border-radius:10px;padding:12px 14px;white-space:pre-wrap">${escapeHtml(
+        detail || '(no text)',
+      )}</div>`,
+    meta: `${input.mechanicName ?? 'unknown'} · ${new Date(entry.created_at).toLocaleString('en-US')}`,
+    buttons: button(adminLink, 'Open the job'),
+  });
 
   const text = `${kind} on ${job.id}\n\n${detail}\n\nOpen the job: ${adminLink}`;
 
   return send({
     to,
     subject,
-    html: shell('New log entry', body),
+    html,
     text,
     kind: 'entry_notification',
     jobId: job.id,

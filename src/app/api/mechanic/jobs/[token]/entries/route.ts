@@ -50,8 +50,10 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ token:
 
   const hoursRaw = str(form.get('hours'));
   const hours = hoursRaw ? Number(hoursRaw) : null;
-  if (hours !== null && (!Number.isFinite(hours) || hours <= 0 || hours > 24)) {
-    return jsonError('Hours must be a number between 0 and 24.', 400);
+  // No ceiling: the same screen is used to work up an estimate, where the
+  // figure is a whole job rather than one stint at the bench.
+  if (hours !== null && (!Number.isFinite(hours) || hours <= 0)) {
+    return jsonError('Hours must be a number greater than zero.', 400);
   }
 
   const audio = form.get('audio');
