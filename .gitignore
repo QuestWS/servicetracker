@@ -1,10 +1,7 @@
 node_modules/
-.next/
-out/
-data/
 scratch/
-.env
-.env.local
-*.tsbuildinfo
-next-env.d.ts
+build/
+.clasp.json
+.clasprc.json
+*.local.js
 .DS_Store

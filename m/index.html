@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Quest Shop</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#14293E">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Quest Shop">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="../manifest.webmanifest">
+<link rel="icon" type="image/png" href="../assets/quest-mark.png">
+<link rel="apple-touch-icon" href="../assets/icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;600&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/app.css">
+</head>
+<body class="mech-body">
+<div class="mech">
+  <div class="mech-top">
+    <img src="../assets/quest-mark.png" alt="" style="height:30px;border-radius:6px">
+    <a href="./" style="text-decoration:none;color:#fff"><div class="t">Quest Shop</div></a>
+  </div>
+  <main id="view"><p class="loading" style="color:#9fc3dc">Starting up…</p></main>
+</div>
+
+<script type="module">
+import { api, ApiError, storeSession, storedWho, clearSession, storedToken } from '../assets/lib/api.js';
+import { ENTRY_LABEL, formatHours } from '../assets/lib/entry-types.js';
+import { tokenFromScan } from '../assets/lib/tracking.js';
+import { $, esc, toast, formatDateTime, fileToBase64, preparePhoto, driveImageUrl } from '../assets/lib/ui.js';
+
+if ('serviceWorker' in navigator) {
+  addEventListener('load', () => navigator.serviceWorker.register('../sw.js').catch(() => {}));
+}
+
+const view = $('view');
+const state = {
+  who: storedWho(),
+  roster: [],
+  job: null,
+  entries: [],
+  tab: 'customer_note',
+  audio: null,
+  photos: [],
+  scanning: null,
+};
+
+/* ------------------------------------------------------------ scanner --- */
+
+const NATIVE_FORMATS = {
+  qr: ['qr_code'],
+  any: ['qr_code', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf', 'codabar'],
+};
+
+/**
+ * Chrome on Android has a barcode detector built into the browser and it is
+ * far faster than anything shipped in JavaScript. Safari — which is what the
+ * shop iPad and half the phones run — has no such thing, so ZXing is loaded
+ * on demand as the fallback. It is a big download, which is exactly why it is
+ * not loaded until someone actually opens the camera.
+ */
+async function startScanner(element, mode, onResult) {
+  let stream = null;
+  let raf = 0;
+  let reader = null;
+  let stopped = false;
+  const video = element.querySelector('video');
+
+  const stop = () => {
+    stopped = true;
+    if (raf) cancelAnimationFrame(raf);
+    if (reader) try { reader.reset(); } catch { /* already torn down */ }
+    if (stream) stream.getTracks().forEach((track) => track.stop());
+  };
+  const finish = (value) => {
+    if (stopped) return;
+    stop();
+    if (navigator.vibrate) navigator.vibrate(40);
+    onResult(value);
+  };
+  const fail = (message) => {
+    if (stopped) return;
+    element.querySelector('.hintline').textContent = message;
+  };
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    fail('This browser cannot open the camera. Type the number instead.');
+    return stop;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } },
+      audio: false,
+    });
+  } catch (error) {
+    fail(error && error.name === 'NotAllowedError'
+      ? 'Camera access was blocked. Allow it for this site, or type the number instead.'
+      : 'Could not start the camera. Type the number instead.');
+    return stop;
+  }
+  if (stopped) { stream.getTracks().forEach((t) => t.stop()); return stop; }
+
+  video.srcObject = stream;
+  video.setAttribute('playsinline', 'true');
+  video.muted = true;
+  try { await video.play(); } catch { /* Safari resolves late; the loop copes */ }
+
+  if (window.BarcodeDetector) {
+    const detector = new window.BarcodeDetector({ formats: NATIVE_FORMATS[mode] });
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        const hits = await detector.detect(video);
+        if (hits.length && hits[0].rawValue) return finish(hits[0].rawValue);
+      } catch { /* a dropped frame is not worth showing anyone */ }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return stop;
+  }
+
+  try {
+    const zxing = await import('../assets/vendor/zxing.min.js');
+    const lib = zxing.default || zxing;
+    if (stopped) return stop;
+    const hints = new Map();
+    hints.set(lib.DecodeHintType.POSSIBLE_FORMATS, mode === 'any'
+      ? [lib.BarcodeFormat.QR_CODE, lib.BarcodeFormat.EAN_13, lib.BarcodeFormat.EAN_8,
+         lib.BarcodeFormat.UPC_A, lib.BarcodeFormat.UPC_E, lib.BarcodeFormat.CODE_128,
+         lib.BarcodeFormat.CODE_39, lib.BarcodeFormat.ITF, lib.BarcodeFormat.CODABAR]
+      : [lib.BarcodeFormat.QR_CODE]);
+    reader = new lib.BrowserMultiFormatReader(hints, 250);
+    await reader.decodeFromStream(stream, video, (result) => {
+      const text = result && result.getText();
+      if (text) finish(text);
+    });
+  } catch {
+    fail('The scanner could not start. Type the number instead.');
+  }
+  return stop;
+}
+
+function scannerHtml(hint) {
+  return `<div class="scanner">
+    <video playsinline muted></video>
+    <div class="reticle"></div>
+    <div class="hintline">${esc(hint)}</div>
+  </div>`;
+}
+
+/* -------------------------------------------------------------- views --- */
+
+function stopScanning() {
+  if (state.scanning) { state.scanning(); state.scanning = null; }
+}
+
+function installBanner() {
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  if (standalone) return '';
+  if (/iphone|ipad|ipod/i.test(navigator.userAgent)) {
+    return `<div class="banner info" style="margin-bottom:14px">
+      <b>Add this to your home screen:</b> tap the Share button below, then <b>Add to Home Screen</b>.
+      You only have to do this once.</div>`;
+  }
+  return window.__installPrompt
+    ? `<div class="banner info" style="margin-bottom:14px">
+        <b>Add this to your home screen</b> so it opens like any other app.
+        <button class="btn navy sm block" id="install" type="button" style="margin-top:10px">Install</button>
+      </div>`
+    : '';
+}
+
+let deferredInstall = null;
+addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  deferredInstall = event;
+  window.__installPrompt = true;
+  if (!state.job) renderHome();
+});
+
+function renderHome(message) {
+  stopScanning();
+  view.innerHTML = `
+    ${installBanner()}
+    ${state.who ? `<p style="color:#9fc3dc;font-size:14px;margin-top:0">
+      Signed in as <b style="color:#fff">${esc(state.who.name)}</b> ·
+      <button type="button" class="linkbtn" style="padding:2px 8px;font-size:12px" id="signout">Not you?</button>
+    </p>` : ''}
+    ${message ? `<div class="banner warn" style="margin-bottom:14px">${esc(message)}</div>` : ''}
+    <div class="stack">
+      <button class="btn gold big block" type="button" id="scan">Scan work order</button>
+      <button class="btn ghost big block" type="button" id="manual">Type invoice number instead</button>
+      <p style="color:#9fc3dc;font-size:14px;line-height:1.5">
+        Scan the QR code printed on the paper work order. Scanning starts the job — you will be
+        asked who you are next.
+      </p>
+    </div>`;
+
+  const install = $('install');
+  if (install) install.onclick = async () => {
+    if (!deferredInstall) return;
+    await deferredInstall.prompt();
+    await deferredInstall.userChoice;
+    deferredInstall = null;
+    window.__installPrompt = false;
+    renderHome();
+  };
+  const signout = $('signout');
+  if (signout) signout.onclick = () => { clearSession(); state.who = null; renderHome(); };
+  $('scan').onclick = renderScanning;
+  $('manual').onclick = renderManual;
+}
+
+function renderScanning() {
+  stopScanning();
+  view.innerHTML = `<div class="stack">
+    ${scannerHtml('Line up the QR code on the work order')}
+    <button class="btn ghost block" type="button" id="cancel">Cancel</button>
+    <button class="btn ghost block" type="button" id="manual">Type invoice number instead</button>
+  </div>`;
+  $('cancel').onclick = () => renderHome();
+  $('manual').onclick = renderManual;
+
+  startScanner(view.querySelector('.scanner'), 'qr', (value) => {
+    const token = tokenFromScan(value);
+    if (!token) return renderHome('That code is not a Quest work order. Try again, or type the invoice number.');
+    openJob(token, 'scan');
+  }).then((stop) => { state.scanning = stop; });
+}
+
+function renderManual() {
+  stopScanning();
+  view.innerHTML = `<form class="card" id="form">
+    <h2>Invoice number</h2>
+    <input class="txt mono" id="code" inputmode="text" autofocus placeholder="01-8886">
+    <p class="hint">It is printed at the top of the work order, next to the QR code.</p>
+    <div class="row" style="margin-top:12px">
+      <button class="btn navy" type="submit">Open job</button>
+      <button class="btn ghost" type="button" id="back">Back</button>
+    </div>
+  </form>`;
+  $('back').onclick = () => renderHome();
+  $('form').onsubmit = (event) => {
+    event.preventDefault();
+    const code = $('code').value.trim();
+    if (code) openJob(code, 'manual');
+  };
+}
+
+async function openJob(code, source) {
+  view.innerHTML = `<p class="loading" style="color:#9fc3dc">Looking that job up…</p>`;
+  try {
+    const { job } = await api('lookupJob', [code, source]);
+    state.job = job;
+    if (state.who && storedToken()) return loadJob();
+    renderSignIn();
+  } catch (error) {
+    renderHome(error.message);
+  }
+}
+
+/* ------------------------------------------------------------ sign in --- */
+
+async function renderSignIn() {
+  view.innerHTML = `
+    <div class="card" style="margin-bottom:14px">
+      <div class="kv"><span class="k">Job</span><b style="font-family:var(--mono)">${esc(state.job.id)}</b></div>
+      <div class="kv"><span class="k">Boat</span><b>${esc(state.job.boatInfo || '—')}</b></div>
+    </div>
+    <div class="card"><p class="loading">Loading the crew list…</p></div>`;
+
+  try {
+    state.roster = (await api('roster', [])).roster;
+  } catch {
+    state.roster = [];
+  }
+  drawSignIn(false, null);
+}
+
+function drawSignIn(typing, error) {
+  const card = view.querySelector('.card:last-child');
+  card.innerHTML = `
+    <h2>Who is working this job?</h2>
+    ${error ? `<div class="banner warn" style="margin-bottom:12px">${esc(error)}</div>` : ''}
+    ${!typing && state.roster.length ? `
+      <div class="namegrid">
+        ${state.roster.map((m) => `<button type="button" data-name="${esc(m.name)}">${esc(m.name)}</button>`).join('')}
+      </div>
+      <button class="btn ghost block" type="button" id="other" style="margin-top:10px">My name is not here</button>
+    ` : `
+      <form id="nameform">
+        <label class="fld" for="name">Your name</label>
+        <input class="txt" id="name" autocomplete="name" autocapitalize="words" placeholder="Dale Hopkins" autofocus>
+        <button class="btn navy big block" type="submit" style="margin-top:12px">Start logging</button>
+        ${state.roster.length ? `<button class="btn ghost block" type="button" id="backlist" style="margin-top:10px">Back to the list</button>` : ''}
+      </form>
+    `}
+    <label class="checkline">
+      <input type="checkbox" id="remember" checked>
+      <span>Remember me on this device
+        <small>Leave this off on the shop iPad — it forgets you at the end of the shift.</small></span>
+    </label>`;
+
+  const remember = () => $('remember').checked;
+  card.querySelectorAll('.namegrid button').forEach((button) => {
+    button.onclick = () => signIn(button.dataset.name, remember());
+  });
+  const other = $('other');
+  if (other) other.onclick = () => drawSignIn(true, null);
+  const backlist = $('backlist');
+  if (backlist) backlist.onclick = () => drawSignIn(false, null);
+  const form = $('nameform');
+  if (form) form.onsubmit = (event) => {
+    event.preventDefault();
+    const name = $('name').value.trim();
+    if (name) signIn(name, remember());
+  };
+}
+
+async function signIn(name, remember) {
+  try {
+    const result = await api('signIn', [name, remember]);
+    storeSession(result.token, result.mechanic, remember);
+    state.who = result.mechanic;
+    loadJob();
+  } catch (error) {
+    drawSignIn(true, error.message);
+  }
+}
+
+/* --------------------------------------------------------- job screen --- */
+
+async function loadJob() {
+  view.innerHTML = `<p class="loading" style="color:#9fc3dc">Opening job ${esc(state.job.id)}…</p>`;
+  try {
+    const data = await api('jobForMechanic', [state.job.token]);
+    state.who = data.mechanic;
+    state.job = data.job;
+    state.entries = data.entries;
+    state.hours = data.hours;
+    renderJob();
+  } catch (error) {
+    if (error instanceof ApiError && /Sign in/.test(error.message)) {
+      state.who = null;
+      return renderSignIn();
+    }
+    renderHome(error.message);
+  }
+}
+
+const TAB_HELP = {
+  customer_note: 'The customer sees this, word for word, on their tracking page.',
+  internal_note: 'Shop only. The customer never sees internal notes.',
+  labor: 'Your time and what you did with it. Shop only — this is what gets billed.',
+  part: 'Shop only. Parts never appear on the customer page.',
+};
+const TABS = [
+  ['customer_note', 'Customer'],
+  ['internal_note', 'Internal'],
+  ['labor', 'Hours'],
+  ['part', 'Part'],
+];
+const HOUR_STEPS = ['0.25', '0.5', '1', '1.5', '2', '4'];
+
+function entryHtml(entry) {
+  const pill = { customer_note: 'green', internal_note: 'blue', labor: 'frost', part: 'gold' }[entry.entryType];
+  let body = '';
+  if (entry.text) body = `<div class="body">${esc(entry.text)}</div>`;
+  else if (entry.transcriptStatus === 'pending') body = `<div class="body pending">Voice note — transcribing…</div>`;
+  else if (entry.transcriptStatus === 'failed') {
+    body = `<div class="body pending">Voice note — transcription failed${entry.transcriptError ? ` (${esc(entry.transcriptError)})` : ''}. The recording is below.</div>`;
+  }
+  return `<article class="entry ${entry.entryType}">
+    <div class="meta">
+      <span class="pill ${pill}">${esc(ENTRY_LABEL[entry.entryType])}</span>
+      <span>${esc(entry.mechanicName || 'Unknown')}</span><span>·</span>
+      <time datetime="${esc(entry.createdAt)}">${formatDateTime(entry.createdAt)}</time>
+    </div>
+    ${entry.entryType === 'part' ? `<div class="partline">${esc(entry.partIdentifier || '(no identifier)')}${entry.quantity ? ` × ${entry.quantity}` : ''}</div>` : ''}
+    ${entry.entryType === 'labor' && entry.hours !== null ? `<div class="hoursline">${formatHours(entry.hours)}</div>` : ''}
+    ${body}
+    ${entry.audioFile ? `<audio controls preload="none" src="https://drive.google.com/uc?export=download&id=${encodeURIComponent(entry.audioFile)}"></audio>` : ''}
+    ${entry.photos.length ? `<div class="photos">${entry.photos.map((p) => `
+      <a href="${driveImageUrl(p.full, 1600)}" target="_blank" rel="noreferrer">
+        <img src="${driveImageUrl(p.thumb, 400)}" alt="Job photo" loading="lazy"></a>`).join('')}</div>` : ''}
+  </article>`;
+}
+
+function renderJob() {
+  stopScanning();
+  const job = state.job;
+  const finished = job.status === 'work_finished' || job.status === 'done';
+  view.innerHTML = `
+    <div class="card" style="margin-bottom:14px">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <div style="font-family:var(--mono);font-size:18px;font-weight:600;color:var(--navy)">${esc(job.id)}</div>
+          <div style="font-size:14px;color:var(--muted)">${esc(job.boatInfo || 'No boat details')}${job.customerName ? ` · ${esc(job.customerName)}` : ''}</div>
+        </div>
+        <span class="pill frost">${esc(job.statusLabel)}</span>
+      </div>
+      <p class="hint" style="margin-top:8px">Logging as <b>${esc(state.who.name)}</b>${state.hours && state.hours.total ? ` · ${formatHours(state.hours.total)} on this job so far` : ''}</p>
+    </div>
+
+    <div id="notice"></div>
+
+    <section class="card" style="margin-bottom:14px">
+      <h2>Add to the log</h2>
+      <div class="segmented" style="margin-bottom:12px">
+        ${TABS.map(([value, label]) => `<button type="button" data-tab="${value}"${state.tab === value ? ' class="on"' : ''}>${label}</button>`).join('')}
+      </div>
+      <p class="hint" style="margin-top:0">${esc(TAB_HELP[state.tab])}</p>
+      <div id="fields"></div>
+
+      <label class="fld" for="text">${state.tab === 'part' ? 'Note about this part (optional)' : state.tab === 'labor' ? 'What you did with that time — type it or say it' : 'Note'}</label>
+      <textarea class="txt" id="text" placeholder="${state.tab === 'customer_note' ? 'What should the customer know?' : state.tab === 'labor' ? 'Pulled and reset the impeller housing, re-torqued the mounts…' : 'What did you find or do?'}"></textarea>
+
+      <div style="margin-top:12px" id="recorder"></div>
+
+      <label class="fld" for="photos">Photos</label>
+      <input class="txt" id="photos" type="file" accept="image/*" capture="environment" multiple>
+      <div class="thumbrow" id="thumbs"></div>
+
+      <button class="btn navy big block" type="button" id="save" style="margin-top:16px">Save entry</button>
+    </section>
+
+    <section class="card" style="margin-bottom:14px">
+      <h2>Job log (${state.entries.length})</h2>
+      ${state.entries.length ? `<div class="feed">${state.entries.map(entryHtml).join('')}</div>`
+        : `<div class="empty">Nothing logged yet.</div>`}
+    </section>
+
+    ${finished ? `<div class="banner ok">Marked finished. You can still add notes if something else comes up.</div>`
+      : `<section class="card">
+          <h2>When you are done</h2>
+          <button class="btn green big block" type="button" id="finish">Work finished</button>
+        </section>`}
+
+    <p style="margin-top:18px"><a href="./" id="another">Scan another work order</a></p>`;
+
+  view.querySelectorAll('.segmented button').forEach((button) => {
+    button.onclick = () => { state.tab = button.dataset.tab; renderJob(); };
+  });
+  $('another').onclick = (event) => { event.preventDefault(); state.job = null; renderHome(); };
+  const finish = $('finish');
+  if (finish) finish.onclick = confirmFinish;
+  $('save').onclick = saveEntry;
+  $('photos').onchange = onPhotos;
+  drawFields();
+  drawRecorder();
+  drawThumbs();
+}
+
+function drawFields() {
+  const box = $('fields');
+  if (state.tab === 'labor') {
+    box.innerHTML = `
+      <label class="fld" for="hours">Hours on this job</label>
+      <input class="txt mono" id="hours" inputmode="decimal" placeholder="1.5" value="${esc(state.hoursValue || '')}">
+      <div class="hourchips">${HOUR_STEPS.map((h) => `<button type="button" data-h="${h}">${h} h</button>`).join('')}</div>
+      <p class="hint">Log the time as you finish a stint. Several entries in a day is normal — they add up on the job.</p>`;
+    box.querySelectorAll('.hourchips button').forEach((button) => {
+      button.onclick = () => { $('hours').value = button.dataset.h; state.hoursValue = button.dataset.h; };
+    });
+    $('hours').oninput = (event) => { state.hoursValue = event.target.value.replace(/[^0-9.]/g, ''); event.target.value = state.hoursValue; };
+  } else if (state.tab === 'part') {
+    box.innerHTML = `
+      <label class="fld" for="part">Part number / UPC</label>
+      <div class="row tight" style="flex-wrap:nowrap">
+        <input class="txt mono" id="part" placeholder="Scan or type">
+        <button class="btn ghost sm" type="button" id="scanpart">Scan</button>
+      </div>
+      <div id="partscanner"></div>
+      <label class="fld" for="qty">Quantity (optional)</label>
+      <input class="txt mono" id="qty" inputmode="decimal" placeholder="1">`;
+    $('scanpart').onclick = () => {
+      const holder = $('partscanner');
+      if (state.scanning) { stopScanning(); holder.innerHTML = ''; return; }
+      holder.innerHTML = `<div style="margin-top:10px">${scannerHtml('Line up the barcode on the box')}</div>`;
+      startScanner(holder.querySelector('.scanner'), 'any', (value) => {
+        $('part').value = value;
+        holder.innerHTML = '';
+      }).then((stop) => { state.scanning = stop; });
+    };
+  } else {
+    box.innerHTML = '';
+  }
+}
+
+/* ----------------------------------------------------------- recorder --- */
+
+let recorder = null;
+let recTimer = null;
+
+function pickMime() {
+  if (typeof MediaRecorder === 'undefined') return undefined;
+  return ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg']
+    .find((type) => MediaRecorder.isTypeSupported(type));
+}
+
+function drawRecorder(seconds) {
+  const box = $('recorder');
+  if (!box) return;
+  const hint = state.tab === 'labor'
+    ? 'Talk instead of typing and we will type it up — the hours still go in above. The recording is kept on the job.'
+    : 'Speak it and we will type it up. The recording is kept on the job either way.';
+
+  if (state.audio) {
+    box.innerHTML = `<audio controls src="${URL.createObjectURL(state.audio)}" style="width:100%"></audio>
+      <button class="btn ghost sm" type="button" id="discard" style="margin-top:8px">Discard recording</button>
+      <p class="hint">${hint}</p>`;
+    $('discard').onclick = () => { state.audio = null; drawRecorder(); };
+    return;
+  }
+  const active = Boolean(recorder);
+  box.innerHTML = `<button class="btn ${active ? 'danger' : 'ghost'} block" type="button" id="rec">
+      ${active ? `Stop recording (${seconds || 0}s)` : (state.tab === 'labor' ? 'Say what you did' : 'Record a voice note')}
+    </button><p class="hint">${hint}</p>`;
+  $('rec').onclick = active ? stopRecording : startRecording;
+}
+
+async function startRecording() {
+  if (typeof MediaRecorder === 'undefined') return toast('This browser cannot record audio. Type the note instead.');
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    return toast('Microphone access was blocked. Allow it for this site, or type the note instead.');
+  }
+  const mime = pickMime();
+  const chunks = [];
+  recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+  recorder.onstop = () => {
+    const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+    if (blob.size) state.audio = blob;
+    stream.getTracks().forEach((track) => track.stop());
+    recorder = null;
+    clearInterval(recTimer);
+    drawRecorder();
+  };
+  recorder.start();
+  let seconds = 0;
+  drawRecorder(seconds);
+  recTimer = setInterval(() => { seconds += 1; drawRecorder(seconds); }, 1000);
+}
+
+function stopRecording() {
+  if (recorder) recorder.stop();
+}
+
+/* ------------------------------------------------------------- photos --- */
+
+async function onPhotos(event) {
+  const files = Array.from(event.target.files || []);
+  event.target.value = '';
+  for (const file of files.slice(0, 8 - state.photos.length)) {
+    try {
+      const prepared = await preparePhoto(file);
+      state.photos.push(prepared);
+    } catch {
+      toast('Could not read one of those photos.');
+    }
+  }
+  drawThumbs();
+}
+
+function drawThumbs() {
+  const box = $('thumbs');
+  if (!box) return;
+  box.innerHTML = state.photos.map((photo, index) => `<figure>
+    <img src="data:image/jpeg;base64,${photo.thumb}" alt="">
+    <button type="button" data-index="${index}" aria-label="Remove photo">✕</button>
+  </figure>`).join('');
+  box.querySelectorAll('button').forEach((button) => {
+    button.onclick = () => { state.photos.splice(Number(button.dataset.index), 1); drawThumbs(); };
+  });
+}
+
+/* -------------------------------------------------------------- save ---- */
+
+async function saveEntry() {
+  const button = $('save');
+  const text = $('text').value.trim();
+  const payload = { entryType: state.tab, text };
+
+  if (state.tab === 'labor') payload.hours = ($('hours') || {}).value || '';
+  if (state.tab === 'part') {
+    payload.partIdentifier = ($('part') || {}).value || '';
+    payload.quantity = ($('qty') || {}).value || '';
+  }
+  if (state.audio) {
+    payload.audio = await fileToBase64(state.audio);
+    payload.audioMime = state.audio.type || 'audio/webm';
+    payload.audioExt = payload.audioMime.includes('mp4') ? 'm4a' : payload.audioMime.includes('ogg') ? 'ogg' : 'webm';
+  }
+  payload.photos = state.photos;
+
+  button.disabled = true;
+  button.textContent = 'Saving…';
+  try {
+    const result = await api('addEntry', [state.job.token, payload]);
+    state.entries = result.entries;
+    if (result.job) state.job = result.job;
+    if (result.hours) state.hours = result.hours;
+    state.audio = null;
+    state.photos = [];
+    state.hoursValue = '';
+    renderJob();
+    toast('Saved.');
+    // The transcript lands a little after the entry does.
+    if (result.entry.transcriptStatus === 'pending') setTimeout(refresh, 12000);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = 'Save entry';
+    $('notice').innerHTML = `<div class="banner warn" style="margin-bottom:12px">${esc(error.message)}</div>`;
+  }
+}
+
+async function refresh() {
+  try {
+    const data = await api('jobForMechanic', [state.job.token]);
+    state.entries = data.entries;
+    state.hours = data.hours;
+    renderJob();
+  } catch { /* the page is still usable; the next save will refresh it */ }
+}
+
+function confirmFinish() {
+  $('notice').innerHTML = `<div class="banner info" style="margin-bottom:12px">
+    Mark ${esc(state.job.id)} finished? This tells the service writer the boat is physically done
+    and ready to be written up in BiT.
+    <div class="row" style="margin-top:12px">
+      <button class="btn green" type="button" id="yes">Yes, work finished</button>
+      <button class="btn ghost" type="button" id="no">Not yet</button>
+    </div></div>`;
+  $('no').onclick = () => { $('notice').innerHTML = ''; };
+  $('yes').onclick = async () => {
+    try {
+      const result = await api('finishWork', [state.job.token]);
+      state.job.status = result.status;
+      state.job.statusLabel = result.statusLabel;
+      renderJob();
+      toast('Marked finished.');
+    } catch (error) {
+      $('notice').innerHTML = `<div class="banner warn">${esc(error.message)}</div>`;
+    }
+  };
+}
+
+renderHome();
+</script>
+</body>
+</html>

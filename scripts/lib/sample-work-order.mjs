@@ -1,25 +1,34 @@
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { PDFDocument, StandardFonts } from '../../assets/vendor/pdf-lib.esm.min.js';
 
 /**
- * A stand-in for a BiT work order.
+ * A practice work order laid out the way BiT actually lays one out.
  *
- * We have no BiT installation to generate real PDFs from, so the fixture is
- * built from the layout the shop describes: labelled header block, "Sold To:"
- * customer block, unit block. It exists to prove the pipeline (text layer →
- * fields → stamped PDF) end to end and to give the shop something to practise
- * intake on before a real work order goes through.
+ * The geometry here is measured from a real BiT invoice: the shop's own
+ * details across the top, "Sold To:" and "Invoice #" side by side at y=616,
+ * the customer block down the left at x=31, the unit headings down the right
+ * at x=218, and — the part that matters — the unit fields printed as bare
+ * headings with NO colons ("Year Make Model", "Serial # Reg #").
+ *
+ * Two things follow from that and are worth not "fixing":
+ *  - The shop's own phone and email are on every form, above the customer's.
+ *    A parser that falls back to "first phone on the page" gets the shop's.
+ *  - With no unit filled in, the right answer is to report the unit missing,
+ *    not to read a heading row as a value.
+ *
+ * Pass `unit` to get a document with the unit filled in. WHERE BiT puts those
+ * values is a guess — the real sample we have was left blank — so treat that
+ * variant as provisional until a filled work order turns up.
  */
 export async function makeWorkOrderPdf(overrides = {}) {
   const data = {
     invoice: '01-8886',
     name: 'JOHN SMITH',
-    phone: '(815) 555-0142',
+    street: '742 Evergreen Terrace',
+    city: 'Ottawa IL 61350',
+    phone: '815-555-0142',
     email: 'jsmith@example.com',
-    year: '2019',
-    make: 'Yamaha',
-    model: '242X E-Series',
-    engine: 'Yamaha 1.8L HO x2',
-    hin: 'YAM12345K819',
+    description: 'Customer reports port engine stalling at idle. 100 hour service.',
+    unit: null,
     omitEmail: false,
     ...overrides,
   };
@@ -28,47 +37,54 @@ export async function makeWorkOrderPdf(overrides = {}) {
   const page = doc.addPage([612, 792]);
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
-
-  const write = (text, x, y, size = 10, useBold = false) =>
+  const write = (text, x, y, size = 9, useBold = false) =>
     page.drawText(text, { x, y, size, font: useBold ? bold : font });
 
-  write('QUEST WATERSPORTS', 40, 748, 16, true);
-  write('1234 River Road · Ottawa, IL 61350 · (815) 555-0100', 40, 732, 9);
-  write('SERVICE WORK ORDER', 40, 706, 13, true);
+  // The shop's own letterhead — present on every BiT form.
+  write('Quest Watersports', 31, 755, 11, true);
+  write('1851 Old Chicago (N2871st) Road', 31, 744);
+  write('Ottawa IL 61350', 31, 732);
+  write('815-433-2200', 31, 721);
+  write('service@questwatersports.com', 31, 710);
+  write('questwatersports.com', 31, 698);
 
-  write(`Invoice #: ${data.invoice}`, 400, 748, 11, true);
-  write('Date: 05/14/2026', 400, 733, 10);
-  write('Writer: C. KUJAWA', 400, 719, 10);
+  // Two columns, both headings on the same row.
+  write('Sold To:', 31, 616);
+  write(`Invoice # ${data.invoice}`, 218, 616);
 
-  write('Sold To:', 40, 676, 10, true);
-  write(data.name, 40, 662);
-  write('742 Evergreen Terrace', 40, 648);
-  write('Ottawa, IL 61350', 40, 634);
-  write(`Phone: ${data.phone}`, 40, 620);
-  if (!data.omitEmail) write(`Email: ${data.email}`, 40, 606);
+  write(data.name, 31, 593);
+  write(data.street, 31, 582);
+  write(data.city, 31, 571);
 
-  write('Unit Information', 330, 676, 10, true);
-  write(`Year: ${data.year}`, 330, 662);
-  write(`Make: ${data.make}`, 330, 648);
-  write(`Model: ${data.model}`, 330, 634);
-  write(`Engine: ${data.engine}`, 330, 620);
-  write(`HIN: ${data.hin}`, 330, 606);
+  // BiT prints the field NAMES into empty unit slots. A filled unit shows the
+  // values in their place — which is the guessed half of this fixture.
+  write(data.unit ? `${data.unit.year} ${data.unit.make} ${data.unit.model}` : 'Year Make Model', 218, 593);
+  write(data.unit ? `${data.unit.serial}` : 'Serial # Reg #', 218, 582);
+  write(data.unit ? `${data.unit.engine}` : 'Eng Make Eng Model Eng Serial #', 218, 571);
+  write('Trailer Make Trailer', 218, 559);
+  write('Trailer Serial #', 218, 548);
 
-  write('Complaint / Requested Work', 40, 566, 10, true);
-  write('Customer reports port engine stalling at idle. Perform 100 hour service,', 40, 550, 10);
-  write('inspect impeller, diagnose stalling condition.', 40, 536, 10);
+  write(`MP ${data.phone}`, 31, 537);
+  if (!data.omitEmail) write(data.email, 116, 537);
 
-  write('Tech Notes', 40, 500, 10, true);
-  for (let i = 0; i < 12; i++) {
-    page.drawLine({
-      start: { x: 40, y: 480 - i * 22 },
-      end: { x: 572, y: 480 - i * 22 },
-      thickness: 0.5,
-    });
-  }
-  write('Labor Hours: ____________', 40, 190, 10);
-  write('Parts Used: ______________________________________________', 40, 168, 10);
-  write('Tech Signature: __________________________', 40, 146, 10);
+  const headings = [['Invoice', 56], ['Salesperson', 117], ['Customer', 193],
+                    ['Tax Number', 273], ['Date', 359], ['Charge', 411], ['PO Number', 501]];
+  headings.forEach(([label, x]) => write(label, x, 521));
+  write(data.invoice, 54, 507);
+  write('SC', 137, 507);
+  write('3436', 202, 507);
+  write('08/22/2026', 344, 507);
+  write('N', 422, 507);
+
+  write(data.description, 31, 480);
+  write('.', 31, 469);
+  write('.', 31, 457);
+
+  write('I hereby authorize the above repair work to be done along with necessary materials.', 31, 134, 7);
+  write('Sale Total', 428, 134);
+  write('0.00', 578, 134);
+  write('Amount Due', 428, 76);
+  write('0.00', 575, 76);
 
   return doc.save();
 }

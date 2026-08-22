@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Your service job — Quest Watersports</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" type="image/png" href="../assets/quest-mark.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;600&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/app.css">
+</head>
+<body>
+<header class="tracker-head">
+  <div class="inner">
+    <img src="../assets/quest-mark.png" alt="">
+    <div>
+      <div class="co">Quest Watersports</div>
+      <div class="sub">Service tracking</div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap narrow" id="main">
+  <p class="loading" id="loading">Looking up your job…</p>
+</main>
+
+<script type="module">
+import { api } from '../assets/lib/api.js';
+import { STATUSES, STATUS_CUSTOMER } from '../assets/lib/entry-types.js';
+import { $, esc, formatDate, formatDateTime, driveImageUrl } from '../assets/lib/ui.js';
+
+const STEP_LABELS = {
+  received: 'Received',
+  work_underway: 'In the shop',
+  work_finished: 'Work done',
+  done: 'Ready',
+};
+
+function stepsHtml(status) {
+  const here = STATUSES.indexOf(status);
+  return `<div class="steps">${STATUSES.map((value, index) => `
+    <div class="step${index < here ? ' on' : ''}${index === here ? ' here' : ''}">
+      <div class="bar"></div>
+      <div class="lab">${STEP_LABELS[value]}</div>
+    </div>`).join('')}</div>`;
+}
+
+function feedHtml(entries) {
+  if (!entries.length) {
+    return `<div class="empty">No updates posted yet. Anything the shop wants you to see will show up here.</div>`;
+  }
+  return `<div class="feed">${entries.map((entry) => `
+    <article class="entry customer_note">
+      <div class="meta"><time datetime="${esc(entry.createdAt)}">${formatDateTime(entry.createdAt)}</time></div>
+      ${entry.text ? `<div class="body">${esc(entry.text)}</div>` : ''}
+      ${entry.photos.length ? `<div class="photos">${entry.photos.map((photo) => `
+        <a href="${driveImageUrl(photo.full, 1600)}" target="_blank" rel="noreferrer">
+          <img src="${driveImageUrl(photo.thumb, 400)}" alt="Job photo" loading="lazy">
+        </a>`).join('')}</div>` : ''}
+    </article>`).join('')}</div>`;
+}
+
+function render(data) {
+  const { job, entries, shop } = data;
+  const state = STATUS_CUSTOMER[job.status];
+  const invoiceUrl = job.invoiceFile ? `https://drive.google.com/file/d/${encodeURIComponent(job.invoiceFile)}/view` : null;
+
+  $('main').innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="kv"><span class="k">Your boat</span><b>${esc(job.boatInfo || 'Your unit')}</b></div>
+      <div class="kv"><span class="k">Job number</span><b style="font-family:var(--mono)">${esc(job.id)}</b></div>
+      <div class="kv"><span class="k">Checked in</span><b>${formatDate(job.createdAt)}</b></div>
+    </div>
+
+    <div class="status-hero">
+      <div class="h">${esc(state.headline)}</div>
+      <div class="d">${esc(state.detail)}</div>
+    </div>
+
+    ${stepsHtml(job.status)}
+
+    ${job.status === 'done' ? `
+      <section class="card gold" style="margin-top:18px">
+        <h2 style="color:#8a6516">Invoice &amp; payment</h2>
+        <div class="stack">
+          ${invoiceUrl ? `<a class="btn navy" href="${invoiceUrl}" target="_blank" rel="noreferrer">View your invoice (PDF)</a>` : ''}
+          ${job.paymentLink ? `<a class="btn gold" href="${esc(job.paymentLink)}" target="_blank" rel="noreferrer">Pay online</a>` : ''}
+          ${!invoiceUrl && !job.paymentLink ? `<p class="hint">Your invoice is on its way — give the shop a call if you need it right now.</p>` : ''}
+        </div>
+      </section>` : ''}
+
+    <section style="margin-top:22px">
+      <h2 style="font-family:var(--disp);font-size:24px;text-transform:uppercase;letter-spacing:.04em;color:var(--navy);margin-bottom:10px">
+        Updates from the shop
+      </h2>
+      ${feedHtml(entries)}
+    </section>
+
+    <p class="hint" style="margin-top:26px;text-align:center">
+      Questions? Call ${esc(shop.name)}${shop.phone ? ` at ${esc(shop.phone)}` : ''} and quote job ${esc(job.id)}.
+    </p>`;
+}
+
+function notFound(message) {
+  $('main').innerHTML = `
+    <div class="card" style="text-align:center">
+      <h1 class="page-title">Link not found</h1>
+      <p class="lead" style="margin:10px auto 0">${esc(message)}</p>
+    </div>`;
+}
+
+const token = new URLSearchParams(location.search).get('j');
+if (!token) {
+  notFound('That tracking link is missing its job code. Check that you copied the whole link from your email.');
+} else {
+  api('publicJob', [token])
+    .then(render)
+    .catch((error) => notFound(
+      /does not match/.test(error.message)
+        ? 'That tracking link does not match a job. Check that you copied the whole link from your email, or call the shop and we will send it again.'
+        : error.message,
+    ));
+}
+</script>
+</body>
+</html>

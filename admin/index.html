@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Service Tracker — Quest Watersports</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" type="image/png" href="../assets/quest-mark.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;600&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/app.css">
+</head>
+<body>
+<header class="topbar" id="topbar" hidden>
+  <img class="mark" src="../assets/quest-mark.png" alt="">
+  <div class="ttl">Service Tracker<small>Quest Watersports · Ottawa, IL</small></div>
+  <div class="spacer"></div>
+  <nav>
+    <a class="linkbtn" href="?" data-nav="jobs">Jobs</a>
+    <a class="linkbtn" href="?view=intake" data-nav="intake">New work order</a>
+    <a class="linkbtn" href="?view=mechanics" data-nav="mechanics">Mechanics</a>
+    <a class="linkbtn" href="?view=setup" data-nav="setup">App setup</a>
+    <button class="linkbtn" type="button" id="signout">Sign out</button>
+  </nav>
+</header>
+
+<main class="wrap" id="view"><p class="loading">Loading…</p></main>
+
+<script type="module">
+import { api, storeSession, storedToken, clearSession } from '../assets/lib/api.js';
+import { SITE_URL } from '../assets/lib/config.js';
+import { ENTRY_LABEL, STATUSES, STATUS_LABEL, STATUS_PILL, formatHours } from '../assets/lib/entry-types.js';
+import { extractPdf } from '../assets/lib/extract.js';
+import { parseWorkOrder, FIELD_LABELS } from '../assets/lib/parse-work-order.js';
+import { stampWorkOrder, qrSvg } from '../assets/lib/stamp.js';
+import { trackingUrl } from '../assets/lib/tracking.js';
+import { $, esc, toast, formatDate, formatDateTime, relativeDays, driveImageUrl, driveFileUrl, bytesToBase64 } from '../assets/lib/ui.js';
+
+const view = $('view');
+const params = new URLSearchParams(location.search);
+let intake = null;
+
+const go = (query) => { location.search = query; };
+
+/* ------------------------------------------------------------- sign in --- */
+
+function renderSignIn(error) {
+  $('topbar').hidden = true;
+  view.className = 'wrap narrow';
+  view.innerHTML = `
+    <div class="card" style="max-width:420px;margin:40px auto">
+      <h2>Sign in</h2>
+      ${error ? `<div class="banner warn">${esc(error)}</div>` : ''}
+      <form id="form">
+        <label class="fld" for="password">Portal password</label>
+        <input class="txt" id="password" type="password" autocomplete="current-password" autofocus required>
+        <button class="btn navy block" type="submit" style="margin-top:16px">Sign in</button>
+      </form>
+      <p class="hint" style="margin-top:14px">
+        Mechanics do not sign in here — they open the app on their phone and tap their name.
+      </p>
+    </div>`;
+  $('form').onsubmit = async (event) => {
+    event.preventDefault();
+    try {
+      const result = await api('adminSignIn', [$('password').value]);
+      storeSession(result.token, { role: 'admin' }, true);
+      route();
+    } catch (err) {
+      renderSignIn(err.message);
+    }
+  };
+}
+
+/* --------------------------------------------------------------- jobs --- */
+
+async function renderJobs() {
+  const status = params.get('status') || 'all';
+  const search = params.get('q') || '';
+  view.innerHTML = `<p class="loading">Loading jobs…</p>`;
+  const { jobs, counts } = await api('listJobs', [{ status, search }]);
+
+  const href = (value) => {
+    const next = new URLSearchParams();
+    if (value !== 'all') next.set('status', value);
+    if (search) next.set('q', search);
+    return `?${next.toString()}`;
+  };
+
+  view.innerHTML = `
+    <div class="row" style="justify-content:space-between;margin-bottom:14px">
+      <h1 class="page-title">Jobs</h1>
+      <a class="btn navy" href="?view=intake">New work order</a>
+    </div>
+
+    <div class="stats" style="margin-bottom:16px">
+      ${STATUSES.map((value) => `<a class="stat" href="${href(value)}">
+        <div class="v">${counts[value] || 0}</div><div class="k">${STATUS_LABEL[value]}</div></a>`).join('')}
+    </div>
+
+    <form class="row" id="searchform" style="margin-bottom:14px">
+      <input class="txt" id="q" placeholder="Invoice #, customer or boat" value="${esc(search)}" style="flex:1 1 240px">
+      <button class="btn ghost" type="submit">Search</button>
+      ${search || status !== 'all' ? `<a class="btn ghost" href="?">Clear</a>` : ''}
+    </form>
+
+    <div class="row tight" style="margin-bottom:14px">
+      <a class="chip${status === 'all' ? ' on' : ''}" href="${href('all')}">All</a>
+      ${STATUSES.map((value) => `<a class="chip${status === value ? ' on' : ''}" href="${href(value)}">${STATUS_LABEL[value]}</a>`).join('')}
+    </div>
+
+    ${jobs.length ? `<div class="joblist">${jobs.map((job) => `
+      <a class="jobrow" href="?job=${encodeURIComponent(job.id)}">
+        <div style="min-width:84px">
+          <div class="num">${esc(job.id)}</div>
+          <div class="sub">${formatDate(job.createdAt)}</div>
+        </div>
+        <div class="grow">
+          <div class="who">${esc(job.customerName || '(no name on file)')}</div>
+          <div class="sub">${esc(job.boatInfo || '(no boat details)')}</div>
+        </div>
+        <div class="row tight" style="justify-content:flex-end">
+          ${job.needsReview.length ? `<span class="pill red">${job.needsReview.length} to fill in</span>` : ''}
+          ${job.hours ? `<span class="pill frost">${formatHours(job.hours)}</span>` : ''}
+          <span class="pill grey">${job.entryCount} log</span>
+          <span class="pill ${STATUS_PILL[job.status]}">${STATUS_LABEL[job.status]}</span>
+          <span class="sub" style="min-width:78px;text-align:right">${relativeDays(job.updatedAt)}</span>
+        </div>
+      </a>`).join('')}</div>`
+    : `<div class="empty">${search || status !== 'all' ? 'No jobs match that filter.' : 'No jobs yet. Upload a BiT work order to create the first one.'}</div>`}`;
+
+  $('searchform').onsubmit = (event) => {
+    event.preventDefault();
+    const next = new URLSearchParams();
+    if (status !== 'all') next.set('status', status);
+    if ($('q').value.trim()) next.set('q', $('q').value.trim());
+    go(next.toString());
+  };
+}
+
+/* ---------------------------------------------------------- job detail --- */
+
+function entryHtml(entry) {
+  const pill = { customer_note: 'green', internal_note: 'blue', labor: 'frost', part: 'gold' }[entry.entryType];
+  let body = '';
+  if (entry.text) body = `<div class="body">${esc(entry.text)}</div>`;
+  else if (entry.transcriptStatus === 'pending') body = `<div class="body pending">Voice note — transcribing…</div>`;
+  else if (entry.transcriptStatus === 'failed') body = `<div class="body pending">Voice note — transcription failed${entry.transcriptError ? ` (${esc(entry.transcriptError)})` : ''}. The recording is below.</div>`;
+  return `<article class="entry ${entry.entryType}">
+    <div class="meta">
+      <span class="pill ${pill}">${esc(ENTRY_LABEL[entry.entryType])}</span>
+      <span>${esc(entry.mechanicName || 'Unknown')}</span><span>·</span>
+      <time>${formatDateTime(entry.createdAt)}</time>
+    </div>
+    ${entry.entryType === 'part' ? `<div class="partline">${esc(entry.partIdentifier || '(no identifier)')}${entry.quantity ? ` × ${entry.quantity}` : ''}</div>` : ''}
+    ${entry.entryType === 'labor' && entry.hours !== null ? `<div class="hoursline">${formatHours(entry.hours)}</div>` : ''}
+    ${body}
+    ${entry.audioFile ? `<audio controls preload="none" src="https://drive.google.com/uc?export=download&id=${encodeURIComponent(entry.audioFile)}"></audio>` : ''}
+    ${entry.photos.length ? `<div class="photos">${entry.photos.map((p) => `
+      <a href="${driveImageUrl(p.full, 1600)}" target="_blank" rel="noreferrer">
+        <img src="${driveImageUrl(p.thumb, 400)}" alt="Job photo" loading="lazy"></a>`).join('')}</div>` : ''}
+  </article>`;
+}
+
+async function renderJob(id) {
+  view.innerHTML = `<p class="loading">Loading job ${esc(id)}…</p>`;
+  const data = await api('getJob', [id]);
+  const { job, entries, hours, timeline, emails } = data;
+  const doneEmail = emails.find((mail) => mail.kind === 'customer_done');
+  const doneEmailSent = doneEmail && doneEmail.status === 'sent';
+
+  view.innerHTML = `
+    <div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <div>
+        <h1 class="page-title">Job ${esc(job.id)}</h1>
+        <div class="row tight" style="margin-top:6px">
+          <span class="pill ${STATUS_PILL[job.status]}">${STATUS_LABEL[job.status]}</span>
+          <span class="sub" style="color:var(--muted)">Opened ${formatDateTime(job.createdAt)}</span>
+        </div>
+      </div>
+      <a class="btn ghost" href="?">Back to jobs</a>
+    </div>
+
+    <div id="notice"></div>
+
+    ${job.needsReview.length ? `<div class="banner warn" style="margin:14px 0">
+      Still needed from the work order: ${job.needsReview.map((f) => FIELD_LABELS[f] || f).join(', ')}.
+      The customer cannot be emailed without an address.</div>` : ''}
+
+    <div class="split" style="margin-top:16px">
+      <div class="stack">
+        <section class="card">
+          <h2>Customer &amp; boat</h2>
+          <form id="details">
+            <label class="fld" for="customerName">Customer name</label>
+            <input class="txt${job.needsReview.includes('customerName') ? ' field-flag' : ''}" id="customerName" value="${esc(job.customerName || '')}">
+            <label class="fld" for="customerPhone">Phone</label>
+            <input class="txt${job.needsReview.includes('customerPhone') ? ' field-flag' : ''}" id="customerPhone" value="${esc(job.customerPhone || '')}">
+            <label class="fld" for="customerEmail">Email</label>
+            <input class="txt${job.needsReview.includes('customerEmail') ? ' field-flag' : ''}" id="customerEmail" type="email" value="${esc(job.customerEmail || '')}">
+            <label class="fld" for="boatInfo">Boat / engine</label>
+            <input class="txt${job.needsReview.includes('boatInfo') ? ' field-flag' : ''}" id="boatInfo" value="${esc(job.boatInfo || '')}">
+            <button class="btn navy" type="submit" style="margin-top:14px">Save details</button>
+          </form>
+        </section>
+
+        <section class="card">
+          <h2>Paperwork</h2>
+          <div class="stack">
+            ${job.workOrderFile
+              ? `<a class="btn ghost" href="${driveFileUrl(job.workOrderFile)}" target="_blank" rel="noreferrer">Open stamped work order (PDF)</a>`
+              : `<div class="banner warn">No stamped work order on file. Re-run intake if the printed copy has no QR code.</div>`}
+            <label class="fld">Customer tracking link</label>
+            <div class="row tight" style="flex-wrap:nowrap">
+              <input class="txt mono" readonly value="${esc(job.trackingUrl)}" id="tracklink">
+              <button class="btn ghost sm" type="button" id="copy">Copy</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Labor logged</h2>
+          ${hours.total ? `
+            <div class="hourstotal">${formatHours(hours.total)}</div>
+            ${hours.byMechanic.map((row) => `<div class="kv"><span class="k">${esc(row.name)}</span>
+              <b style="font-family:var(--mono)">${formatHours(row.hours)}</b></div>`).join('')}
+            <p class="hint">This is what the mechanics logged as they worked — key it into BiT with the
+              parts when you write the invoice up. The customer never sees it.</p>`
+            : `<p class="hint" style="margin:0">No hours logged yet. Mechanics add them from the job screen
+              as they finish each stint.</p>`}
+        </section>
+
+        <section class="card">
+          <h2>Close out</h2>
+          <form id="invoiceform">
+            <label class="fld" for="invoice">Final invoice PDF (from BiT — no QR needed)</label>
+            <input class="txt" id="invoice" type="file" accept="application/pdf">
+            ${job.invoiceFile ? `<p class="hint">On file:
+              <a href="${driveFileUrl(job.invoiceFile)}" target="_blank" rel="noreferrer">invoice-${esc(job.id)}.pdf</a>
+              — uploading again replaces it.</p>` : ''}
+            <label class="fld" for="paymentLink">POS+ payment link</label>
+            <input class="txt mono" id="paymentLink" placeholder="https://..." value="${esc(job.paymentLink || '')}">
+            <p class="hint">Generate the link in POS+ and paste it here — we only store it.</p>
+            <button class="btn ghost" type="submit" style="margin-top:14px">Save invoice &amp; link</button>
+          </form>
+
+          <hr style="border:0;border-top:1px solid var(--ice);margin:18px 0">
+
+          ${job.status === 'done' ? `
+            <div class="banner ${doneEmailSent ? 'ok' : 'warn'}">
+              Marked done ${formatDateTime(job.doneAt)}${doneEmailSent
+                ? ` — the customer email went to ${esc(doneEmail.recipient)}.`
+                : ' — but the customer email has not gone out. Check the email log below, then send it again.'}
+            </div>
+            <button class="btn ${doneEmailSent ? 'ghost' : 'gold'} block" type="button" id="resend" style="margin-top:12px">
+              ${doneEmailSent ? 'Send the customer email again' : 'Try the customer email again'}
+            </button>`
+          : `
+            <p class="hint" style="margin-bottom:10px">Marking done emails the customer their tracking link,
+              the invoice PDF and the payment link. It is the only email they get.</p>
+            <button class="btn gold block" type="button" id="markdone"${job.customerEmail ? '' : ' disabled title="Add a customer email address first"'}>
+              Mark done &amp; email the customer
+            </button>
+            <form id="statusform" style="margin-top:12px">
+              <label class="fld" for="status">Or set the shop status by hand</label>
+              <div class="row tight" style="flex-wrap:nowrap">
+                <select class="txt" id="status">
+                  ${STATUSES.filter((s) => s !== 'done').map((s) => `<option value="${s}"${s === job.status ? ' selected' : ''}>${STATUS_LABEL[s]}</option>`).join('')}
+                </select>
+                <button class="btn ghost sm" type="submit">Set</button>
+              </div>
+            </form>`}
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="card">
+          <h2>Shop log (${entries.length})${hours.total ? ` · ${formatHours(hours.total)} logged` : ''}</h2>
+          ${entries.length ? `<div class="feed">${entries.map(entryHtml).join('')}</div>`
+            : `<div class="empty">Nothing logged yet. Entries appear here as mechanics add them.</div>`}
+        </section>
+
+        <section class="card">
+          <h2>Timeline</h2>
+          ${timeline.map((event) => `<div class="kv">
+            <span class="k">${formatDateTime(event.created_at)}</span>
+            <b>${STATUS_LABEL[event.to_status]}<span style="color:var(--muted);font-weight:400"> · ${esc(String(event.actor_type).replace('_', ' '))}</span></b>
+          </div>`).join('')}
+        </section>
+
+        ${emails.length ? `<section class="card">
+          <h2>Email log</h2>
+          ${emails.map((mail) => `<div class="kv">
+            <span class="k">${formatDateTime(mail.created_at)} · ${esc(String(mail.kind).replace('_', ' '))}</span>
+            <b><span class="pill ${mail.status === 'sent' ? 'green' : mail.status === 'skipped' ? 'grey' : 'red'}">${esc(mail.status)}</span>
+              <div style="font-weight:400;font-size:12px;color:var(--muted)">${esc(mail.recipient)}${mail.error ? ` — ${esc(mail.error)}` : ''}</div></b>
+          </div>`).join('')}
+        </section>` : ''}
+      </div>
+    </div>`;
+
+  const notice = (tone, message) => {
+    $('notice').innerHTML = `<div class="banner ${tone}" style="margin:14px 0">${esc(message)}</div>`;
+  };
+
+  $('copy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(job.trackingUrl);
+      toast('Tracking link copied.');
+    } catch {
+      $('tracklink').select();
+    }
+  };
+
+  $('details').onsubmit = async (event) => {
+    event.preventDefault();
+    try {
+      await api('saveJobDetails', [job.id, {
+        customerName: $('customerName').value,
+        customerPhone: $('customerPhone').value,
+        customerEmail: $('customerEmail').value,
+        boatInfo: $('boatInfo').value,
+      }]);
+      renderJob(job.id);
+      toast('Customer details saved.');
+    } catch (error) { notice('warn', error.message); }
+  };
+
+  $('invoiceform').onsubmit = async (event) => {
+    event.preventDefault();
+    const file = $('invoice').files[0];
+    const button = event.target.querySelector('button');
+    button.disabled = true;
+    try {
+      let base64 = null;
+      if (file) {
+        if (file.type !== 'application/pdf') throw new Error('That invoice file was not a PDF.');
+        base64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(',')[1]);
+          reader.onerror = () => reject(new Error('Could not read that file.'));
+          reader.readAsDataURL(file);
+        });
+      }
+      await api('saveInvoice', [job.id, $('paymentLink').value.trim(), base64]);
+      renderJob(job.id);
+      toast('Invoice and payment link saved.');
+    } catch (error) {
+      button.disabled = false;
+      notice('warn', error.message);
+    }
+  };
+
+  const markdone = $('markdone');
+  if (markdone) markdone.onclick = async () => {
+    markdone.disabled = true;
+    markdone.textContent = 'Sending…';
+    try {
+      const result = await api('markDone', [job.id]);
+      renderJob(job.id);
+      toast(result.emailed ? 'Marked done — the customer email has been sent.' : 'Marked done, but the email did not send.');
+    } catch (error) {
+      markdone.disabled = false;
+      markdone.textContent = 'Mark done & email the customer';
+      notice('warn', error.message);
+    }
+  };
+
+  const resend = $('resend');
+  if (resend) resend.onclick = async () => {
+    resend.disabled = true;
+    try {
+      const result = await api('resendDoneEmail', [job.id]);
+      renderJob(job.id);
+      toast(result.emailed ? 'Customer email sent again.' : 'That email did not send — check the log.');
+    } catch (error) { resend.disabled = false; notice('warn', error.message); }
+  };
+
+  const statusform = $('statusform');
+  if (statusform) statusform.onsubmit = async (event) => {
+    event.preventDefault();
+    try {
+      await api('setStatus', [job.id, $('status').value]);
+      renderJob(job.id);
+      toast('Status updated.');
+    } catch (error) { notice('warn', error.message); }
+  };
+}
+
+/* ------------------------------------------------------------- intake --- */
+
+function renderIntake() {
+  view.className = 'wrap narrow';
+  view.innerHTML = `
+    <h1 class="page-title">New work order</h1>
+    <p class="lead">
+      Upload the work order you just downloaded from BiT. Your browser reads the invoice number,
+      customer and unit off it and stamps the QR code on — nothing leaves this machine until you
+      confirm the details.
+    </p>
+    <section class="card">
+      <div class="stage on" id="stage-upload">
+        <h2>Upload the BiT work order</h2>
+        <div class="dropzone" id="drop">
+          <b>Choose the work order PDF</b>
+          <span>or drop it here</span>
+        </div>
+        <input type="file" id="pdf" accept="application/pdf" class="hidden">
+        <p class="hint">Nothing is created until you confirm the details on the next step.</p>
+        <p class="msg" id="readmsg"></p>
+      </div>
+
+      <div class="stage" id="stage-review"></div>
+      <div class="stage" id="stage-done"></div>
+    </section>`;
+
+  const drop = $('drop');
+  const input = $('pdf');
+  drop.onclick = () => input.click();
+  drop.ondragover = (event) => { event.preventDefault(); drop.classList.add('hot'); };
+  drop.ondragleave = () => drop.classList.remove('hot');
+  drop.ondrop = (event) => {
+    event.preventDefault();
+    drop.classList.remove('hot');
+    if (event.dataTransfer.files[0]) readPdf(event.dataTransfer.files[0]);
+  };
+  input.onchange = () => { if (input.files[0]) readPdf(input.files[0]); };
+}
+
+function showStage(name) {
+  ['upload', 'review', 'done'].forEach((stage) => {
+    $(`stage-${stage}`).classList.toggle('on', stage === name);
+  });
+}
+
+async function readPdf(file) {
+  $('readmsg').textContent = 'Reading the PDF…';
+  try {
+    if (file.type !== 'application/pdf') throw new Error('That does not look like a PDF. Download the work order from BiT and try again.');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const extracted = await extractPdf(bytes);
+    const parsed = parseWorkOrder(extracted);
+    intake = { bytes, extracted, parsed, filename: file.name };
+    renderReview();
+  } catch (error) {
+    $('readmsg').textContent = error.message;
+    $('readmsg').className = 'msg err';
+  }
+}
+
+function renderReview() {
+  const { parsed, extracted, filename } = intake;
+  const fields = [
+    ['invoiceNumber', 'Invoice # (this becomes the job number)', 'mono'],
+    ['customerName', 'Customer name', ''],
+    ['customerPhone', 'Phone', ''],
+    ['customerEmail', 'Email (needed for the final invoice email)', ''],
+    ['boatInfo', 'Boat / engine', ''],
+  ];
+  $('stage-review').innerHTML = `
+    <h2>Check what we read</h2>
+    ${!extracted.lines.length ? `<div class="banner warn" style="margin-bottom:12px">
+      That PDF has no text layer — it looks like a scan. Type the details in by hand, or re-download
+      the work order straight from BiT.</div>` : ''}
+    ${parsed.missing.length ? `<div class="banner info" style="margin-bottom:12px">
+      Could not find: ${parsed.missing.map((f) => FIELD_LABELS[f] || f).join(', ')}. Fill in what you can —
+      the highlighted fields are the ones we found nothing for.</div>` : ''}
+    ${fields.map(([key, label, extra]) => `
+      <label class="fld" for="${key}">${label}</label>
+      <input class="txt ${extra} ${parsed.missing.includes(key) ? 'field-flag' : ''}" id="${key}" value="${esc(parsed[key] || '')}">
+    `).join('')}
+    <div class="row" style="margin-top:16px">
+      <button class="btn navy" type="button" id="create">Create job &amp; stamp the QR code</button>
+      <button class="btn ghost" type="button" id="restart">Start over</button>
+    </div>
+    <p class="hint">Read from ${esc(filename)}.</p>
+    <p class="msg" id="createmsg"></p>`;
+  showStage('review');
+
+  $('restart').onclick = () => { intake = null; renderIntake(); };
+  $('create').onclick = createJob;
+}
+
+async function createJob() {
+  const button = $('create');
+  const message = $('createmsg');
+  const invoiceNumber = $('invoiceNumber').value.trim().toUpperCase();
+  if (!invoiceNumber) {
+    message.className = 'msg err';
+    message.textContent = 'An invoice number is required — it identifies the job.';
+    return;
+  }
+  button.disabled = true;
+  message.className = 'msg';
+  message.innerHTML = '<span class="spinner"></span> Stamping the QR code…';
+
+  try {
+    // The token has to exist before the QR can point at it, so the job row is
+    // created first and the stamped PDF is attached a moment later.
+    const created = await api('createJob', [{
+      invoiceNumber,
+      customerName: $('customerName').value.trim(),
+      customerPhone: $('customerPhone').value.trim(),
+      customerEmail: $('customerEmail').value.trim(),
+      boatInfo: $('boatInfo').value.trim(),
+    }]);
+    const job = created.job;
+
+    const stamped = await stampWorkOrder({
+      pdfBytes: intake.bytes,
+      trackingUrl: trackingUrl(SITE_URL, job.token),
+      invoiceNumber: job.id,
+      firstPage: intake.extracted.pages[0],
+    });
+    try {
+      await api('attachWorkOrder', [job.id, bytesToBase64(stamped)]);
+      renderCreated(job, stamped, null);
+    } catch (attachError) {
+      // The job exists and is usable; only the stored copy failed. Say so
+      // plainly rather than pretending intake worked end to end — and still
+      // hand over the stamped PDF, which is the thing that gets printed.
+      renderCreated(job, stamped, attachError.message);
+    }
+  } catch (error) {
+    button.disabled = false;
+    message.className = 'msg err';
+    message.textContent = error.message;
+  }
+}
+
+function renderCreated(job, stampedBytes, warning) {
+  const url = URL.createObjectURL(new Blob([stampedBytes], { type: 'application/pdf' }));
+  $('stage-done').innerHTML = `
+    <h2>Job ${esc(job.id)} created</h2>
+    <div class="banner ${warning ? 'warn' : 'ok'}" style="margin-bottom:14px">
+      ${warning
+        ? `The job was created, but the stamped copy did not save to Drive: ${esc(warning)}
+           Print it from the button below and re-upload it from the job page when you get a chance.`
+        : 'Print the stamped work order and put it in the folder exactly as you do today.'}
+    </div>
+    <div class="stack">
+      <a class="btn navy" href="${url}" target="_blank" rel="noreferrer">Open print-ready work order</a>
+      <label class="fld">Customer tracking link</label>
+      <div class="row tight" style="flex-wrap:nowrap">
+        <input class="txt mono" readonly value="${esc(trackingUrl(SITE_URL, job.token))}" id="newlink">
+        <button class="btn ghost sm" type="button" id="copynew">Copy</button>
+      </div>
+      <div class="row">
+        <a class="btn ghost" href="?job=${encodeURIComponent(job.id)}">Open the job</a>
+        <button class="btn ghost" type="button" id="again">Do another</button>
+      </div>
+    </div>`;
+  showStage('done');
+  $('again').onclick = () => { intake = null; renderIntake(); };
+  $('copynew').onclick = async () => {
+    try { await navigator.clipboard.writeText($('newlink').value); toast('Tracking link copied.'); }
+    catch { $('newlink').select(); }
+  };
+}
+
+/* ---------------------------------------------------------- mechanics --- */
+
+async function renderMechanics() {
+  view.className = 'wrap narrow';
+  view.innerHTML = `<p class="loading">Loading the roster…</p>`;
+  const { mechanics } = await api('listMechanics', []);
+
+  view.innerHTML = `
+    <h1 class="page-title">Mechanics</h1>
+    <p class="lead">
+      Names on this list are the buttons the shop floor taps to sign in. Nobody has a password or a
+      PIN — a mechanic who types a name that is not here yet joins the list on the spot, so this is
+      the roster describing the shop, not a gate in front of it.
+    </p>
+    <div id="notice"></div>
+
+    <section class="card" style="margin-top:16px">
+      <h2>Roster</h2>
+      ${mechanics.length ? `<div class="stack">${mechanics.map((m) => `
+        <div style="border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:${m.active ? '#fff' : '#fafbfc'}">
+          <div class="row" style="justify-content:space-between">
+            <div>
+              <b style="color:var(--navy)">${esc(m.name)}</b>
+              <div class="hint">Added ${formatDate(m.createdAt)}</div>
+            </div>
+            <div class="row tight">
+              <span class="pill ${m.active ? 'green' : 'grey'}">${m.active ? 'Active' : 'Switched off'}</span>
+              <button class="btn ghost sm" type="button" data-toggle="${esc(m.id)}" data-active="${m.active ? '0' : '1'}">
+                ${m.active ? 'Switch off' : 'Switch on'}</button>
+            </div>
+          </div>
+          <div class="row tight" style="margin-top:10px;flex-wrap:nowrap">
+            <input class="txt" value="${esc(m.name)}" data-name="${esc(m.id)}" aria-label="Rename ${esc(m.name)}">
+            <button class="btn ghost sm" type="button" data-rename="${esc(m.id)}">Rename</button>
+          </div>
+        </div>`).join('')}</div>`
+        : `<div class="empty">Nobody yet. Add the crew below, or let the first person to open a job type theirs.</div>`}
+    </section>
+
+    <section class="card" style="margin-top:16px">
+      <h2>Add someone</h2>
+      <form id="addform">
+        <label class="fld" for="newname">Name</label>
+        <input class="txt" id="newname" autocomplete="off" required>
+        <p class="hint">Spell it the way it should read on a job. Whatever you put here is what they tap.</p>
+        <button class="btn navy" type="submit" style="margin-top:12px">Add to roster</button>
+      </form>
+    </section>`;
+
+  const fail = (error) => {
+    $('notice').innerHTML = `<div class="banner warn">${esc(error.message)}</div>`;
+  };
+  view.querySelectorAll('[data-toggle]').forEach((button) => {
+    button.onclick = () => api('setMechanicActive', [button.dataset.toggle, button.dataset.active === '1'])
+      .then(renderMechanics).catch(fail);
+  });
+  view.querySelectorAll('[data-rename]').forEach((button) => {
+    button.onclick = () => {
+      const input = view.querySelector(`[data-name="${button.dataset.rename}"]`);
+      api('renameMechanic', [button.dataset.rename, input.value])
+        .then(() => { renderMechanics(); toast('Name changed. Everything they logged stays theirs.'); })
+        .catch(fail);
+    };
+  });
+  $('addform').onsubmit = (event) => {
+    event.preventDefault();
+    api('addMechanic', [$('newname').value]).then(renderMechanics).catch(fail);
+  };
+}
+
+/* -------------------------------------------------------------- setup --- */
+
+function renderSetup() {
+  view.className = 'wrap narrow';
+  const appUrl = `${SITE_URL}/m/`;
+  view.innerHTML = `
+    <h1 class="page-title">Put the app on a phone</h1>
+    <p class="lead">
+      Do this once per phone or iPad. After it is on the home screen, the daily routine is: tap the
+      icon, scan the work order, tap your name.
+    </p>
+
+    <section class="card">
+      <h2>Step 1 — open this on the phone</h2>
+      <div style="text-align:center;padding:10px 0 16px">
+        <div style="display:inline-block;border:1px solid var(--line);border-radius:12px;padding:10px;background:#fff">
+          ${qrSvg(appUrl, 220)}
+        </div>
+      </div>
+      <p class="hint" style="text-align:center;margin-bottom:14px">
+        Point the phone's normal camera at this code — no app needed yet.
+      </p>
+      <label class="fld">Or type this address</label>
+      <div class="row tight" style="flex-wrap:nowrap">
+        <input class="txt mono" readonly value="${esc(appUrl)}" id="appurl">
+        <button class="btn ghost sm" type="button" id="copyurl">Copy</button>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top:16px">
+      <h2>Step 2 — add it to the home screen</h2>
+      <div class="grid2">
+        <div>
+          <b style="color:var(--navy)">iPhone / iPad (Safari)</b>
+          <ol style="margin:8px 0 0 18px;padding:0;font-size:14.5px;line-height:1.6">
+            <li>Tap the Share button (the square with the arrow).</li>
+            <li>Scroll down and tap <b>Add to Home Screen</b>.</li>
+            <li>Tap <b>Add</b>. The Quest icon appears with the other apps.</li>
+          </ol>
+          <p class="hint">It must be Safari — the Share sheet in Chrome on iOS does not offer this.</p>
+        </div>
+        <div>
+          <b style="color:var(--navy)">Android (Chrome)</b>
+          <ol style="margin:8px 0 0 18px;padding:0;font-size:14.5px;line-height:1.6">
+            <li>Tap the ⋮ menu, top right.</li>
+            <li>Tap <b>Install app</b> (or <b>Add to Home screen</b>).</li>
+            <li>Confirm. The Quest icon appears in the app drawer.</li>
+          </ol>
+          <p class="hint">Chrome often offers this by itself as a bar at the bottom.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top:16px">
+      <h2>Step 3 — check the camera works</h2>
+      <p style="font-size:15px;line-height:1.55">
+        Open the app from the home screen and tap <b>Scan work order</b>. The phone asks for camera
+        permission the first time — say yes. If someone taps &ldquo;don't allow&rdquo; by mistake,
+        the app still works: the <b>Type invoice number instead</b> button is right on the same
+        screen, and camera permission can be re-enabled in the phone's settings for this site.
+      </p>
+    </section>`;
+  $('copyurl').onclick = async () => {
+    try { await navigator.clipboard.writeText(appUrl); toast('Address copied.'); }
+    catch { $('appurl').select(); }
+  };
+}
+
+/* -------------------------------------------------------------- route --- */
+
+async function route() {
+  if (!storedToken()) return renderSignIn();
+  $('topbar').hidden = false;
+  view.className = 'wrap';
+
+  const which = params.get('view');
+  const job = params.get('job');
+  document.querySelectorAll('[data-nav]').forEach((link) => {
+    link.classList.toggle('on', link.dataset.nav === (which || 'jobs'));
+  });
+
+  try {
+    if (job) return await renderJob(job);
+    if (which === 'intake') return renderIntake();
+    if (which === 'mechanics') return await renderMechanics();
+    if (which === 'setup') return renderSetup();
+    if (params.get('setup')) return renderSetup();
+    return await renderJobs();
+  } catch (error) {
+    if (/Sign in/.test(error.message)) return renderSignIn();
+    view.innerHTML = `<div class="banner warn">${esc(error.message)}</div>`;
+  }
+}
+
+$('signout').onclick = () => { clearSession(); location.search = ''; };
+route();
+</script>
+</body>
+</html>

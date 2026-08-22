@@ -1,0 +1,201 @@
+name: Deploy Apps Script
+
+# MANUAL ONLY. This deploys the live backend for the shop's service jobs, so
+# it never fires on push. You start it from the Actions tab.
+#
+# It updates the EXISTING deployment (clasp update-deployment) rather than
+# creating a new one. "New deployment" mints a new /exec URL, which would
+# orphan all four pages AND every QR code already printed on paper in the
+# job folder. Here that rule is enforced by the tool rather than by memory.
+#
+# Setup is documented in docs/DEPLOY.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      description:
+        description: 'What changed? (shown in the Apps Script version list)'
+        required: true
+        type: string
+      mode:
+        description: 'push-only uploads the code without making it live'
+        required: true
+        default: 'push-and-deploy'
+        type: choice
+        options:
+          - push-and-deploy
+          - push-only
+
+concurrency:
+  group: apps-script-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install test dependencies
+        run: npm ci
+
+      # A failing tree must never reach the live backend. verify.sh covers
+      # syntax, the customer-visibility boundary, the shared /exec URL and
+      # the unit tests.
+      - name: Verify before deploying
+        run: bash tools/verify.sh
+
+      - name: Check required configuration
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          SCRIPT_ID: ${{ vars.SCRIPT_ID }}
+          DEPLOYMENT_ID: ${{ vars.DEPLOYMENT_ID }}
+        run: |
+          missing=0
+          [ -n "$CLASPRC_JSON" ] || { echo "::error::Missing secret CLASPRC_JSON — see docs/DEPLOY.md step 4"; missing=1; }
+          [ -n "$SCRIPT_ID" ]    || { echo "::error::Missing variable SCRIPT_ID — see docs/DEPLOY.md step 5"; missing=1; }
+          if [ "${{ inputs.mode }}" = "push-and-deploy" ] && [ -z "$DEPLOYMENT_ID" ]; then
+            echo "::error::Missing variable DEPLOYMENT_ID — required to update the existing deployment, which is what keeps the printed QR codes working. See docs/DEPLOY.md step 5"
+            missing=1
+          fi
+          if [ ! -f apps-script/appsscript.json ]; then
+            echo "::error::apps-script/appsscript.json is missing. Pushing without the real manifest can change the web app's access settings and lock customers out of their tracking page."
+            missing=1
+          fi
+          [ "$missing" = "0" ] || exit 1
+
+      - name: Install clasp
+        run: npm install --no-save @google/clasp@3.3.0
+
+      - name: Stage the project
+        env:
+          REMOTE_FILE: ${{ vars.REMOTE_FILE_NAME }}
+        run: |
+          set -euo pipefail
+          name="${REMOTE_FILE:-Code}"
+          mkdir -p build
+          # The manifest as it actually exists in the live project.
+          cp apps-script/appsscript.json build/appsscript.json
+          # The repo's canonical backend, under the filename the project uses.
+          cp service-tracker.gs "build/${name}.js"
+          echo "Staged build/${name}.js ($(wc -l < "build/${name}.js") lines) + appsscript.json"
+          ls -la build
+
+      - name: Write clasp config and credentials
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          SCRIPT_ID: ${{ vars.SCRIPT_ID }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$CLASPRC_JSON" > /tmp/cred.raw
+          # Accept the credential either as raw JSON or base64-encoded, and
+          # fail with a precise message instead of clasp's opaque
+          # "Unexpected non-whitespace character after JSON at position N".
+          # Base64 is the recommended form: it survives terminal line-wrapping
+          # on copy, and being a single line it stops GitHub from masking every
+          # "}" in the logs.
+          python3 - <<'PY'
+          import base64, json, os, re, sys
+          raw = open('/tmp/cred.raw', 'rb').read()
+          def parse(b):
+              try:
+                  return json.loads(b.decode('utf-8'))
+              except Exception:
+                  return None
+          cred = parse(raw)
+          how = 'raw JSON'
+          if cred is None:
+              flat = re.sub(rb'\s+', b'', raw)
+              try:
+                  cred = parse(base64.b64decode(flat, validate=True))
+                  how = 'base64'
+              except Exception:
+                  cred = None
+              if cred is None:
+                  # Salvage the common paste accident: `base64 -w0` emits no
+                  # trailing newline, so the shell prompt ends up glued to the
+                  # end of the value.
+                  m = re.match(rb'[A-Za-z0-9+/]+={0,2}', flat)
+                  if m:
+                      try:
+                          cred = parse(base64.b64decode(m.group(0), validate=True))
+                          how = 'base64 (trailing junk trimmed — most likely a shell prompt copied with it)'
+                      except Exception:
+                          cred = None
+          if cred is None:
+              print('::error::CLASPRC_JSON could not be parsed as JSON or as base64-encoded JSON. '
+                    'The usual cause is copying the shell prompt along with the value. '
+                    'Re-store it using the BEGIN/END markers in docs/DEPLOY.md step 4 '
+                    'and copy only what is between them.')
+              sys.exit(1)
+          if not isinstance(cred, dict) or not cred:
+              print('::error::CLASPRC_JSON parsed but is not a credential object.')
+              sys.exit(1)
+          # Field NAMES only — never values.
+          print('Credential parsed as %s; top-level fields: %s' % (how, ', '.join(sorted(cred.keys()))))
+          with open(os.path.expanduser('~/.clasprc.json'), 'w') as fh:
+              json.dump(cred, fh)
+          PY
+          chmod 600 "$HOME/.clasprc.json"
+          printf '{"scriptId":"%s","rootDir":"build"}' "$SCRIPT_ID" > .clasp.json
+          npx clasp show-authorized-user
+
+      - name: Push code to Apps Script
+        run: npx clasp push -f
+
+      - name: Create version and update the existing deployment
+        if: ${{ inputs.mode == 'push-and-deploy' }}
+        env:
+          DEPLOYMENT_ID: ${{ vars.DEPLOYMENT_ID }}
+          DESC: ${{ inputs.description }}
+        run: |
+          set -euo pipefail
+          # Mirror the manual ritual exactly: cut an IMMUTABLE version, then
+          # point the SAME deployment id at it.
+          #
+          # The -V is not optional. clasp's update-deployment treats a missing
+          # version as @HEAD, which would leave nothing pinned to roll back to
+          # and make every future push go live the moment it lands, destroying
+          # the difference between push-only and push-and-deploy.
+          VERSION=$(npx clasp --json create-version "$DESC" | python3 -c 'import sys,json; print(json.load(sys.stdin)["versionNumber"])')
+          case "$VERSION" in
+            ''|*[!0-9]*) echo "::error::Could not read a version number from clasp (got: '$VERSION')"; exit 1;;
+          esac
+          echo "Created immutable version $VERSION"
+          npx clasp update-deployment -V "$VERSION" -d "$DESC" "$DEPLOYMENT_ID"
+          echo "Deployment $DEPLOYMENT_ID now serving version $VERSION: $DESC"
+          echo "APPS_SCRIPT_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Show deployments
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ ! -x node_modules/.bin/clasp ]; then
+            echo "clasp was not installed — the run stopped earlier. Nothing was deployed."
+            exit 0
+          fi
+          npx clasp list-deployments
+
+      - name: Clean up credentials
+        if: always()
+        run: rm -f "$HOME/.clasprc.json" .clasp.json
+
+      - name: Summary
+        if: success()
+        run: |
+          {
+            echo "### Apps Script deploy"
+            echo ""
+            echo "- Mode: \`${{ inputs.mode }}\`"
+            echo "- Description: ${{ inputs.description }}"
+            if [ "${{ inputs.mode }}" = "push-and-deploy" ]; then
+              echo "- Deployed **version ${APPS_SCRIPT_VERSION:-?}** to existing deployment \`${{ vars.DEPLOYMENT_ID }}\` — the /exec URL is unchanged, so every printed QR code still works."
+              echo "- Roll back any time: Apps Script → Deploy → Manage deployments → pencil → Version dropdown."
+            else
+              echo "- Code uploaded only. Nothing is live yet; run again with \`push-and-deploy\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
