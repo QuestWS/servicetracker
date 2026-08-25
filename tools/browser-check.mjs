@@ -53,6 +53,30 @@ await admin.click('button[type=submit]');
 await admin.waitForSelector('.page-title');
 check('signs in', (await admin.textContent('.page-title')).includes('Jobs'));
 
+// This script walks the deployment through its switches — test mode off,
+// tracking on — and `npm run serve` keeps its backend in memory. Run it
+// twice against the same server and the second run starts from the end
+// state of the first, then fails ten minutes later on a button that is
+// showing its opposite label. Say so now instead.
+const posture = await admin.evaluate(async (base) => {
+  const token = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const res = await fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn: 'config', token, args: [] }),
+  });
+  return res.json();
+}, BASE);
+if (posture.testMode !== true || posture.customerTracking !== false) {
+  console.error(`\nFAILED: this backend is not in its default posture ` +
+    `(testMode=${posture.testMode}, customerTracking=${posture.customerTracking}). ` +
+    `That is where a previous run of this script left it. Restart 'npm run serve' ` +
+    `and try again — its data lives in memory and only a restart clears it.`);
+  await browser.close();
+  process.exit(1);
+}
+check('starts from a fresh backend', true);
+
 await admin.goto(`${BASE}/admin/?view=intake`, { waitUntil: 'networkidle' });
 await admin.setInputFiles('#pdf', WORK_ORDER);
 await admin.waitForSelector('#stage-review.on', { timeout: 20000 });
