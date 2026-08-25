@@ -170,6 +170,33 @@ jobs:
           printf '{"scriptId":"%s","rootDir":"build"}' "$SCRIPT_ID" > .clasp.json
           npx clasp show-authorized-user
 
+      # BEFORE overwriting anything. clasp push -f replaces the contents of
+      # whatever project SCRIPT_ID names, and a wrong SCRIPT_ID is not an
+      # error to Google — it is a successful push into somebody else's
+      # project. It happened once: the code landed in an unrelated project
+      # and we only found out at update-deployment, three steps too late.
+      #
+      # The deployment id is the thing that ties this workflow to the shop's
+      # live backend, so requiring it to be present in the target project is
+      # what makes "right project" checkable at all.
+      - name: Confirm this is the right project
+        if: ${{ inputs.mode == 'push-and-deploy' }}
+        env:
+          DEPLOYMENT_ID: ${{ vars.DEPLOYMENT_ID }}
+        run: |
+          set -uo pipefail
+          deployments=$(npx clasp list-deployments 2>&1) || {
+            echo "$deployments"
+            echo "::error::Could not list deployments for this script. Check SCRIPT_ID."
+            exit 1
+          }
+          echo "$deployments"
+          if ! printf '%s' "$deployments" | grep -qF "$DEPLOYMENT_ID"; then
+            echo "::error::Deployment $DEPLOYMENT_ID is not in the project SCRIPT_ID names, so this is the wrong project — refusing to push. Either SCRIPT_ID or DEPLOYMENT_ID is wrong; they must both come from the SAME Apps Script project (Project Settings shows the script id, Manage deployments shows the deployment id). Nothing has been changed."
+            exit 1
+          fi
+          echo "Deployment $DEPLOYMENT_ID found — this is the shop's project."
+
       - name: Push code to Apps Script
         run: npx clasp push -f
 
