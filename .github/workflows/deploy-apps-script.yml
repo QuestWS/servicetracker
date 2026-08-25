@@ -57,7 +57,13 @@ jobs:
         run: |
           missing=0
           [ -n "$CLASPRC_JSON" ] || { echo "::error::Missing secret CLASPRC_JSON — see docs/DEPLOY.md step 4"; missing=1; }
-          [ -n "$SCRIPT_ID" ]    || { echo "::error::Missing variable SCRIPT_ID — see docs/DEPLOY.md step 5"; missing=1; }
+          # SCRIPT_ID is optional in push-and-deploy: the deployment id is
+          # enough to find the project, and is the identity that actually
+          # matters — it is the string inside every printed QR code.
+          if [ "${{ inputs.mode }}" = "push-only" ] && [ -z "$SCRIPT_ID" ]; then
+            echo "::error::push-only has no deployment to work back from, so it needs SCRIPT_ID — see docs/DEPLOY.md step 5"
+            missing=1
+          fi
           if [ "${{ inputs.mode }}" = "push-and-deploy" ] && [ -z "$DEPLOYMENT_ID" ]; then
             echo "::error::Missing variable DEPLOYMENT_ID — required to update the existing deployment, which is what keeps the printed QR codes working. See docs/DEPLOY.md step 5"
             missing=1
@@ -88,7 +94,6 @@ jobs:
       - name: Write clasp config and credentials
         env:
           CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
-          SCRIPT_ID: ${{ vars.SCRIPT_ID }}
         run: |
           set -euo pipefail
           printf '%s' "$CLASPRC_JSON" > /tmp/cred.raw
@@ -167,35 +172,97 @@ jobs:
               json.dump(cred, fh)
           PY
           chmod 600 "$HOME/.clasprc.json"
-          printf '{"scriptId":"%s","rootDir":"build"}' "$SCRIPT_ID" > .clasp.json
           npx clasp show-authorized-user
 
       # BEFORE overwriting anything. clasp push -f replaces the contents of
-      # whatever project SCRIPT_ID names, and a wrong SCRIPT_ID is not an
+      # whatever project it is pointed at, and a wrong script id is not an
       # error to Google — it is a successful push into somebody else's
-      # project. It happened once: the code landed in an unrelated project
-      # and we only found out at update-deployment, three steps too late.
+      # project. That happened: the backend landed in an unrelated project
+      # and nothing noticed until update-deployment failed three steps later.
       #
-      # The deployment id is the thing that ties this workflow to the shop's
-      # live backend, so requiring it to be present in the target project is
-      # what makes "right project" checkable at all.
-      - name: Confirm this is the right project
-        if: ${{ inputs.mode == 'push-and-deploy' }}
+      # So the DEPLOYMENT ID is the identity that counts here, not the script
+      # id. It is the string inside the /exec URL and inside every QR code
+      # printed on paper, it cannot be mistyped without the shop noticing,
+      # and there is exactly one project in the account that holds it. The
+      # script id is merely where that deployment currently lives, so it is
+      # derived rather than trusted — a 57-character identifier copied by
+      # hand is the least reliable part of this whole pipeline.
+      - name: Find the shop's project
         env:
+          SCRIPT_ID: ${{ vars.SCRIPT_ID }}
           DEPLOYMENT_ID: ${{ vars.DEPLOYMENT_ID }}
+          MODE: ${{ inputs.mode }}
         run: |
           set -uo pipefail
-          deployments=$(npx clasp list-deployments 2>&1) || {
-            echo "$deployments"
-            echo "::error::Could not list deployments for this script. Check SCRIPT_ID."
+
+          use() {
+            printf '{"scriptId":"%s","rootDir":"build"}' "$1" > .clasp.json
+            echo "SCRIPT_ID=$1" >> "$GITHUB_ENV"
+          }
+          holds_deployment() {
+            npx clasp list-deployments "$1" 2>/dev/null | grep -qF "$DEPLOYMENT_ID"
+          }
+
+          # push-only has no deployment to work back from, so the script id
+          # is all there is and has to be taken on trust.
+          if [ "$MODE" = "push-only" ]; then
+            echo "push-only: using SCRIPT_ID as given (nothing goes live)."
+            use "$SCRIPT_ID"
+            exit 0
+          fi
+
+          if [ -n "$SCRIPT_ID" ] && holds_deployment "$SCRIPT_ID"; then
+            echo "SCRIPT_ID holds deployment $DEPLOYMENT_ID — this is the shop's project."
+            use "$SCRIPT_ID"
+            exit 0
+          fi
+
+          if [ -n "$SCRIPT_ID" ]; then
+            echo "SCRIPT_ID does not hold $DEPLOYMENT_ID (wrong project, or the id is mistyped)."
+          else
+            echo "No SCRIPT_ID set."
+          fi
+          echo "Searching this account's Apps Script projects for the deployment..."
+
+          scripts=$(npx clasp --json list-scripts 2>&1) || {
+            echo "$scripts"
+            echo "::error::Could not list this account's Apps Script projects. The clasp credential may have expired — see docs/DEPLOY.md step 4."
             exit 1
           }
-          echo "$deployments"
-          if ! printf '%s' "$deployments" | grep -qF "$DEPLOYMENT_ID"; then
-            echo "::error::Deployment $DEPLOYMENT_ID is not in the project SCRIPT_ID names, so this is the wrong project — refusing to push. Either SCRIPT_ID or DEPLOYMENT_ID is wrong; they must both come from the SAME Apps Script project (Project Settings shows the script id, Manage deployments shows the deployment id). Nothing has been changed."
+          # id first, name as the rest of the line: project names have spaces.
+          printf '%s' "$scripts" > /tmp/scripts.json
+          python3 - > /tmp/listing <<'PY'
+          import json
+          try:
+              scripts = json.load(open('/tmp/scripts.json'))
+          except Exception:
+              scripts = []
+          for s in scripts[:100]:
+              if isinstance(s, dict) and s.get('id'):
+                  name = (s.get('name') or '(unnamed)').replace('\n', ' ')
+                  print(s['id'], name)
+          PY
+          listing=$(cat /tmp/listing)
+
+          if [ -z "$listing" ]; then
+            echo "::error::This account has no Apps Script projects visible to the credential."
             exit 1
           fi
-          echo "Deployment $DEPLOYMENT_ID found — this is the shop's project."
+
+          while read -r id name; do
+            [ -n "$id" ] || continue
+            if holds_deployment "$id"; then
+              echo "Found it: deployment $DEPLOYMENT_ID lives in \"$name\"."
+              echo "Resolved SCRIPT_ID=$id"
+              echo "Put that in the SCRIPT_ID variable to skip this search next time."
+              use "$id"
+              exit 0
+            fi
+            echo "  not in \"$name\""
+          done <<< "$listing"
+
+          echo "::error::No project in this account holds deployment $DEPLOYMENT_ID. Either DEPLOYMENT_ID is wrong, or the deployment was deleted. It is the id in your /exec URL: https://script.google.com/macros/s/<DEPLOYMENT_ID>/exec — check it against Deploy > Manage deployments. Nothing has been changed."
+          exit 1
 
       - name: Push code to Apps Script
         run: npx clasp push -f
