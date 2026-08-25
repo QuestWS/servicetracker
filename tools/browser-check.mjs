@@ -265,6 +265,13 @@ fs.writeFileSync(INVOICE_PDF, await makeInvoicePdf({ invoice: INVOICE }));
 
 await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
 
+// A note from the office, written on the job page and read on the floor.
+await admin.fill('#writernote', 'Owner wants a call before you pull the lower unit.');
+await admin.click('#addnote');
+await admin.waitForSelector('text=From the office', { timeout: 20000 });
+check('the writer can put a note on the job',
+  /owner wants a call before you pull/i.test(await admin.evaluate(() => document.body.innerText)));
+
 // The writer's checklist: everything logged so far moves behind the line.
 check('entries start as needing writing up', (await admin.textContent('.card')).length > 0);
 await admin.click('#marklogged');
@@ -377,6 +384,7 @@ await customer.waitForSelector('.status-hero', { timeout: 15000 });
 const seen = await customer.evaluate(() => document.body.innerText);
 check('shows the customer note', seen.includes('runs clean'));
 check('hides the internal note', !seen.includes('winterised'));
+check("hides the office's note to the floor", !seen.includes('pull the lower unit'));
 check('hides the labor description', !seen.includes('impeller housing'));
 check('hides the hours figure', !seen.includes('1.5 h'));
 check('hides the part number', !seen.includes('6BH-44352'));

@@ -27,6 +27,8 @@ const SITE_URL = 'https://questws.github.io/servicetracker';
 
 const SHOP_NAME = 'Quest Watersports';
 const SHOP_PHONE = '(815) 433-2200';
+/** Whose name a note from the office is logged under. */
+const SHOP_WRITER_NAME = 'Service writer';
 const SHOP_ADDRESS = '1851 Old Chicago Road, Ottawa, IL';
 
 /** Customer replies land here, and so does the hourly digest. */
@@ -107,6 +109,11 @@ const PART_REASON_LABEL = {
 const ENTRY_LABEL = {
   customer_note: 'Customer note',
   internal_note: 'Internal note',
+  // The office writing to the floor: "the owner wants a call before you pull
+  // the lower unit". Shop-only, like everything except customer_note —
+  // customerView_ filters on that one type, so this is excluded from the
+  // customer page by construction rather than by remembering to exclude it.
+  writer_note: 'From the office',
   labor: 'Labor',
   part: 'Part'
 };
@@ -405,6 +412,7 @@ function doPost(e) {
     sendInvoiceEmail: function (a) { return sendInvoiceEmail(data.token, a[0]); },
     setStatus:        function (a) { return setStatusByWriter(data.token, a[0], a[1]); },
     markLogged:       function (a) { return markEntriesLogged(data.token, a[0]); },
+    addWriterNote:    function (a) { return addWriterNote(data.token, a[0], a[1]); },
     setJobFlag:       function (a) { return setJobFlag(data.token, a[0], a[1], a[2]); },
     listMechanics:    function (a) { return listMechanicsAdmin(data.token); },
     addMechanic:      function (a) { return addMechanic(data.token, a[0]); },
@@ -1735,6 +1743,42 @@ function markDone(token, id) {
   if (job.status === 'done') throw new Error('That job was already marked done.');
   setStatus_(job, 'done', 'service_writer', '', 'Marked done');
   return { job: jobSummary_(jobRow_(id)) };
+}
+
+/**
+ * A note from the service writer onto the job, for whoever is working it.
+ *
+ * Written as an entry rather than a field on the job so it lands in the log
+ * in the order it was said, alongside what the mechanic found — a note added
+ * on Tuesday should not appear to have been there since intake.
+ */
+function addWriterNote(token, id, text) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such job.');
+  const body = String(text || '').trim();
+  if (!body) throw new Error('Write the note first.');
+
+  const entry = {
+    id: newId_('log'),
+    job_id: job.id,
+    mechanic_id: '',
+    mechanic_name: SHOP_WRITER_NAME,
+    entry_type: 'writer_note',
+    text: body,
+    hours: '',
+    part_identifier: '',
+    quantity: '',
+    audio_file: '',
+    photos: '',
+    transcript_status: '',
+    transcript_id: '',
+    transcript_error: '',
+    notified_at: '',
+    created_at: nowIso_()
+  };
+  appendRow_('LogEntries', entry);
+  return { entry: entryView_(entry), entries: entriesForJob_(job.id) };
 }
 
 /**

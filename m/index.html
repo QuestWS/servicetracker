@@ -515,7 +515,7 @@ const TABS = [
 const HOUR_STEPS = ['0.25', '0.5', '1', '1.5', '2', '4'];
 
 function entryHtml(entry) {
-  const pill = { customer_note: 'green', internal_note: 'blue', labor: 'frost', part: 'gold' }[entry.entryType];
+  const pill = { customer_note: 'green', internal_note: 'blue', writer_note: 'gold', labor: 'frost', part: 'gold' }[entry.entryType];
   let body = '';
   if (entry.text) body = `<div class="body">${esc(entry.text)}</div>`;
   else if (entry.transcriptStatus === 'pending') body = `<div class="body pending">Voice note — transcribing…</div>`;

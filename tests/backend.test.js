@@ -634,6 +634,56 @@ describe('what the mechanic needs before touching the boat', () => {
   });
 });
 
+describe('a note from the office to the floor', () => {
+  it('lands in the shop log where the mechanic will see it', () => {
+    const { id, token } = seedJob();
+    backend.fn('addWriterNote', adminToken, id, 'Owner wants a call before you pull the lower unit.');
+
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    const seen = backend.fn('jobForMechanic', mech, token).entries;
+    const note = seen.find((e) => e.entryType === 'writer_note');
+    expect(note.text).toBe('Owner wants a call before you pull the lower unit.');
+    expect(note.mechanicName).toBe('Service writer');
+  });
+
+  it('never reaches the customer, even with the page on and live', () => {
+    goLive();
+    const { id, token } = seedJob();
+    backend.fn('addWriterNote', adminToken, id, 'Owner is a friend of the boss, be careful.');
+
+    const seen = JSON.stringify(backend.fn('publicJob', token));
+    expect(seen).not.toContain('friend of the boss');
+    expect(seen).not.toContain('writer_note');
+  });
+
+  it('is logged in order, not pinned to the job', () => {
+    // A note added on Tuesday should not look like it was there at intake.
+    const { id } = seedJob();
+    const before = backend.fn('getJob', adminToken, id).entries.length;
+    backend.fn('addWriterNote', adminToken, id, 'Second thought about the impeller.');
+    const after = backend.fn('getJob', adminToken, id).entries;
+    expect(after).toHaveLength(before + 1);
+    expect(after[after.length - 1].entryType).toBe('writer_note');
+  });
+
+  it('carries no hours, no part number, no photos', () => {
+    const { id } = seedJob();
+    backend.fn('addWriterNote', adminToken, id, 'Just words.');
+    const note = backend.fn('getJob', adminToken, id).entries.find((e) => e.entryType === 'writer_note');
+    expect(note.hours).toBeNull();
+    expect(note.partIdentifier).toBeNull();
+    expect(note.photos).toEqual([]);
+  });
+
+  it('only the writer can add one, and not an empty one', () => {
+    const { id } = seedJob();
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => backend.fn('addWriterNote', mech, id, 'hello')).toThrow(/Sign in/);
+    expect(() => backend.fn('addWriterNote', adminToken, id, '   ')).toThrow(/Write the note/);
+    expect(() => backend.fn('addWriterNote', adminToken, 'nope', 'hello')).toThrow(/No such job/);
+  });
+});
+
 describe('picking a job off a list', () => {
   function seedFloor() {
     backend.fn('createJob', adminToken, {

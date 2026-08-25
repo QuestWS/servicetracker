@@ -215,7 +215,7 @@ async function renderJobs() {
 /* ---------------------------------------------------------- job detail --- */
 
 function entryHtml(entry) {
-  const pill = { customer_note: 'green', internal_note: 'blue', labor: 'frost', part: 'gold' }[entry.entryType];
+  const pill = { customer_note: 'green', internal_note: 'blue', writer_note: 'gold', labor: 'frost', part: 'gold' }[entry.entryType];
   let body = '';
   if (entry.text) body = `<div class="body">${esc(entry.text)}</div>`;
   else if (entry.transcriptStatus === 'pending') body = `<div class="body pending">Voice note — transcribing…</div>`;
@@ -318,27 +318,13 @@ async function renderJob(id) {
           </div>
         </section>
 
-        ${job.amountDue !== null ? `<section class="card">
-          <h2>What the customer owes</h2>
-          <div class="hourstotal">${formatMoney(job.amountDue)}</div>
-          ${job.grandTotal !== null ? `<div class="kv"><span class="k">Grand total</span>
-            <b style="font-family:var(--mono)">${formatMoney(job.grandTotal)}</b></div>` : ''}
-          ${job.deposits ? `<div class="kv"><span class="k">Deposits already paid</span>
-            <b style="font-family:var(--mono)">${formatMoney(job.deposits)}</b></div>` : ''}
-          <p class="hint">Shown in the invoice email next to the payment link${data.customerTracking
-            ? ', and on their tracking page' : ''}.</p>
-        </section>` : ''}
-
         <section class="card">
-          <h2>Labor logged</h2>
-          ${hours.total ? `
-            <div class="hourstotal">${formatHours(hours.total)}</div>
-            ${hours.byMechanic.map((row) => `<div class="kv"><span class="k">${esc(row.name)}</span>
-              <b style="font-family:var(--mono)">${formatHours(row.hours)}</b></div>`).join('')}
-            <p class="hint">This is what the mechanics logged as they worked — key it into BiT with the
-              parts when you write the invoice up. The customer never sees it.</p>`
-            : `<p class="hint" style="margin:0">No hours logged yet. Mechanics add them from the job screen
-              as they finish each stint.</p>`}
+          <h2>Note for the mechanic</h2>
+          <p class="hint" style="margin-top:0">Goes into the shop log where whoever is working the
+            boat will see it. Never reaches the customer.</p>
+          <textarea class="txt" id="writernote" rows="3"
+            placeholder="Owner wants a call before you pull the lower unit…"></textarea>
+          <button class="btn ghost block" type="button" id="addnote" style="margin-top:10px">Add the note</button>
         </section>
 
         <section class="card">
@@ -416,6 +402,29 @@ async function renderJob(id) {
       </div>
 
       <div class="stack">
+        ${job.amountDue !== null ? `<section class="card">
+          <h2>What the customer owes</h2>
+          <div class="hourstotal">${formatMoney(job.amountDue)}</div>
+          ${job.grandTotal !== null ? `<div class="kv"><span class="k">Grand total</span>
+            <b style="font-family:var(--mono)">${formatMoney(job.grandTotal)}</b></div>` : ''}
+          ${job.deposits ? `<div class="kv"><span class="k">Deposits already paid</span>
+            <b style="font-family:var(--mono)">${formatMoney(job.deposits)}</b></div>` : ''}
+          <p class="hint">Shown in the invoice email next to the payment link${data.customerTracking
+            ? ', and on their tracking page' : ''}.</p>
+        </section>` : ''}
+
+        <section class="card">
+          <h2>Labor logged</h2>
+          ${hours.total ? `
+            <div class="hourstotal">${formatHours(hours.total)}</div>
+            ${hours.byMechanic.map((row) => `<div class="kv"><span class="k">${esc(row.name)}</span>
+              <b style="font-family:var(--mono)">${formatHours(row.hours)}</b></div>`).join('')}
+            <p class="hint">This is what the mechanics logged as they worked — key it into BiT with the
+              parts when you write the invoice up. The customer never sees it.</p>`
+            : `<p class="hint" style="margin:0">No hours logged yet. Mechanics add them from the job screen
+              as they finish each stint.</p>`}
+        </section>
+
         <section class="card">
           <h2>Shop log (${entries.length})${hours.total ? ` · ${formatHours(hours.total)} logged` : ''}</h2>
           ${entries.length ? `
@@ -563,6 +572,25 @@ async function renderJob(id) {
       toast('Invoice and payment link saved.');
     } catch (error) {
       button.disabled = false;
+      notice('warn', error.message);
+    }
+  };
+
+  const addnote = $('addnote');
+  if (addnote) addnote.onclick = async () => {
+    const box = $('writernote');
+    const text = box.value.trim();
+    if (!text) return notice('warn', 'Write the note first.');
+    addnote.disabled = true;
+    addnote.textContent = 'Adding…';
+    try {
+      await api('addWriterNote', [job.id, text]);
+      box.value = '';
+      renderJob(job.id);
+      toast('Note added to the shop log.');
+    } catch (error) {
+      addnote.disabled = false;
+      addnote.textContent = 'Add the note';
       notice('warn', error.message);
     }
   };

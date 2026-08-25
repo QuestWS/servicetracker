@@ -1,10 +1,11 @@
 /** Entry shapes and labels, shared by every screen. */
 
-export const ENTRY_TYPES = ['customer_note', 'internal_note', 'labor', 'part'];
+export const ENTRY_TYPES = ['customer_note', 'internal_note', 'writer_note', 'labor', 'part'];
 
 export const ENTRY_LABEL = {
   customer_note: 'Customer note',
   internal_note: 'Internal note',
+  writer_note: 'From the office',
   labor: 'Labor',
   part: 'Part',
 };
@@ -13,7 +14,7 @@ export const ENTRY_LABEL = {
  * Labor and parts are shop bookkeeping — the numbers the service writer
  * re-keys into BiT. Along with internal notes, they never reach the customer.
  */
-export const INTERNAL_ONLY = ['internal_note', 'labor', 'part'];
+export const INTERNAL_ONLY = ['internal_note', 'writer_note', 'labor', 'part'];
 
 export function isEntryType(value) {
   return ENTRY_TYPES.indexOf(value) !== -1;
