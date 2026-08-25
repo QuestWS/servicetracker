@@ -105,6 +105,7 @@ export function loadBackend(options = {}) {
   const properties = new Map(Object.entries(options.properties || {}));
   const sentMail = [];
   const driveFiles = new Map();
+  const fetched = [];
   const sharing = new Map();
   let uuidCounter = 0;
 
@@ -168,8 +169,21 @@ export function loadBackend(options = {}) {
     GmailApp: {
       sendEmail: (to, subject, body, opts) => sentMail.push({ to, subject, body, opts }),
     },
+    // Programmable, because the transcription path is all UrlFetch and a stub
+    // that only ever answers 500 cannot tell a working webhook from a broken
+    // one. Tests hand in `fetch: (url, opts) => ({code, body})`.
     UrlFetchApp: {
-      fetch: () => ({ getResponseCode: () => 500, getContentText: () => '{}', getBlob: () => null }),
+      fetch: (url, opts) => {
+        fetched.push({ url: String(url), options: opts || {} });
+        const reply = (options.fetch && options.fetch(String(url), opts || {})) || null;
+        const code = reply && reply.code !== undefined ? reply.code : 500;
+        const body = reply && reply.body !== undefined ? reply.body : '{}';
+        return {
+          getResponseCode: () => code,
+          getContentText: () => (typeof body === 'string' ? body : JSON.stringify(body)),
+          getBlob: () => null,
+        };
+      },
     },
     LockService: {
       getScriptLock: () => ({ waitLock: () => {}, releaseLock: () => {} }),
@@ -235,6 +249,12 @@ export function loadBackend(options = {}) {
     sentMail,
     sharing,
     properties,
+    fetched,
+    /** Deliver a webhook the way AssemblyAI does: POST, id in the body. */
+    post: (parameter, body) => {
+      context.__event = { parameter: parameter, postData: { contents: JSON.stringify(body) } };
+      return JSON.parse(vm.runInContext('doPost(__event).getContent()', context));
+    },
     /** Raw tab access, for tests that need to stage damage a real Sheet did. */
     sheet: (name) => sheets.get(name),
   };

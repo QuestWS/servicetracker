@@ -531,6 +531,81 @@ describe('the customer email', () => {
   });
 });
 
+describe('a voice note coming back with its words', () => {
+  // AssemblyAI: upload the audio, ask for a transcript, then it calls back.
+  function assemblyBackend() {
+    const back = loadBackend({
+      properties: {
+        ADMIN_PASSWORD: 'shop-password',
+        ASSEMBLYAI_API_KEY: 'test-key',
+        // Not a script.google.com URL on purpose: verify.sh forbids one
+        // outside config.js, and a test fixture must not be the exception
+        // that teaches people to weaken that guard.
+        WEB_APP_URL: 'https://backend.test/exec',
+      },
+      fetch: (url) => {
+        if (url.endsWith('/v2/upload')) return { code: 200, body: { upload_url: 'https://cdn/audio' } };
+        if (url.endsWith('/v2/transcript')) return { code: 200, body: { id: 'tr_1' } };
+        if (url.endsWith('/v2/transcript/tr_1')) {
+          return { code: 200, body: { status: 'completed', text: 'Impeller was shot, swapped it out.' } };
+        }
+        return { code: 404, body: {} };
+      },
+    });
+    const admin = back.fn('adminSignIn', 'shop-password').token;
+    back.fn('createJob', admin, { invoiceNumber: '01-8891', customerName: 'Garrett B' });
+    const jobToken = back.fn('jobRow_', '01-8891').token;
+    const mech = back.fn('mechanicSignIn', 'Dale', true).token;
+    back.fn('addEntry', mech, jobToken, { entryType: 'labor', hours: 0.25, audio: 'YXVkaW8=' });
+    return { back, admin };
+  }
+
+  it('submits the recording and waits, rather than making the mechanic wait', () => {
+    const { back, admin } = assemblyBackend();
+    const entry = back.fn('getJob', admin, '01-8891').entries[0];
+    expect(entry.transcriptStatus).toBe('pending');
+    expect(back.fetched.some((f) => f.url.endsWith('/v2/upload'))).toBe(true);
+  });
+
+  it('tells AssemblyAI where to call back', () => {
+    const { back } = assemblyBackend();
+    const ask = back.fetched.find((f) => f.url.endsWith('/v2/transcript'));
+    expect(JSON.parse(ask.options.payload).webhook_url).toContain('hook=transcript');
+  });
+
+  it('takes the callback as a POST with the id in the body', () => {
+    // AssemblyAI POSTs its webhook and puts transcript_id in the BODY. The
+    // handler used to live on doGet and read the query string, so every
+    // callback was answered "Unknown function." and the note sat on
+    // "transcribing…" until the hourly sweep caught it.
+    const { back, admin } = assemblyBackend();
+    const ask = back.fetched.find((f) => f.url.endsWith('/v2/transcript'));
+    const hook = new URL(JSON.parse(ask.options.payload).webhook_url);
+
+    const answer = back.post(
+      { hook: 'transcript', k: hook.searchParams.get('k') },
+      { transcript_id: 'tr_1', status: 'completed' },
+    );
+    expect(answer.ok).toBe(true);
+
+    const entry = back.fn('getJob', admin, '01-8891').entries[0];
+    expect(entry.text).toBe('Impeller was shot, swapped it out.');
+    expect(entry.transcriptStatus).toBe('done');
+  });
+
+  it('refuses a callback that does not carry the secret', () => {
+    const { back, admin } = assemblyBackend();
+    back.post({ hook: 'transcript', k: 'wrong' }, { transcript_id: 'tr_1', status: 'completed' });
+    expect(back.fn('getJob', admin, '01-8891').entries[0].transcriptStatus).toBe('pending');
+  });
+
+  it('still catches it on the hourly sweep if the callback never arrives', () => {
+    const { back, admin } = assemblyBackend();
+    back.fn('sweepTranscripts_');
+    expect(back.fn('getJob', admin, '01-8891').entries[0].text).toBe('Impeller was shot, swapped it out.');
+  });
+});
+
 describe('what the mechanic needs before touching the boat', () => {
   it('carries the work asked for onto the job', () => {
     backend.fn('createJob', adminToken, {

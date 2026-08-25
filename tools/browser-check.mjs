@@ -124,6 +124,14 @@ await mech.fill('#text', 'Pulled and reset the impeller housing.');
 await mech.click('#save');
 await mech.waitForSelector('.entry.labor', { timeout: 15000 });
 check('logs hours with a description', (await mech.textContent('.entry.labor')).includes('1.5 h'));
+
+// A voice note whose player points at the wrong Drive endpoint looks fine
+// and plays nothing — 0:00 / 0:00 — so the URL itself is what gets checked.
+// `uc?export=download` answers a media element with an HTML interstitial.
+const audioSrcs = await mech.evaluate(() =>
+  [...document.querySelectorAll('audio')].map((a) => a.getAttribute('src') || ''));
+check('no player points at the retired uc?export endpoint',
+  !audioSrcs.some((src) => src.includes('/uc?export=download')), audioSrcs.join(' | '));
 // Logging the first entry starts the job; the phone must show that, not the
 // status it was opened with.
 check('the status pill catches up after the first entry',

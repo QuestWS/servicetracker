@@ -38,7 +38,7 @@ import { parseWorkOrder, FIELD_LABELS } from '../assets/lib/parse-work-order.js'
 import { parseInvoiceTotals, formatMoney } from '../assets/lib/parse-invoice.js';
 import { stampWorkOrder, qrSvg } from '../assets/lib/stamp.js';
 import { trackingUrl } from '../assets/lib/tracking.js';
-import { $, esc, toast, formatDate, formatDateTime, relativeDays, driveImageUrl, driveFileUrl, bytesToBase64 } from '../assets/lib/ui.js';
+import { $, esc, toast, formatDate, formatDateTime, relativeDays, driveImageUrl, driveFileUrl, driveDownloadUrl, bytesToBase64 } from '../assets/lib/ui.js';
 
 const view = $('view');
 const params = new URLSearchParams(location.search);
@@ -229,7 +229,10 @@ function entryHtml(entry) {
     ${entry.entryType === 'part' ? `<div class="partline">${esc(entry.partIdentifier || '(no identifier)')}${entry.quantity ? ` × ${entry.quantity}` : ''}</div>` : ''}
     ${entry.entryType === 'labor' && entry.hours !== null ? `<div class="hoursline">${formatHours(entry.hours)}</div>` : ''}
     ${body}
-    ${entry.audioFile ? `<audio controls preload="none" src="https://drive.google.com/uc?export=download&id=${encodeURIComponent(entry.audioFile)}"></audio>` : ''}
+    ${entry.audioFile ? `<div class="audiorow">
+      <audio controls preload="none" src="${driveDownloadUrl(entry.audioFile)}"></audio>
+      <a href="${driveFileUrl(entry.audioFile)}" target="_blank" rel="noreferrer" class="hint">Open the recording in Drive</a>
+    </div>` : ''}
     ${entry.photos.length ? `<div class="photos">${entry.photos.map((p) => `
       <a href="${driveImageUrl(p.full, 1600)}" target="_blank" rel="noreferrer">
         <img src="${driveImageUrl(p.thumb, 400)}" alt="Job photo" loading="lazy"></a>`).join('')}</div>` : ''}

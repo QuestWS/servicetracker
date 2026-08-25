@@ -363,6 +363,26 @@ function json_(obj) {
  * Script web app cannot answer.
  */
 function doPost(e) {
+  // AssemblyAI delivers its webhook as a POST, not a GET, and puts the
+  // transcript id in the BODY rather than the query string. Only the hook
+  // marker and the shared secret ride in the URL, so they arrive on
+  // e.parameter either way. Handled before the FNS dispatch because a
+  // webhook has no `fn` and would otherwise be answered "Unknown function."
+  const query = (e && e.parameter) || {};
+  if (query.hook === 'transcript') {
+    let body = {};
+    try {
+      body = JSON.parse(e.postData.contents) || {};
+    } catch (err) {
+      body = {};
+    }
+    return transcriptWebhook_({
+      k: query.k,
+      transcript_id: body.transcript_id || query.transcript_id,
+      status: body.status || query.status
+    });
+  }
+
   let data;
   try {
     data = JSON.parse(e.postData.contents);
@@ -2019,6 +2039,9 @@ function applyTranscript_(transcriptId) {
 
 function transcriptWebhook_(params) {
   if (params.k !== secret_().substr(0, 24)) return json_({ error: 'no' });
+  // A transcript that errored out at AssemblyAI still calls back. Applying it
+  // records the failure against the entry, which is what the mechanic needs
+  // to see rather than a note stuck on "transcribing…" for ever.
   if (params.transcript_id) applyTranscript_(params.transcript_id);
   return json_({ ok: true });
 }

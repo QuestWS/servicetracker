@@ -357,6 +357,11 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
   background: var(--ice);
 }
 .entry audio { width: 100%; margin-top: 10px; }
+/* The Drive link under a player is the fallback when inline playback fails,
+   so it must stay visible rather than being tucked away. */
+.audiorow { margin-top: 10px; }
+.audiorow audio { margin-top: 0; }
+.audiorow a { display: inline-block; margin-top: 6px; font-size: 12px; }
 
 .empty {
   text-align: center;
