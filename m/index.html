@@ -42,7 +42,7 @@ const state = {
   roster: [],
   job: null,
   entries: [],
-  tab: 'customer_note',
+  tab: 'labor',
   audio: null,
   photos: [],
   scanning: null,
@@ -436,16 +436,18 @@ async function loadJob() {
 }
 
 const TAB_HELP = {
-  customer_note: 'The customer sees this, word for word, on their tracking page.',
-  internal_note: 'Shop only. The customer never sees internal notes.',
-  labor: 'Your time and what you did with it. Shop only — this is what gets billed.',
-  part: 'Shop only. Parts never appear on the customer page.',
+  internal_note: 'What you found, what you did, anything the writer should know.',
+  labor: 'Your time and what you did with it — this is what gets billed.',
+  part: 'What you fitted, and whether any needs ordering or putting back on the shelf.',
 };
+// Hours first: it is what a mechanic reaches for most, and the one thing the
+// writer cannot reconstruct afterwards. Customer notes are gone — everything
+// logged here is the shop's own record. (The type still exists in the
+// backend, unused, so the customer page can be brought back without one.)
 const TABS = [
-  ['customer_note', 'Customer'],
-  ['internal_note', 'Internal'],
   ['labor', 'Hours'],
-  ['part', 'Part'],
+  ['part', 'Parts'],
+  ['internal_note', 'Notes'],
 ];
 const HOUR_STEPS = ['0.25', '0.5', '1', '1.5', '2', '4'];
 
@@ -499,8 +501,8 @@ function renderJob() {
       <p class="hint" style="margin-top:0">${esc(TAB_HELP[state.tab])}</p>
       <div id="fields"></div>
 
-      <label class="fld" for="text">${state.tab === 'part' ? 'Note about this part (optional)' : state.tab === 'labor' ? 'What you did with that time — type it or say it' : 'Note'}</label>
-      <textarea class="txt" id="text" placeholder="${state.tab === 'customer_note' ? 'What should the customer know?' : state.tab === 'labor' ? 'Pulled and reset the impeller housing, re-torqued the mounts…' : 'What did you find or do?'}"></textarea>
+      <label class="fld" for="text">${state.tab === 'part' ? 'Note about this part (optional)' : state.tab === 'labor' ? 'What you did with that time — type it or say it' : 'Note — type it or say it'}</label>
+      <textarea class="txt" id="text" placeholder="${state.tab === 'labor' ? 'Pulled and reset the impeller housing, re-torqued the mounts…' : 'What did you find or do?'}"></textarea>
 
       <div style="margin-top:12px" id="recorder"></div>
 

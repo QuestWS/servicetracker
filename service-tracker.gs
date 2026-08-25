@@ -178,39 +178,105 @@ function sheet_(name) {
 }
 
 /** Every row of a tab as objects keyed by the header row. */
+/**
+ * Every cell in this workbook is stored as PLAIN TEXT, and that is not a
+ * stylistic choice.
+ *
+ * A BiT invoice number looks like `01-8891`. Handed to Sheets as a bare
+ * value, Sheets reads it as a date — the first of January, 8891 — and the
+ * job's primary key comes back as a Date object instead of the number
+ * printed on the paper. Every lookup by id then misses, which shows up as
+ * "No such job." on a job you can see in the list. ISO timestamps get the
+ * same treatment.
+ *
+ * So writes go through a range formatted `@` first, and reads normalise any
+ * Date left over from before that was true. Numbers are coerced on the way
+ * out (`numberOrNull_`, `Number(...)`) so storing them as text costs
+ * nothing.
+ */
+/** `instanceof` is not safe across execution contexts; the tag always is. */
+function isDate_(value) {
+  return Object.prototype.toString.call(value) === '[object Date]';
+}
+
+function asText_(value) {
+  if (value === null || value === undefined) return '';
+  // A legacy cell Sheets already turned into a date. ISO keeps it sortable
+  // and makes String() comparisons stable on both sides of a lookup.
+  if (isDate_(value)) return value.toISOString();
+  return value;
+}
+
+/** Per-execution cache. A web app call is short-lived; a stale read is not. */
+let _rowCache = {};
+
 function rows_(name) {
+  if (_rowCache[name]) return _rowCache[name];
   const values = sheet_(name).getDataRange().getValues();
-  if (values.length < 2) return [];
+  if (values.length < 2) {
+    _rowCache[name] = [];
+    return _rowCache[name];
+  }
   const header = values[0];
   const out = [];
   for (let r = 1; r < values.length; r++) {
     if (!values[r][0]) continue;
     const row = { _row: r + 1 };
-    for (let c = 0; c < header.length; c++) row[header[c]] = values[r][c];
+    for (let c = 0; c < header.length; c++) row[header[c]] = asText_(values[r][c]);
     out.push(row);
   }
+  _rowCache[name] = out;
   return out;
+}
+
+/** Anything that writes must drop the cache, or the next read is a lie. */
+function forget_(name) {
+  if (name) delete _rowCache[name];
+  else _rowCache = {};
 }
 
 function appendRow_(name, obj) {
   const columns = SHEETS[name];
   const row = columns.map(function (key) {
-    return obj[key] === undefined || obj[key] === null ? '' : obj[key];
+    return obj[key] === undefined || obj[key] === null ? '' : String(obj[key]);
   });
-  sheet_(name).appendRow(row);
+  const sheet = sheet_(name);
+  const at = Math.max(sheet.getLastRow() + 1, 2);
+  const range = sheet.getRange(at, 1, 1, columns.length);
+  range.setNumberFormat('@');
+  range.setValues([row]);
+  forget_(name);
   return obj;
 }
 
-/** Writes only the named fields back to one row. */
+/**
+ * Writes only the named fields back to one row — in ONE call, not one per
+ * field. Each setValue is a round trip to Google, and a status change used
+ * to spend three of them.
+ */
 function updateRow_(name, rowNumber, patch) {
   const columns = SHEETS[name];
-  const sheet = sheet_(name);
-  Object.keys(patch).forEach(function (key) {
+  const keys = Object.keys(patch).filter(function (key) { return columns.indexOf(key) !== -1; });
+  if (!keys.length) return;
+
+  let first = columns.length;
+  let last = 0;
+  keys.forEach(function (key) {
     const index = columns.indexOf(key);
-    if (index === -1) return;
-    const value = patch[key];
-    sheet.getRange(rowNumber, index + 1).setValue(value === null || value === undefined ? '' : value);
+    if (index < first) first = index;
+    if (index > last) last = index;
   });
+
+  const sheet = sheet_(name);
+  const range = sheet.getRange(rowNumber, first + 1, 1, last - first + 1);
+  const values = range.getValues()[0];
+  keys.forEach(function (key) {
+    const value = patch[key];
+    values[columns.indexOf(key) - first] = value === null || value === undefined ? '' : String(value);
+  });
+  range.setNumberFormat('@');
+  range.setValues([values]);
+  forget_(name);
 }
 
 /**
@@ -784,7 +850,7 @@ function addEntry(token, jobToken, payload) {
     }
   });
 
-  return withLock_(function () {
+  const saved = withLock_(function () {
     const stored = photos.slice(0, 8).map(function (photo, index) {
       return {
         thumb: saveFile_(job.id, 'photo-' + Date.now() + '-' + index + '-thumb.jpg', 'image/jpeg', photo.thumb),
@@ -826,8 +892,6 @@ function addEntry(token, jobToken, payload) {
       setStatus_(job, 'work_underway', 'mechanic', who.name, 'First log entry');
     }
 
-    if (entry.transcript_status === 'pending') submitTranscript_(entry.id, audioFile);
-
     // A part the mechanic says has to be ordered, or put back on the shelf,
     // becomes a line on the parts list then and there. Both can be true at
     // once: one off the shelf for this boat, another to replace it.
@@ -853,9 +917,21 @@ function addEntry(token, jobToken, payload) {
       entry: entryView_(entry),
       entries: entries,
       job: jobSummary_(jobRow_(job.id)),
-      hours: laborTotals_(entries)
+      hours: laborTotals_(entries),
+      transcribe: entry.transcript_status === 'pending' ? { entryId: entry.id, audioFile: audioFile } : null
     };
   });
+
+  // Sending the audio to AssemblyAI means a Drive read and two calls over
+  // the wire. Doing it inside the lock held every other mechanic on the
+  // shop floor behind one person's voice note; doing it before answering
+  // made them all wait to be told their note had saved. The row is already
+  // written and marked pending — the hourly sweep would pick it up even if
+  // this fell over.
+  const queued = saved.transcribe;
+  delete saved.transcribe;
+  if (queued) submitTranscript_(queued.entryId, queued.audioFile);
+  return saved;
 }
 
 function finishWork(token, jobToken) {
@@ -1036,6 +1112,7 @@ function cancelPartOrder(token, id) {
   if (part.status === 'ordered') throw new Error('That one is already on order — mark it received instead.');
   const sheet = sheet_('PartsOrders');
   sheet.deleteRow(part._row);
+  forget_('PartsOrders');
   return listPartsOrders(token);
 }
 
@@ -1338,11 +1415,36 @@ function rootFolder_() {
   return folder;
 }
 
+/**
+ * Per-execution cache. Without it every saved file paid for its own Drive
+ * folder search, so a photo cost two searches and a note with four photos
+ * cost eight.
+ */
+let _folders = {};
+
 function jobFolder_(jobId) {
+  const key = String(jobId);
+  if (_folders[key]) return _folders[key];
+
   const root = rootFolder_();
-  const existing = root.getFoldersByName(jobId);
-  return existing.hasNext() ? existing.next() : root.createFolder(jobId);
+  const existing = root.getFoldersByName(key);
+  const folder = existing.hasNext() ? existing.next() : root.createFolder(key);
+
+  // Share the FOLDER, once, rather than every file inside it. Drive hands a
+  // file its parent's permissions, and setSharing is a slow call that used
+  // to be made twice for every photo — a thumbnail and a full size each.
+  try {
+    folder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    _sharedFolders[key] = true;
+  } catch (err) {
+    // Fall back to sharing each file, so a photo is never left unreachable.
+    _sharedFolders[key] = false;
+  }
+  _folders[key] = folder;
+  return folder;
 }
+
+let _sharedFolders = {};
 
 /**
  * Stores base64 bytes in the job's Drive folder and returns the Drive id.
@@ -1361,8 +1463,11 @@ function jobFolder_(jobId) {
  */
 function saveFile_(jobId, name, mime, base64) {
   const blob = Utilities.newBlob(Utilities.base64Decode(base64), mime, name);
-  const file = jobFolder_(jobId).createFile(blob);
-  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  const folder = jobFolder_(jobId);
+  const file = folder.createFile(blob);
+  if (!_sharedFolders[String(jobId)]) {
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  }
   return file.getId();
 }
 
@@ -1924,6 +2029,62 @@ function ensureSheets_(spreadsheet) {
 }
 
 /**
+ * Undoes the damage Sheets did before cells were written as text.
+ *
+ * A job whose id reads as a Date was written when the column was still
+ * General: `01-8891` went in and the first of January 8891 came out. That
+ * inverts exactly — month and year are the two halves of the invoice number
+ * — so the id can be put back rather than the job thrown away. Ids appear as
+ * `job_id` on four other tabs, and all of them have to move together or the
+ * entries orphan.
+ *
+ * Safe to re-run: a row already holding text is left alone.
+ */
+function repairCoercedIds_() {
+  const fixed = [];
+  const map = {};
+
+  ['Jobs', 'LogEntries', 'PartsOrders', 'StatusEvents', 'EmailLog'].forEach(function (name) {
+    const columns = SHEETS[name];
+    const sheet = sheet_(name);
+    const last = sheet.getLastRow();
+    if (last < 2) return;
+
+    const range = sheet.getRange(1, 1, last, columns.length);
+    const values = range.getValues();
+    let touched = false;
+
+    for (let r = 1; r < values.length; r++) {
+      ['id', 'job_id'].forEach(function (key) {
+        const index = columns.indexOf(key);
+        // Only a job's own id is an invoice number; a log entry's id is not.
+        if (index === -1 || (key === 'id' && name !== 'Jobs')) return;
+        const value = values[r][index];
+        if (!isDate_(value)) return;
+        const text = invoiceNumberFromDate_(value);
+        map[value.toISOString()] = text;
+        values[r][index] = text;
+        touched = true;
+        if (key === 'id') fixed.push(text);
+      });
+    }
+
+    // Text from here on, whatever was in the cells before.
+    range.setNumberFormat('@');
+    if (touched) range.setValues(values);
+  });
+
+  forget_();
+  return fixed;
+}
+
+/** `01-8891` is what Sheets turned into 8891-01-01. This turns it back. */
+function invoiceNumberFromDate_(date) {
+  const month = date.getMonth() + 1;
+  return (month < 10 ? '0' : '') + month + '-' + date.getFullYear();
+}
+
+/**
  * Run this ONCE from the editor, then paste the values it logs into
  * assets/lib/config.js and deploy the web app. Safe to re-run: it repairs
  * missing tabs and re-installs the trigger without touching data.
@@ -1939,11 +2100,15 @@ function setup() {
   }
   _ss = spreadsheet;
   ensureSheets_(spreadsheet);
+  const repaired = repairCoercedIds_();
   rootFolder_();
   secret_();
   installTriggers_();
 
   const notes = [
+    repaired.length
+      ? 'Repaired ' + repaired.length + ' job id(s) Sheets had read as dates: ' + repaired.join(', ')
+      : 'Job ids are stored as text. Nothing to repair.',
     'Spreadsheet: ' + spreadsheet.getUrl(),
     'Drive folder: https://drive.google.com/drive/folders/' + props_().getProperty('DRIVE_FOLDER_ID'),
     '',

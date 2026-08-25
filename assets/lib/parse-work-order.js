@@ -31,9 +31,18 @@ const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 const CUSTOMER_BLOCK_LABELS = ['sold to', 'bill to', 'customer', 'billed to', 'sold to:'];
 const UNIT_BLOCK_LABELS = ['unit', 'unit information', 'vehicle', 'boat', 'equipment', 'trailer'];
 
-/** A line made only of heading words, e.g. "Year Make Model" or "Serial # Reg #". */
+/**
+ * A line made only of heading words, e.g. "Year Make Model" or "Serial # Reg #".
+ *
+ * The right-hand column of a real work order carries more than the unit: the
+ * form's own column headings sit in it too. One live job came through with
+ * the boat recorded as "1995 Glastron 15ft · Tax Number Date Charge PO
+ * Number" — the unit read correctly, with a heading row stapled to it. Every
+ * word here is a BiT heading, and the test is whole-line, so a real value
+ * like "1995 Glastron 15ft" is never caught by it.
+ */
 const LABEL_WORDS_ONLY =
-  /^(?:year|make|model|serial|reg|hin|vin|eng|engine|motor|trailer|length|hours|stock|color|colour|#|no\.?|number|[:#\s])+$/i;
+  /^(?:year|make|model|serial|reg|hin|vin|eng|engine|motor|trailer|length|hours|stock|color|colour|tax|date|charge|po|p\.o\.?|terms|salesperson|writer|tech|technician|dept|department|qty|quantity|amount|total|price|invoice|order|account|acct|ref|page|phone|type|code|status|#|no\.?|number|[:#\s])+$/i;
 
 const UNIT_FIELDS = [
   'year',

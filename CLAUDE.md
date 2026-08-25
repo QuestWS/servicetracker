@@ -76,8 +76,29 @@ Sheets tabs are in `SHEETS` at the top of the backend. **Column order is
 append-only**: `appendRow_` and `updateRow_` both index by that array, so a new
 column goes on the END and `setup()` writes it into the header on the next run.
 
+**Every cell is written as plain text**, via `setNumberFormat('@')` before
+`setValues`. This is not tidiness. A BiT invoice number is `01-8891`, and a
+General-formatted cell turns that into the first of January, 8891 — so the
+job's primary key came back as a `Date`, every lookup by id missed, and the
+portal answered *"No such job."* on a job sitting in its own list. ISO
+timestamps go the same way. `asText_` normalises any Date still in the sheet,
+`repairCoercedIds_` (run from `setup()`) puts mangled ids back across all five
+tabs, and the test stub now **imitates the coercion** so this cannot pass tests
+again while failing in production. Numbers are coerced on read, so text costs
+nothing.
+
+`rows_` is memoised per execution and every write calls `forget_`. If you add
+a code path that writes to a sheet without going through `appendRow_` or
+`updateRow_` — `deleteRow`, say — it must call `forget_` itself.
+
 - Photos are `[{thumb, full}]` JSON in one cell — the browser uploads two sizes
   so the feed is cheap and the lightbox is sharp.
+- **The mechanic app logs three things: Hours, Parts, Notes** — in that order.
+  Customer notes were dropped; notes are the shop's own record now. The
+  `customer_note` type is still live in the backend and still the only thing
+  `customerView_` lets through, so the customer page can be switched back on
+  without one. Nothing in the UI creates one, so `browser-check.mjs` posts one
+  on the wire to keep the boundary test honest.
 - A fourth entry type, `labor`, carries `hours` plus what the time went on.
   Like `part` it is internal-only; `addEntry` pins `hours` to `''` for every
   other type so the figure cannot ride along on a customer note.
@@ -171,6 +192,24 @@ properties hold it together and none of them is optional:
 
 `MAGIC_THROTTLE_SECONDS` keeps somebody leaning on the button from spending
 the day's Gmail allowance.
+
+## What makes saving slow
+
+Apps Script charges for round trips, and a save used to make a lot of them.
+If a save gets sluggish again, look here first:
+
+- `rows_` is memoised per execution. Before that, one `addEntry` read the Jobs
+  tab three times and LogEntries once.
+- `updateRow_` writes the changed span in ONE call. It used to be one
+  `setValue` per field, so a status change cost three round trips.
+- `jobFolder_` is memoised, and the **folder** is link-shared once rather than
+  every file inside it. Drive gives a file its parent's permissions.
+  `setSharing` is slow and a photo stores two files, so this was two slow ACL
+  calls per photo.
+- The AssemblyAI submission happens **after** the lock is released and after
+  the row is written. It is a Drive read plus two calls over the wire; inside
+  the lock it held up every other mechanic on the floor. The row is already
+  marked `pending`, so the hourly sweep catches it if the submission fails.
 
 ## Quotas to respect
 

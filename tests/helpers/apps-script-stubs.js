@@ -11,36 +11,91 @@ import vm from 'node:vm';
  * allowed to see. Sheets are 2D arrays, Drive hands out fake ids, and Gmail
  * records what it was asked to send.
  */
+/**
+ * Sheets coerces what you write to it, and that is a behaviour the backend
+ * has to survive rather than a detail to paper over.
+ *
+ * A BiT invoice number — `01-8891` — written to a General-formatted cell is
+ * read by Sheets as the first of January, 8891, and comes back as a Date.
+ * An earlier version of this stub stored every value verbatim, so the tests
+ * were green while the real deployment answered "No such job." on a job you
+ * could see in the list. The stub now does what Sheets does, and the backend
+ * has to format cells as text to avoid it.
+ */
+const DATEISH = /^\s*\d{1,4}[-/]\d{1,4}([-/]\d{1,4})?\s*$/;
+
+function coerce(value, format) {
+  if (format === '@') return value;             // plain text: stored as written
+  if (typeof value !== 'string') return value;
+  if (DATEISH.test(value)) {
+    const parsed = sheetsDate(value);
+    if (parsed) return parsed;
+  }
+  return value;
+}
+
+/** What Sheets makes of `MM-YYYY`: the first of that month, that year. */
+function sheetsDate(value) {
+  const bits = value.trim().split(/[-/]/).map(Number);
+  if (bits.some((n) => !Number.isFinite(n))) return null;
+  if (bits.length === 2) {
+    const [month, year] = bits;
+    if (month >= 1 && month <= 12 && year > 31) return new Date(year, month - 1, 1);
+  }
+  return null;
+}
+
 function fakeSheet(name) {
   const rows = [];
+  const formats = [];                            // formats[row][col], '@' = text
+
+  const formatAt = (r, c) => (formats[r] && formats[r][c]) || '';
+  const setFormatAt = (r, c, format) => {
+    while (formats.length <= r) formats.push([]);
+    formats[r][c] = format;
+  };
+
   const sheet = {
     name,
     rows,
     getDataRange: () => ({ getValues: () => rows.map((r) => r.slice()) }),
-    appendRow: (row) => rows.push(row.slice()),
+    appendRow: (row) => rows.push(row.map((value, c) => coerce(value, formatAt(rows.length, c)))),
     getLastRow: () => rows.length,
     setFrozenRows: () => sheet,
-    getRange: (row, col, numRows, numCols) => ({
-      getValues: () => {
-        const out = [];
-        for (let r = 0; r < (numRows || 1); r++) {
-          const source = rows[row - 1 + r] || [];
-          out.push(Array.from({ length: numCols || 1 }, (_, c) => source[col - 1 + c] ?? ''));
-        }
-        return out;
-      },
-      setValues: (values) => {
-        values.forEach((line, r) => {
-          while (rows.length < row + r) rows.push([]);
-          const target = rows[row - 1 + r];
-          line.forEach((value, c) => { target[col - 1 + c] = value; });
-        });
-      },
-      setValue: (value) => {
-        while (rows.length < row) rows.push([]);
-        rows[row - 1][col - 1] = value;
-      },
-    }),
+    getRange: (row, col, numRows, numCols) => {
+      const range = {
+        getValues: () => {
+          const out = [];
+          for (let r = 0; r < (numRows || 1); r++) {
+            const source = rows[row - 1 + r] || [];
+            out.push(Array.from({ length: numCols || 1 }, (_, c) => source[col - 1 + c] ?? ''));
+          }
+          return out;
+        },
+        setNumberFormat: (format) => {
+          for (let r = 0; r < (numRows || 1); r++) {
+            for (let c = 0; c < (numCols || 1); c++) setFormatAt(row - 1 + r, col - 1 + c, format);
+          }
+          return range;
+        },
+        setValues: (values) => {
+          values.forEach((line, r) => {
+            while (rows.length < row + r) rows.push([]);
+            const target = rows[row - 1 + r];
+            line.forEach((value, c) => {
+              target[col - 1 + c] = coerce(value, formatAt(row - 1 + r, col - 1 + c));
+            });
+          });
+          return range;
+        },
+        setValue: (value) => {
+          while (rows.length < row) rows.push([]);
+          rows[row - 1][col - 1] = coerce(value, formatAt(row - 1, col - 1));
+          return range;
+        },
+      };
+      return range;
+    },
   };
   return sheet;
 }
@@ -70,6 +125,9 @@ export function loadBackend(options = {}) {
     getId: () => `folder-${name}`,
     getFoldersByName: () => ({ hasNext: () => false, next: () => null }),
     createFolder: (child) => folder(child),
+    // Drive gives a file its parent's permissions, so sharing the folder is
+    // what makes the files inside it reachable.
+    setSharing: (access, permission) => { sharing.set(`folder-${name}`, `${access}/${permission}`); },
     createFile: (blob) => {
       const id = `drive-${driveFiles.size + 1}`;
       driveFiles.set(id, blob);
@@ -177,5 +235,7 @@ export function loadBackend(options = {}) {
     sentMail,
     sharing,
     properties,
+    /** Raw tab access, for tests that need to stage damage a real Sheet did. */
+    sheet: (name) => sheets.get(name),
   };
 }

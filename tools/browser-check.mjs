@@ -121,10 +121,25 @@ check('the status pill catches up after the first entry',
   (await mech.textContent('.pill.frost')).includes('Work underway'),
   await mech.textContent('.pill.frost'));
 
-await mech.click('.segmented button[data-tab="customer_note"]');
-await mech.fill('#text', 'Impeller is replaced and she runs clean.');
+await mech.click('.segmented button[data-tab="internal_note"]');
+await mech.fill('#text', 'Owner never winterised this — bill the extra hour.');
 await mech.click('#save');
-await mech.waitForSelector('.entry.customer_note', { timeout: 15000 });
+await mech.waitForSelector('.entry.internal_note', { timeout: 15000 });
+
+// The mechanic app no longer offers a customer note; the backend still knows
+// the type, so the customer page can be brought back without one. Posting it
+// on the wire keeps the strongest test in this file alive — that what the
+// customer is shown is decided by customerView_ and nothing else.
+const posted = await mech.evaluate(async ({ base, job, text }) => {
+  const token = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const res = await fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn: 'addEntry', token, args: [job, { entryType: 'customer_note', text }] }),
+  });
+  return res.json();
+}, { base: BASE, job: token, text: 'Impeller is replaced and she runs clean.' });
+check('the backend still takes a customer note', !posted.error, posted.error);
 
 await mech.click('.segmented button[data-tab="part"]');
 await mech.fill('#part', '6BH-44352-00-00');
@@ -308,6 +323,7 @@ await customer.waitForSelector('.status-hero', { timeout: 15000 });
 // page's own template strings and quietly pass on a real leak.
 const seen = await customer.evaluate(() => document.body.innerText);
 check('shows the customer note', seen.includes('runs clean'));
+check('hides the internal note', !seen.includes('winterised'));
 check('hides the labor description', !seen.includes('impeller housing'));
 check('hides the hours figure', !seen.includes('1.5 h'));
 check('hides the part number', !seen.includes('6BH-44352'));

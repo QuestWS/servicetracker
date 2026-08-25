@@ -115,6 +115,22 @@ describe('reading a BiT work order', () => {
     expect(parsed.boatInfo).toBe('2021 Yamaha AR195');
   });
 
+  it('keeps the form\'s own column headings out of the unit', () => {
+    // Straight off a live job: the unit read correctly, then the row of
+    // headings underneath it got stapled on, and the boat went onto the job
+    // as "1995 Glastron 15ft · Tax Number Date Charge PO Number".
+    const items = [
+      { str: 'Invoice #  01-8891', x: 218, y: 700 },
+      { str: '1995 Glastron 15ft', x: 218, y: 680 },
+      { str: 'Tax Number  Date  Charge  PO Number', x: 218, y: 665 },
+    ];
+    const lines = items.map((i) => i.str);
+    const parsed = parseWorkOrder({
+      lines, text: lines.join('\n'), pages: [{ items }],
+    });
+    expect(parsed.boatInfo).toBe('1995 Glastron 15ft');
+  });
+
   it('finds nothing in a PDF with no text layer, and says so', () => {
     expect(parseWorkOrder({ lines: [], text: '' }).missing).toEqual([
       'invoiceNumber', 'customerName', 'customerPhone', 'customerEmail', 'boatInfo',

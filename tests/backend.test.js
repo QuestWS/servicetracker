@@ -111,12 +111,19 @@ describe('what the customer is allowed to see', () => {
 });
 
 describe('files in Drive', () => {
-  it('shares every stored file by link, so a page can show it directly', () => {
+  it('link-shares the job folder, so a page can show what is inside it', () => {
     seedJob();
     expect(backend.sharing.size).toBeGreaterThan(0);
     for (const value of backend.sharing.values()) {
       expect(value).toBe('ANYONE_WITH_LINK/VIEW');
     }
+  });
+
+  it('shares the folder once instead of every file in it', () => {
+    // setSharing is a slow Drive call, and a photo stores two files. Doing
+    // it per file is what made saving a note with photos crawl.
+    seedJob();
+    expect([...backend.sharing.keys()]).toEqual(['folder-01-8886']);
   });
 });
 
@@ -521,6 +528,52 @@ describe('the customer email', () => {
     const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
     expect(() => backend.fn('sendInvoiceEmail', mech, id)).toThrow(/Sign in/);
     expect(backend.sentMail).toHaveLength(0);
+  });
+});
+
+describe('a BiT invoice number as a primary key', () => {
+  // Sheets reads `01-8891` as the first of January, 8891. That turned the
+  // job's own id into a Date, every lookup by id missed, and the portal
+  // answered "No such job." on a job sitting in its own list.
+  it('stays the number printed on the paper', () => {
+    backend.fn('createJob', adminToken, { invoiceNumber: '01-8891', customerName: 'Garrett Bennett' });
+    expect(backend.fn('jobRow_', '01-8891').id).toBe('01-8891');
+  });
+
+  it('opens the job the list links to', () => {
+    const { id } = seedJob('01-8891');
+    const listed = backend.fn('listJobs', adminToken, {}).jobs[0];
+    expect(listed.id).toBe('01-8891');
+    // Exactly what the portal does with the id it was handed.
+    expect(backend.fn('getJob', adminToken, listed.id).job.id).toBe('01-8891');
+    expect(id).toBe('01-8891');
+  });
+
+  it('keeps a job and its entries together', () => {
+    const { id } = seedJob('01-8891');
+    expect(backend.fn('getJob', adminToken, id).entries).toHaveLength(4);
+  });
+
+  it('survives a timestamp being date-shaped too', () => {
+    seedJob('01-8891');
+    const created = backend.fn('jobRow_', '01-8891').created_at;
+    expect(typeof created).toBe('string');
+    expect(created).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('puts back an id an older deployment already mangled', () => {
+    seedJob('01-8891');
+    // Force the damage the old code did: a General cell holding a Date.
+    const jobs = backend.sheet('Jobs');
+    const entries = backend.sheet('LogEntries');
+    jobs.rows[1][0] = new Date(8891, 0, 1);
+    entries.rows.slice(1).forEach((row) => { row[1] = new Date(8891, 0, 1); });
+    backend.fn('forget_');
+    expect(backend.fn('jobRow_', '01-8891')).toBeNull();
+
+    expect(backend.fn('repairCoercedIds_')).toEqual(['01-8891']);
+    expect(backend.fn('jobRow_', '01-8891').id).toBe('01-8891');
+    expect(backend.fn('getJob', adminToken, '01-8891').entries).toHaveLength(4);
   });
 });
 
