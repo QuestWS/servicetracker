@@ -137,6 +137,18 @@ await mech.click('#nameform button[type=submit]');
 await mech.waitForSelector('.segmented', { timeout: 15000 });
 check('signs in by typing a name', (await mech.textContent('.card')).includes(invoiceNumber));
 
+// `capture` on the photo input makes a phone open the camera and offer no
+// way to reach a picture already taken. The QR scanner must keep working
+// regardless — it is a live getUserMedia stream, not a file input, and the
+// two are only ever confused by someone editing this page in a hurry.
+const photoInput = await mech.evaluate(() => {
+  const el = document.querySelector('#photos');
+  return el ? { capture: el.getAttribute('capture'), accept: el.getAttribute('accept') } : null;
+});
+check('the photo picker offers camera or library', photoInput && photoInput.capture === null,
+  JSON.stringify(photoInput));
+check('and still only takes images', photoInput && photoInput.accept === 'image/*');
+
 // What needs doing has to reach the person holding the wrench.
 check('the job screen shows what needs doing',
   /port engine stalling at idle/i.test(await mech.evaluate(() => document.body.innerText)));

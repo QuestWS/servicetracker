@@ -577,7 +577,14 @@ function renderJob() {
       <div style="margin-top:12px" id="recorder"></div>
 
       <label class="fld" for="photos">Photos</label>
-      <input class="txt" id="photos" type="file" accept="image/*" capture="environment" multiple>
+      <!-- No `capture` attribute. With it, the phone opens straight into the
+           camera and there is no way to reach a picture already taken — of a
+           part number photographed at the counter, say, or a shot from
+           earlier in the job. Without it the OS offers both. This does not
+           touch the QR scanner, which is a live getUserMedia stream and not
+           a file input at all. -->
+      <input class="txt" id="photos" type="file" accept="image/*" multiple>
+      <p class="hint" style="margin-top:6px">Take one now or pick one already on the phone.</p>
       <div class="thumbrow" id="thumbs"></div>
 
       <button class="btn navy big block" type="button" id="save" style="margin-top:16px">Save entry</button>
