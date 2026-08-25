@@ -335,11 +335,51 @@ check('sends the customer nothing internal', !/6BH-44352|impeller housing|Dale|h
 await customer.goto(`${BASE}/t/?j=ZZZZZZZZZZZZZZZZZZZZ`, { waitUntil: 'networkidle' });
 check('a wrong token says so plainly', (await customer.content()).includes('Link not found'));
 
+/* ------------------------------------------------------------- magic link */
+// Its own context, so it starts signed out and cannot disturb anything above.
+console.log('\n== mailed sign-in link ==');
+const lockedOut = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+const visitor = await lockedOut.newPage();
+const visitorErrors = [];
+visitor.on('pageerror', (error) => visitorErrors.push(String(error)));
+visitor.on('console', (message) => { if (message.type() === 'error' && !isEnvironmental(message.text())) visitorErrors.push(message.text()); });
+
+await visitor.goto(`${BASE}/admin/`, { waitUntil: 'networkidle' });
+await visitor.waitForSelector('#maillink');
+await visitor.click('#maillink');
+await visitor.waitForSelector('.banner.ok', { timeout: 20000 });
+const sentNotice = await visitor.evaluate(() => document.body.innerText);
+check('says where the link went', /service@questwatersports\.com/.test(sentNotice), sentNotice.slice(0, 160));
+
+const mail = await (await fetch(`${BASE}/dev/mail`)).json();
+const signInMail = mail.filter((m) => /Sign in to the/.test(m.subject)).pop();
+check('the link email went to the service desk', signInMail && signInMail.to === 'service@questwatersports.com');
+const nonce = signInMail && signInMail.body.match(/\?k=([0-9A-Z]{20})/);
+check('and carries a one-time nonce', Boolean(nonce), signInMail && signInMail.body.slice(0, 120));
+
+await visitor.goto(`${BASE}/admin/?k=${nonce[1]}`, { waitUntil: 'networkidle' });
+await visitor.waitForSelector('.page-title', { timeout: 20000 });
+check('following it signs the writer in', (await visitor.textContent('.page-title')).includes('Jobs'));
+check('and the nonce is scrubbed out of the address', !visitor.url().includes('k='), visitor.url());
+await visitor.screenshot({ path: `${SHOTS}/48-magic-link.png`, fullPage: true });
+
+// Spent means spent. A fresh context is the honest test: somebody else with
+// the same link and no session of their own.
+const stale = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+const replay = await stale.newPage();
+await replay.goto(`${BASE}/admin/?k=${nonce[1]}`, { waitUntil: 'networkidle' });
+await replay.waitForSelector('#maillink', { timeout: 20000 });
+const refused = await replay.evaluate(() => document.body.innerText);
+check('a second use is refused', /already been used|newer one replaced/i.test(refused), refused.slice(0, 160));
+check('and it does not let them in', !/Jobs/.test(await replay.textContent('.card')));
+await replay.close();
+
 /* --------------------------------------------------------------------- done */
 console.log('\n== page errors ==');
 check('service writer console clean', adminErrors.length === 0, adminErrors.join(' | '));
 check('mechanic console clean', mechErrors.length === 0, mechErrors.join(' | '));
 check('customer console clean', customerErrors.length === 0, customerErrors.join(' | '));
+check('sign-in console clean', visitorErrors.length === 0, visitorErrors.join(' | '));
 
 await browser.close();
 console.log(`\n${failures.length ? `FAILED: ${failures.join(', ')}` : 'browser-check: all good'}`);

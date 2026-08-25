@@ -146,6 +146,10 @@ is in [docs/DEPLOY.md](docs/DEPLOY.md).
   off, and nothing is ever sent automatically. See below.
 - **Test mode is on until you turn it off**, so nothing reaches a customer
   while you are still finding your feet. See below.
+- **The writer signs in two ways.** The portal password, or a one-time link
+  mailed to the service desk — useful when nobody can remember the password.
+  The link endpoint takes no recipient: the address is a constant, so it can
+  only ever put mail into the shop's own inbox.
 - **Nothing is queued offline.** A mechanic needs to know their note landed, so
   a failed save is a visible error, never a silent "saved".
 

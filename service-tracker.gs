@@ -307,6 +307,8 @@ function doPost(e) {
   const FNS = {
     /* service writer */
     adminSignIn:      function (a) { return adminSignIn(a[0]); },
+    requestMagicLink: function (a) { return requestMagicLink(); },
+    magicSignIn:      function (a) { return magicSignIn(a[0]); },
     createJob:        function (a) { return createJob(data.token, a[0]); },
     attachWorkOrder:  function (a) { return attachWorkOrder(data.token, a[0], a[1]); },
     listJobs:         function (a) { return listJobs(data.token, a[0]); },
@@ -1156,6 +1158,90 @@ function setMechanicActive(token, id, active) {
     }
   }
   return listMechanicsAdmin(token);
+}
+
+/* ------------------------------------------------------ magic link sign-in */
+
+/** How long a mailed sign-in link stays good, and how often one may be asked for. */
+const MAGIC_MINUTES = 15;
+const MAGIC_THROTTLE_SECONDS = 60;
+
+/**
+ * Mails a one-time sign-in link to the service desk.
+ *
+ * This takes no recipient, deliberately. The address is the SERVICE_EMAIL
+ * constant, so an endpoint that anybody on the internet may call can only
+ * ever put mail into the shop's own inbox — it cannot be aimed at a mailbox
+ * somebody else controls, and it cannot be used to post mail to a stranger.
+ * Whoever can read the service desk inbox is already the service writer.
+ *
+ * Exactly one link is outstanding at a time: asking for a new one voids the
+ * last, and using one clears it. So a link sitting in the inbox from last
+ * week does not still open the portal.
+ */
+function requestMagicLink() {
+  const props = props_();
+
+  // A throttle, because the shop's Gmail allowance is about a hundred
+  // messages a day and is shared with the winter app. Somebody leaning on
+  // the button should not be able to spend it.
+  const last = Number(props.getProperty('MAGIC_SENT_AT') || 0);
+  const wait = Math.ceil((last + MAGIC_THROTTLE_SECONDS * 1000 - Date.now()) / 1000);
+  if (wait > 0) {
+    throw new Error('A link was sent a moment ago — check ' + SERVICE_EMAIL +
+      ', or ask again in ' + wait + ' second' + (wait === 1 ? '' : 's') + '.');
+  }
+
+  const nonce = newTrackingToken_();
+  props.setProperty('MAGIC_NONCE', nonce);
+  props.setProperty('MAGIC_EXP', String(Date.now() + MAGIC_MINUTES * 60000));
+  props.setProperty('MAGIC_SENT_AT', String(Date.now()));
+
+  const link = SITE_URL + '/admin/?k=' + nonce;
+  const sent = send_({
+    to: SERVICE_EMAIL,
+    jobId: '',
+    kind: 'sign_in_link',
+    subject: 'Sign in to the ' + SHOP_NAME + ' service tracker',
+    html: noticeHtml_({
+      intro: '<div style="font-size:16px;font-weight:bold;color:#14293E;margin-bottom:8px">Sign in to the service tracker</div>' +
+        '<p style="font-size:15px;line-height:1.55;color:#1D2B38;margin:0 0 4px">' +
+        'This link opens the service writer portal and lasts ' + MAGIC_MINUTES + ' minutes. ' +
+        'It works once.</p>' +
+        '<p style="font-size:13px;color:#5C7185;margin:12px 0 0">' +
+        'If you did not ask for it, nothing has happened — the link is useless to anyone who ' +
+        'cannot read this inbox, and the next one asked for replaces it.</p>',
+      buttons: button_(link, 'Open the portal')
+    }),
+    text: 'Sign in to the ' + SHOP_NAME + ' service tracker.\n\n' + link +
+      '\n\nGood for ' + MAGIC_MINUTES + ' minutes, once.'
+  });
+  if (!sent) throw new Error('That link could not be emailed. Sign in with the portal password instead.');
+  return { sentTo: SERVICE_EMAIL, minutes: MAGIC_MINUTES };
+}
+
+/**
+ * Spends a mailed link. Success consumes it, and so does expiry — but a
+ * wrong guess does NOT. Clearing the nonce on a mismatch would let anybody
+ * who can reach this endpoint void the writer's real link by submitting
+ * rubbish, over and over. The nonce is 20 characters of base32 and one is
+ * outstanding at a time, so guessing is not the threat; the denial of
+ * service was.
+ */
+function magicSignIn(nonce) {
+  const props = props_();
+  const expected = props.getProperty('MAGIC_NONCE');
+  const expires = Number(props.getProperty('MAGIC_EXP') || 0);
+
+  if (!expected || !nonce || String(nonce) !== expected) {
+    throw new Error('That sign-in link has already been used, or a newer one replaced it. Ask for a fresh one.');
+  }
+  props.deleteProperty('MAGIC_NONCE');
+  props.deleteProperty('MAGIC_EXP');
+  if (Date.now() > expires) {
+    throw new Error('That sign-in link has expired. Ask for a fresh one.');
+  }
+  return { token: seal_({ role: 'admin', exp: Date.now() + 12 * 3600000 }) };
 }
 
 function adminSignIn(password) {

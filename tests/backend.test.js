@@ -524,6 +524,79 @@ describe('the customer email', () => {
   });
 });
 
+describe('the mailed sign-in link', () => {
+  it('goes to the service desk and nowhere else', () => {
+    const result = backend.fn('requestMagicLink');
+    expect(result.sentTo).toBe('service@questwatersports.com');
+    expect(backend.sentMail).toHaveLength(1);
+    expect(backend.sentMail[0].to).toBe('service@questwatersports.com');
+  });
+
+  it('takes no recipient, so it cannot be aimed at a stranger', () => {
+    // Whatever an unauthenticated caller passes is ignored: the address is a
+    // constant, which is the whole of this endpoint's safety.
+    backend.fn('requestMagicLink', 'attacker@example.com');
+    expect(backend.sentMail[0].to).toBe('service@questwatersports.com');
+  });
+
+  it('signs the writer in when the link is followed', () => {
+    backend.fn('requestMagicLink');
+    const link = backend.sentMail[0].body.match(/\?k=([0-9A-Z]{20})/)[1];
+    const token = backend.fn('magicSignIn', link).token;
+    expect(backend.fn('config', token).testMode).toBe(true);
+  });
+
+  it('spends the link — a second use is refused', () => {
+    backend.fn('requestMagicLink');
+    const link = backend.sentMail[0].body.match(/\?k=([0-9A-Z]{20})/)[1];
+    backend.fn('magicSignIn', link);
+    expect(() => backend.fn('magicSignIn', link)).toThrow(/already been used/);
+  });
+
+  it('refuses a link that expired', () => {
+    backend.fn('requestMagicLink');
+    const link = backend.sentMail[0].body.match(/\?k=([0-9A-Z]{20})/)[1];
+    backend.fn('props_').setProperty('MAGIC_EXP', String(Date.now() - 1000));
+    expect(() => backend.fn('magicSignIn', link)).toThrow(/expired/);
+  });
+
+  it('refuses a guess without burning the real link', () => {
+    // Otherwise anyone who can reach the endpoint could stop the writer
+    // signing in, just by posting rubbish at it.
+    backend.fn('requestMagicLink');
+    const real = backend.sentMail[0].body.match(/\?k=([0-9A-Z]{20})/)[1];
+    expect(() => backend.fn('magicSignIn', 'ZZZZZZZZZZZZZZZZZZZZ')).toThrow(/already been used/);
+    expect(() => backend.fn('magicSignIn', '')).toThrow();
+    expect(backend.fn('magicSignIn', real).token).toBeTruthy();
+  });
+
+  it('throttles, because the day only holds about a hundred emails', () => {
+    backend.fn('requestMagicLink');
+    expect(() => backend.fn('requestMagicLink')).toThrow(/ask again in/i);
+    expect(backend.sentMail).toHaveLength(1);
+  });
+
+  it('voids the previous link when a fresh one is asked for', () => {
+    backend.fn('requestMagicLink');
+    const first = backend.sentMail[0].body.match(/\?k=([0-9A-Z]{20})/)[1];
+
+    backend.fn('props_').setProperty('MAGIC_SENT_AT', '0');
+    backend.fn('requestMagicLink');
+    const second = backend.sentMail[1].body.match(/\?k=([0-9A-Z]{20})/)[1];
+    expect(second).not.toBe(first);
+
+    expect(() => backend.fn('magicSignIn', first)).toThrow(/replaced it|already been used/);
+    expect(backend.fn('magicSignIn', second).token).toBeTruthy();
+  });
+
+  it('carries a link to the portal, not to a job', () => {
+    backend.fn('requestMagicLink');
+    const mail = backend.sentMail[0];
+    expect(mail.body).toContain('/admin/?k=');
+    expect(mail.opts.htmlBody).toContain('Open the portal');
+  });
+});
+
 describe('running as an internal tool', () => {
   it('keeps the customer page dark by default, live or not', () => {
     const { token } = seedJob();

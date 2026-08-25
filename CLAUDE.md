@@ -149,6 +149,29 @@ invoice with a deposit against it (`01-7153`) — and encoded in
   still needing writing up. Parts-ordered and paid/closed are job flags.
 - None of it reaches `/t/` — it is all shop bookkeeping.
 
+## Signing in to the portal
+
+Two ways, both landing on the same 12-hour sealed token:
+
+- `ADMIN_PASSWORD`, a script property.
+- A one-time link mailed to `SERVICE_EMAIL` by `requestMagicLink`.
+
+That second one is an **unauthenticated endpoint that sends mail**, so three
+properties hold it together and none of them is optional:
+
+1. **It takes no recipient.** The address is the `SERVICE_EMAIL` constant.
+   Never add a parameter for it — that turns a sign-in helper into something
+   that posts mail to whoever asks.
+2. **One link outstanding at a time**, in `MAGIC_NONCE`/`MAGIC_EXP`. Asking
+   for a new one voids the last; using one clears it.
+3. **A wrong guess does not consume the nonce.** Only success and expiry do.
+   Clearing it on a mismatch would let anyone void the writer's real link by
+   posting rubbish at the endpoint — a denial of service, which is the actual
+   threat here, since a 20-character base32 nonce is not going to be guessed.
+
+`MAGIC_THROTTLE_SECONDS` keeps somebody leaning on the button from spending
+the day's Gmail allowance.
+
 ## Quotas to respect
 
 Consumer Gmail, not Workspace, and the account is shared with the winter app:

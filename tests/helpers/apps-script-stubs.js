@@ -89,6 +89,7 @@ export function loadBackend(options = {}) {
       getScriptProperties: () => ({
         getProperty: (key) => (properties.has(key) ? properties.get(key) : null),
         setProperty: (key, value) => properties.set(key, value),
+        deleteProperty: (key) => properties.delete(key),
       }),
     },
     SpreadsheetApp: {

@@ -45,7 +45,7 @@ the URLs. Safe to re-run: it repairs missing tabs without touching data.
 
 | Property | Value |
 |---|---|
-| `ADMIN_PASSWORD` | the service writer portal password |
+| `ADMIN_PASSWORD` | the service writer portal password — you are choosing it here, not looking it up |
 | `ASSEMBLYAI_API_KEY` | the AssemblyAI key (optional — without it, voice notes keep the audio but get no text) |
 | `WEB_APP_URL` | the `/exec` URL from step 4, so AssemblyAI can call back |
 | `SITE_URL` | where GitHub Pages serves the four pages |

@@ -73,18 +73,30 @@ const go = (query) => { location.search = query; };
 
 /* ------------------------------------------------------------- sign in --- */
 
-function renderSignIn(error) {
+function renderSignIn(error, note) {
   $('topbar').hidden = true;
   view.className = 'wrap narrow';
   view.innerHTML = `
     <div class="card" style="max-width:420px;margin:40px auto">
       <h2>Sign in</h2>
       ${error ? `<div class="banner warn">${esc(error)}</div>` : ''}
+      ${note ? `<div class="banner ok">${esc(note)}</div>` : ''}
       <form id="form">
         <label class="fld" for="password">Portal password</label>
         <input class="txt" id="password" type="password" autocomplete="current-password" autofocus required>
         <button class="btn navy block" type="submit" style="margin-top:16px">Sign in</button>
       </form>
+
+      <div class="row" style="align-items:center;gap:10px;margin:18px 0 14px">
+        <hr style="flex:1;border:0;border-top:1px solid var(--ice)">
+        <span class="hint" style="margin:0">or</span>
+        <hr style="flex:1;border:0;border-top:1px solid var(--ice)">
+      </div>
+      <button class="btn ghost block" type="button" id="maillink">Email me a sign-in link</button>
+      <p class="hint" style="margin-top:8px">
+        Goes to the service desk inbox. Good for one sign-in, and only for a few minutes.
+      </p>
+
       <p class="hint" style="margin-top:14px">
         Mechanics do not sign in here — they open the app on their phone and tap their name.
       </p>
@@ -99,6 +111,38 @@ function renderSignIn(error) {
       renderSignIn(err.message);
     }
   };
+  $('maillink').onclick = async () => {
+    const button = $('maillink');
+    button.disabled = true;
+    button.textContent = 'Sending…';
+    try {
+      const result = await api('requestMagicLink', []);
+      renderSignIn('', `Sent to ${result.sentTo}. The link works once, for ${result.minutes} minutes.`);
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = 'Email me a sign-in link';
+      renderSignIn(err.message);
+    }
+  };
+}
+
+/**
+ * A mailed link arrives as /admin/?k=NONCE. Spend it, then put the address
+ * back to a clean /admin/ so the nonce is not left in history, in the title
+ * bar, or in whatever the next link the writer copies out of it.
+ */
+async function consumeMagicLink(nonce) {
+  try {
+    const result = await api('magicSignIn', [nonce]);
+    storeSession(result.token, { role: 'admin' }, true);
+    history.replaceState(null, '', location.pathname);
+    return null;
+  } catch (err) {
+    history.replaceState(null, '', location.pathname);
+    // A stale link clicked by somebody who is already signed in should not
+    // look like being thrown out. Only report it if there is no session.
+    return storedToken() ? null : err.message;
+  }
 }
 
 /* --------------------------------------------------------------- jobs --- */
@@ -1098,7 +1142,14 @@ async function route() {
 }
 
 $('signout').onclick = () => { clearSession(); location.search = ''; };
-route();
+
+// A sign-in link is spent before anything else looks at the session.
+const magic = params.get('k');
+if (magic) {
+  consumeMagicLink(magic).then((failure) => (failure ? renderSignIn(failure) : route()));
+} else {
+  route();
+}
 </script>
 </body>
 </html>

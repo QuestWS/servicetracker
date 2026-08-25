@@ -55,6 +55,17 @@ function readBody(request) {
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://localhost:${PORT}`);
 
+  // Dev only: what the backend has "sent". Lets browser-check.mjs assert on
+  // real emails — the sign-in link in particular, since the nonce only ever
+  // exists in one. Nothing like this exists in the deployed Apps Script.
+  if (url.pathname === '/dev/mail') {
+    response.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*',
+    });
+    return response.end(JSON.stringify(backend.sentMail));
+  }
+
   if (url.pathname === '/exec') {
     if (request.method === 'OPTIONS') {
       response.writeHead(204, { 'Access-Control-Allow-Origin': '*' });
