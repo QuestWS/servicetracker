@@ -24,6 +24,28 @@ for f in assets/lib/*.js; do
   fi
 done
 
+# The pages carry most of the UI code in an inline <script type="module">,
+# and none of it was ever parsed here. A stray backtick inside an HTML
+# comment in a template literal ended the string, broke the whole module,
+# and the page rendered nothing — found three minutes into a browser run
+# rather than in the second this takes.
+echo "== page scripts =="
+for f in index.html admin/index.html m/index.html t/index.html; do
+  [ -f "$f" ] || continue
+  python3 - "$f" > /tmp/page.mjs <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+print('\n;\n'.join(re.findall(r'<script type="module">(.*?)</script>', src, re.S)))
+PY
+  if [ ! -s /tmp/page.mjs ]; then
+    note "$f (no module script)"
+  elif node --check /tmp/page.mjs 2>/tmp/js.err; then
+    note "$f"
+  else
+    bad "$f: $(head -2 /tmp/js.err | tr '\n' ' ')"
+  fi
+done
+
 echo "== the customer boundary =="
 # The filter that keeps hours, parts, internal notes and mechanic names off
 # the public page. If this function stops existing, or the public entry point
