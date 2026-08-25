@@ -115,20 +115,77 @@ describe('reading a BiT work order', () => {
     expect(parsed.boatInfo).toBe('2021 Yamaha AR195');
   });
 
-  it('keeps the form\'s own column headings out of the unit', () => {
-    // Straight off a live job: the unit read correctly, then the row of
-    // headings underneath it got stapled on, and the boat went onto the job
-    // as "1995 Glastron 15ft · Tax Number Date Charge PO Number".
-    const items = [
-      { str: 'Invoice #  01-8891', x: 218, y: 700 },
-      { str: '1995 Glastron 15ft', x: 218, y: 680 },
-      { str: 'Tax Number  Date  Charge  PO Number', x: 218, y: 665 },
-    ];
-    const lines = items.map((i) => i.str);
-    const parsed = parseWorkOrder({
-      lines, text: lines.join('\n'), pages: [{ items }],
-    });
-    expect(parsed.boatInfo).toBe('1995 Glastron 15ft');
+  /**
+   * Job 01-8891, straight off the shop counter, with the customer's name and
+   * number changed — this repo is public. Every coordinate is the real one,
+   * measured from the PDF, because the geometry is the whole difficulty:
+   * the shop's own phone and email sit ABOVE the customer's block, and the
+   * form's column headings sit inside the unit's column.
+   */
+  const realWorkOrder = () => [
+    // The shop's own letterhead. A fallback that reaches up here emails the
+    // shop instead of the customer.
+    { str: 'Quest Watersports', x: 31, y: 755, width: 77 },
+    { str: '1851 Old Chicago (N2871st) Road', x: 31, y: 744, width: 136 },
+    { str: 'Ottawa IL 61350', x: 31, y: 732, width: 67 },
+    { str: '815-433-2200', x: 31, y: 721, width: 57 },
+    { str: 'service@questwatersports.com', x: 31, y: 710, width: 129 },
+    { str: 'questwatersports.com', x: 31, y: 698, width: 92 },
+    // Two columns, both headings on one row.
+    { str: 'Sold To:', x: 31, y: 616, width: 32 },
+    { str: 'Invoice # 01-8891', x: 218, y: 616, width: 72 },
+    { str: 'Dale Rivers', x: 31, y: 593, width: 67 },
+    { str: '1995 Glastron 15ft', x: 218, y: 593, width: 76 },
+    { str: 'MP 815-555-0142', x: 31, y: 554, width: 73 },
+    // The form's own column headings, in the unit's column and inside the
+    // window the unit is read from.
+    { str: 'Invoice', x: 56, y: 538, width: 29 },
+    { str: 'Salesperson', x: 117, y: 538, width: 49 },
+    { str: 'Customer', x: 193, y: 538, width: 40 },
+    { str: 'Tax Number', x: 273, y: 538, width: 50 },
+    { str: 'Date', x: 359, y: 538, width: 19 },
+    { str: 'Charge', x: 411, y: 538, width: 29 },
+    { str: 'PO Number', x: 501, y: 538, width: 47 },
+    { str: '01-8891', x: 54, y: 524, width: 33 },
+    { str: 'SC', x: 137, y: 524, width: 10 },
+    { str: '3435', x: 202, y: 524, width: 20 },
+    { str: '08/25/2026', x: 344, y: 524, width: 48 },
+  ];
+
+  const parseReal = () => {
+    const items = realWorkOrder();
+    const lines = groupIntoLines(items);
+    return parseWorkOrder({ lines, text: lines.join('\n'), pages: [{ items }] });
+  };
+
+  it('reads a real counter work order', () => {
+    const parsed = parseReal();
+    expect(parsed.invoiceNumber).toBe('01-8891');
+    expect(parsed.customerName).toBe('Dale Rivers');
+    expect(parsed.customerPhone).toBe('(815) 555-0142');
+  });
+
+  it("never mistakes the shop's own details for the customer's", () => {
+    // The shop's phone and email are printed above every customer's block.
+    // Reading either is how a customer's invoice gets emailed to the shop.
+    const parsed = parseReal();
+    expect(parsed.customerPhone).not.toBe('(815) 433-2200');
+    expect(parsed.customerEmail).not.toBe('service@questwatersports.com');
+  });
+
+  it("keeps the form's own column headings out of the unit", () => {
+    // This job went onto the board as "1995 Glastron 15ft · Tax Number Date
+    // Charge PO Number" — the unit read correctly, with the heading row
+    // underneath it stapled on.
+    expect(parseReal().boatInfo).toBe('1995 Glastron 15ft');
+  });
+
+  it('reports a missing email rather than inventing one', () => {
+    // This customer has no email on file, and BiT prints nothing at all for
+    // a field that is empty.
+    const parsed = parseReal();
+    expect(parsed.customerEmail).toBeNull();
+    expect(parsed.missing).toEqual(['customerEmail']);
   });
 
   it('finds nothing in a PDF with no text layer, and says so', () => {
