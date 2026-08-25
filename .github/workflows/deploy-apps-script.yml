@@ -127,10 +127,36 @@ jobs:
                       except Exception:
                           cred = None
           if cred is None:
-              print('::error::CLASPRC_JSON could not be parsed as JSON or as base64-encoded JSON. '
-                    'The usual cause is copying the shell prompt along with the value. '
-                    'Re-store it using the BEGIN/END markers in docs/DEPLOY.md step 4 '
-                    'and copy only what is between them.')
+              # Say WHAT is wrong with the value, not what it is. None of this
+              # reveals the credential: a length, an offset, and a character
+              # class are not secrets, and guessing blind costs a round trip
+              # through a human every time.
+              flat = re.sub(rb'\s+', b'', raw)
+              print('Diagnosis: %d bytes stored, %d after removing whitespace.'
+                    % (len(raw), len(flat)))
+              alphabet = set(b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
+              bad = next((i for i, ch in enumerate(flat) if ch not in alphabet), None)
+              if bad is not None:
+                  ch = flat[bad]
+                  kind = ('a control character' if ch < 32 else
+                          'a non-ASCII byte' if ch > 126 else
+                          'the punctuation %r' % chr(ch))
+                  print('First character outside the base64 alphabet is at offset %d: %s.'
+                        % (bad, kind))
+                  if chr(ch) in '{"':
+                      print('That looks like raw JSON with something wrong in it — '
+                            'a truncated copy, or smart quotes from a word processor.')
+              elif len(flat) % 4:
+                  print('Valid base64 characters throughout, but the length is not a '
+                        'multiple of 4 (remainder %d) — the copy is INCOMPLETE. '
+                        'The usual cause is selecting wrapped text in a terminal and '
+                        'missing the start or the end.' % (len(flat) % 4))
+              else:
+                  print('Decodes as base64 but the result is not JSON — most likely '
+                        'a complete-looking but partial copy.')
+              print('::error::CLASPRC_JSON could not be parsed as JSON or as base64-encoded '
+                    'JSON. See the diagnosis above. docs/DEPLOY.md step 4 has the reliable '
+                    'way to copy it.')
               sys.exit(1)
           if not isinstance(cred, dict) or not cred:
               print('::error::CLASPRC_JSON parsed but is not a credential object.')
