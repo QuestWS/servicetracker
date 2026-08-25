@@ -193,6 +193,7 @@ function renderHome(message) {
     <div class="stack">
       <button class="btn gold big block" type="button" id="scan">Scan work order</button>
       <button class="btn ghost big block" type="button" id="manual">Type invoice number instead</button>
+      <button class="btn ghost big block" type="button" id="openjobs">Pick from open jobs</button>
       <button class="btn ghost block" type="button" id="reqpart">Request a part for stock</button>
       <p style="color:#9fc3dc;font-size:14px;line-height:1.5">
         Scan the QR code printed on the paper work order. Scanning starts the job — you will be
@@ -213,7 +214,65 @@ function renderHome(message) {
   if (signout) signout.onclick = () => { clearSession(); state.who = null; renderHome(); };
   $('scan').onclick = renderScanning;
   $('manual').onclick = renderManual;
+  $('openjobs').onclick = renderOpenJobs;
   $('reqpart').onclick = renderPartRequest;
+}
+
+/**
+ * Every boat still on the floor, for when the mechanic has neither the paper
+ * nor the number.
+ *
+ * The list is behind the roster: one job looked up by its number means you
+ * are holding the work order, but the whole list is every customer's name
+ * and boat at once. So an unsigned mechanic is sent to sign in first and
+ * brought straight back here.
+ */
+async function renderOpenJobs() {
+  stopScanning();
+  if (!state.who) return signInThen(renderOpenJobs);
+
+  view.innerHTML = `<p class="loading" style="color:#9fc3dc">Loading open jobs…</p>`;
+  let jobs;
+  try {
+    jobs = (await api('openJobs', [])).jobs;
+  } catch (error) {
+    // A remembered session that has since expired.
+    if (/Sign in/i.test(error.message)) {
+      state.who = null;
+      return signInThen(renderOpenJobs);
+    }
+    return renderHome(error.message);
+  }
+
+  view.innerHTML = `
+    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
+      <h2 style="margin:0;color:#fff">Open jobs (${jobs.length})</h2>
+      <button class="btn ghost sm" type="button" id="back">Back</button>
+    </div>
+    ${jobs.length ? `<div class="stack">
+      ${jobs.map((job, index) => `
+        <button class="btn ghost block joblist" type="button" data-pick="${index}"
+                style="text-align:left;padding:14px">
+          <div style="font-family:var(--mono);font-weight:bold">${esc(job.id)}</div>
+          <div style="font-size:15px;margin-top:2px">${esc(job.customerName || '(no name)')}</div>
+          <div style="font-size:14px;opacity:.8">${esc(job.boatInfo || '(no boat details)')}</div>
+          <div style="font-size:12px;opacity:.7;margin-top:4px">${esc(job.statusLabel)}</div>
+        </button>`).join('')}
+    </div>` : `<p style="color:#9fc3dc">Nothing open right now.</p>`}`;
+
+  $('back').onclick = () => renderHome();
+  view.querySelectorAll('[data-pick]').forEach((button) => {
+    button.onclick = () => {
+      const job = jobs[Number(button.dataset.pick)];
+      // Picking off the list is not scanning the paper, so it does not start
+      // the job — opening it does what a scan would have done next.
+      state.job = { id: job.id, token: job.token, boatInfo: job.boatInfo,
+                    customerName: job.customerName, workRequested: job.workRequested,
+                    status: job.status, statusLabel: job.statusLabel };
+      // loadJob, not renderJob: the log and the hours have to come with it.
+      loadJob();
+    };
+  });
 }
 
 /**
@@ -348,6 +407,10 @@ async function renderSignIn() {
     <div class="card" style="margin-bottom:14px">
       <div class="kv"><span class="k">Job</span><b style="font-family:var(--mono)">${esc(state.job.id)}</b></div>
       <div class="kv"><span class="k">Boat</span><b>${esc(state.job.boatInfo || '—')}</b></div>
+      ${state.job.workRequested ? `<div style="margin-top:10px">
+        <div class="k" style="margin-bottom:4px">What needs doing</div>
+        <div style="font-size:15px;line-height:1.5">${esc(state.job.workRequested)}</div>
+      </div>` : ''}
     </div>
     <div class="card"><p class="loading">Loading the crew list…</p></div>`;
 
@@ -489,6 +552,10 @@ function renderJob() {
         <span class="pill frost">${esc(job.statusLabel)}</span>
       </div>
       <p class="hint" style="margin-top:8px">Logging as <b>${esc(state.who.name)}</b>${state.hours && state.hours.total ? ` · ${formatHours(state.hours.total)} on this job so far` : ''}</p>
+      ${job.workRequested ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--ice)">
+        <div class="fld" style="margin:0 0 4px">What needs doing</div>
+        <div style="font-size:15px;line-height:1.5;color:var(--navy)">${esc(job.workRequested)}</div>
+      </div>` : ''}
     </div>
 
     <div id="notice"></div>

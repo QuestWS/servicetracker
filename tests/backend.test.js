@@ -531,6 +531,90 @@ describe('the customer email', () => {
   });
 });
 
+describe('what the mechanic needs before touching the boat', () => {
+  it('carries the work asked for onto the job', () => {
+    backend.fn('createJob', adminToken, {
+      invoiceNumber: '01-8891',
+      customerName: 'Garrett B',
+      boatInfo: '1995 Glastron 15ft',
+      workRequested: 'Look over shift cable. Call customer to go over specifics.',
+    });
+    expect(backend.fn('getJob', adminToken, '01-8891').job.workRequested)
+      .toBe('Look over shift cable. Call customer to go over specifics.');
+  });
+
+  it('answers a typed-in number with the work, not just the boat', () => {
+    // Typing the number instead of scanning means the paper is somewhere
+    // else, so the job has to say what it needs.
+    backend.fn('createJob', adminToken, {
+      invoiceNumber: '01-8891', customerName: 'Garrett B', workRequested: 'Look over shift cable.',
+    });
+    expect(backend.fn('lookupJob', '01-8891', 'typed').job.workRequested).toBe('Look over shift cable.');
+  });
+
+  it('lets the writer correct it', () => {
+    backend.fn('createJob', adminToken, { invoiceNumber: '01-8891', workRequested: 'Garbled OCR' });
+    backend.fn('saveJobDetails', adminToken, '01-8891', { workRequested: 'Replace impeller' });
+    expect(backend.fn('jobRow_', '01-8891').work_requested).toBe('Replace impeller');
+  });
+});
+
+describe('picking a job off a list', () => {
+  function seedFloor() {
+    backend.fn('createJob', adminToken, {
+      invoiceNumber: '01-8891', customerName: 'Garrett B', boatInfo: '1995 Glastron 15ft',
+    });
+    backend.fn('createJob', adminToken, {
+      invoiceNumber: '01-8892', customerName: 'Jane Rivers', boatInfo: '2019 Yamaha 242X',
+      customerEmail: 'jane@example.com',
+    });
+    return backend.fn('mechanicSignIn', 'Dale', true).token;
+  }
+
+  it('lists ticket, customer and boat for everything still open', () => {
+    const mech = seedFloor();
+    const { jobs } = backend.fn('openJobs', mech);
+    expect(jobs).toHaveLength(2);
+    expect(jobs.map((j) => j.id).sort()).toEqual(['01-8891', '01-8892']);
+    const one = jobs.find((j) => j.id === '01-8891');
+    expect(one.customerName).toBe('Garrett B');
+    expect(one.boatInfo).toBe('1995 Glastron 15ft');
+    // The token is what opening the job needs.
+    expect(one.token).toMatch(/^[0-9A-HJ-NP-TV-Z]{20}$/);
+  });
+
+  it('drops a job once it is closed out', () => {
+    const mech = seedFloor();
+    backend.fn('markDone', adminToken, '01-8892');
+    expect(backend.fn('openJobs', mech).jobs.map((j) => j.id)).toEqual(['01-8891']);
+  });
+
+  it('puts the boats being worked on at the top', () => {
+    const mech = seedFloor();
+    const token = backend.fn('jobRow_', '01-8892').token;
+    backend.fn('addEntry', mech, token, { entryType: 'internal_note', text: 'Started on it.' });
+    expect(backend.fn('openJobs', mech).jobs[0].id).toBe('01-8892');
+  });
+
+  it('needs a signed-in mechanic — it is every customer on the floor at once', () => {
+    // Looking one job up by its number means you are holding the paper.
+    // Listing them all is a different disclosure and needs the roster.
+    seedFloor();
+    expect(() => backend.fn('openJobs', '')).toThrow(/Sign in/);
+    expect(() => backend.fn('openJobs', 'not-a-token')).toThrow(/Sign in/);
+  });
+
+  it('and does not leak the shop\'s own bookkeeping', () => {
+    const mech = seedFloor();
+    backend.fn('setJobFlag', adminToken, '01-8891', 'paid', true);
+    const seen = JSON.stringify(backend.fn('openJobs', mech));
+    expect(seen).not.toContain('paidAt');
+    expect(seen).not.toContain('amountDue');
+    expect(seen).not.toContain('customer_email');
+    expect(seen).not.toContain('jane@example.com');
+  });
+});
+
 describe('a BiT invoice number as a primary key', () => {
   // Sheets reads `01-8891` as the first of January, 8891. That turned the
   // job's own id into a Date, every lookup by id missed, and the portal

@@ -117,7 +117,7 @@ const SHEETS = {
          'status', 'needs_review', 'work_order_file', 'invoice_file', 'payment_link',
          'created_at', 'updated_at', 'work_started_at', 'work_finished_at', 'done_at',
          'grand_total', 'deposits', 'amount_due',
-         'parts_ordered_at', 'paid_at'],
+         'parts_ordered_at', 'paid_at', 'work_requested'],
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
                'transcript_id', 'transcript_error', 'notified_at', 'created_at',
@@ -404,6 +404,7 @@ function doPost(e) {
     signIn:           function (a) { return mechanicSignIn(a[0], a[1]); },
     lookupJob:        function (a) { return lookupJob(a[0], a[1]); },
     jobForMechanic:   function (a) { return jobForMechanic(data.token, a[0]); },
+    openJobs:         function (a) { return openJobs(data.token); },
     addEntry:         function (a) { return addEntry(data.token, a[0], a[1]); },
     finishWork:       function (a) { return finishWork(data.token, a[0]); },
 
@@ -491,6 +492,7 @@ function jobSummary_(job) {
     grandTotal: numberOrNull_(job.grand_total),
     deposits: numberOrNull_(job.deposits),
     amountDue: numberOrNull_(job.amount_due),
+    workRequested: job.work_requested || null,
     partsOrderedAt: job.parts_ordered_at || null,
     paidAt: job.paid_at || null,
     trackingUrl: trackingUrl_(job),
@@ -536,6 +538,9 @@ function createJob(token, payload) {
       customer_phone: payload.customerPhone || '',
       customer_email: payload.customerEmail || '',
       boat_info: payload.boatInfo || '',
+      // What the customer asked for, off the body of the work order. This is
+      // the one field a mechanic needs before touching the boat.
+      work_requested: payload.workRequested || '',
       status: 'received',
       needs_review: missingFields_(payload).join(','),
       work_order_file: '',
@@ -632,6 +637,7 @@ function saveJobDetails(token, id, fields) {
     customer_phone: fields.customerPhone || '',
     customer_email: fields.customerEmail || '',
     boat_info: fields.boatInfo || '',
+    work_requested: fields.workRequested || '',
     // The flag list is derived, never typed: filling a field clears its flag.
     needs_review: missingFields_(fields).join(','),
     updated_at: nowIso_()
@@ -1352,10 +1358,53 @@ function lookupJob(code, source) {
       token: fresh.token,
       boatInfo: fresh.boat_info,
       customerName: fresh.customer_name,
+      // Typing the number instead of scanning means the paper is elsewhere,
+      // so the work to be done has to come back with the job.
+      workRequested: fresh.work_requested || null,
       status: fresh.status,
       statusLabel: STATUS_LABEL[fresh.status]
     }
   };
+}
+
+/**
+ * Every job still on the floor, for a mechanic who has the boat but not the
+ * paperwork.
+ *
+ * This one needs a signed-in mechanic, unlike lookupJob. Looking a job up by
+ * its number means you are holding the work order, or were told the number;
+ * listing every open job hands over every customer's name and boat to
+ * anyone who can reach the endpoint. Same information, very different
+ * disclosure, so the roster is the gate.
+ *
+ * Done jobs are left out: the list is "what could I be working on", not an
+ * archive.
+ */
+function openJobs(token) {
+  requireMechanic_(token);
+  const jobs = rows_('Jobs')
+    .filter(function (job) { return job.status !== 'done'; })
+    .map(function (job) {
+      return {
+        id: job.id,
+        token: job.token,
+        customerName: job.customer_name || '',
+        boatInfo: job.boat_info || '',
+        workRequested: job.work_requested || '',
+        status: job.status,
+        statusLabel: STATUS_LABEL[job.status]
+      };
+    });
+
+  // Underway first — that is the boat someone is standing next to — then
+  // waiting, then finished but not yet written up.
+  const rank = { work_underway: 0, received: 1, work_finished: 2 };
+  jobs.sort(function (a, b) {
+    const byStatus = (rank[a.status] === undefined ? 9 : rank[a.status]) -
+                     (rank[b.status] === undefined ? 9 : rank[b.status]);
+    return byStatus !== 0 ? byStatus : String(a.id).localeCompare(String(b.id));
+  });
+  return { jobs: jobs };
 }
 
 /**

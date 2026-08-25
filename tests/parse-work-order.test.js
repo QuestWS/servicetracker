@@ -180,6 +180,59 @@ describe('reading a BiT work order', () => {
     expect(parseReal().boatInfo).toBe('1995 Glastron 15ft');
   });
 
+  it('carries the work the customer asked for', () => {
+    // The band between the invoice detail row and the legal boilerplate.
+    // This is what a mechanic needs to see when they open the job.
+    const items = realWorkOrder().concat([
+      { str: '01-8891', x: 54, y: 524, width: 33 },
+      { str: '08/25/2026', x: 344, y: 524, width: 48 },
+      { str: 'Need another part (see attached bag). Look over shift cable.', x: 31, y: 497, width: 382 },
+      { str: 'I hereby authorize the above repair work to be done.', x: 31, y: 470, width: 400 },
+      { str: 'Sale Total 0.00', x: 460, y: 470, width: 60 },
+    ]);
+    const lines = groupIntoLines(items);
+    const parsed = parseWorkOrder({ lines, text: lines.join('\n'), pages: [{ items }] });
+    expect(parsed.workRequested).toBe('Need another part (see attached bag). Look over shift cable.');
+  });
+
+  it('keeps the legal boilerplate and the totals out of it', () => {
+    const items = realWorkOrder().concat([
+      { str: '01-8891', x: 54, y: 524, width: 33 },
+      { str: '08/25/2026', x: 344, y: 524, width: 48 },
+      { str: 'Look over shift cable.', x: 31, y: 497, width: 120 },
+      { str: 'I hereby authorize the above repair work to be done.', x: 31, y: 470, width: 400 },
+      { str: 'Grand Total 1,632.47', x: 460, y: 455, width: 70 },
+    ]);
+    const lines = groupIntoLines(items);
+    const parsed = parseWorkOrder({ lines, text: lines.join('\n'), pages: [{ items }] });
+    expect(parsed.workRequested).toBe('Look over shift cable.');
+    expect(parsed.workRequested).not.toMatch(/authorize|Total|1,632/);
+  });
+
+  it('ignores the filler rows a form prints between fields', () => {
+    const items = realWorkOrder().concat([
+      { str: '01-8891', x: 54, y: 524, width: 33 },
+      { str: '08/25/2026', x: 344, y: 524, width: 48 },
+      { str: 'Look over shift cable.', x: 31, y: 497, width: 120 },
+      { str: '.', x: 31, y: 486, width: 3 },
+      { str: '_________________', x: 31, y: 475, width: 90 },
+      { str: 'I hereby authorize the above repair work to be done.', x: 31, y: 460, width: 400 },
+    ]);
+    const lines = groupIntoLines(items);
+    const parsed = parseWorkOrder({ lines, text: lines.join('\n'), pages: [{ items }] });
+    expect(parsed.workRequested).toBe('Look over shift cable.');
+  });
+
+  it('says nothing rather than guessing when the band is empty', () => {
+    const items = realWorkOrder().concat([
+      { str: '01-8891', x: 54, y: 524, width: 33 },
+      { str: '08/25/2026', x: 344, y: 524, width: 48 },
+      { str: 'I hereby authorize the above repair work to be done.', x: 31, y: 470, width: 400 },
+    ]);
+    const lines = groupIntoLines(items);
+    expect(parseWorkOrder({ lines, text: lines.join('\n'), pages: [{ items }] }).workRequested).toBeNull();
+  });
+
   it('reports a missing email rather than inventing one', () => {
     // This customer has no email on file, and BiT prints nothing at all for
     // a field that is empty.

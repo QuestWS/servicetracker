@@ -67,6 +67,11 @@ check('reads the customer name', parsed.customerName === 'JOHN SMITH', parsed.cu
 check('reads the phone', parsed.customerPhone === '(815) 555-0142', parsed.customerPhone);
 check('reads the email', parsed.customerEmail === 'jsmith@example.com', parsed.customerEmail);
 check('reads the unit', /Yamaha/.test(parsed.boatInfo), parsed.boatInfo);
+// The work band, off the body of the form — what the mechanic reads first.
+const workRequested = await admin.inputValue('#workRequested');
+check('reads what needs doing off the work order',
+  /port engine stalling at idle/i.test(workRequested), workRequested);
+check('and stops before the legal boilerplate', !/hereby authorize|Sale Total/i.test(workRequested));
 await admin.screenshot({ path: `${SHOTS}/40-intake-review.png`, fullPage: true });
 
 await admin.click('#create');
@@ -107,6 +112,10 @@ await mech.fill('#name', 'Dale');
 await mech.click('#nameform button[type=submit]');
 await mech.waitForSelector('.segmented', { timeout: 15000 });
 check('signs in by typing a name', (await mech.textContent('.card')).includes(invoiceNumber));
+
+// What needs doing has to reach the person holding the wrench.
+check('the job screen shows what needs doing',
+  /port engine stalling at idle/i.test(await mech.evaluate(() => document.body.innerText)));
 
 await mech.click('.segmented button[data-tab="labor"]');
 await mech.waitForSelector('#hours');
@@ -351,6 +360,67 @@ check('sends the customer nothing internal', !/6BH-44352|impeller housing|Dale|h
 await customer.goto(`${BASE}/t/?j=ZZZZZZZZZZZZZZZZZZZZ`, { waitUntil: 'networkidle' });
 check('a wrong token says so plainly', (await customer.content()).includes('Link not found'));
 
+/* --------------------------------------------------------- open jobs list */
+console.log('\n== picking a job off the list ==');
+// A job this mechanic never scanned and has no paper for — which is the
+// whole point of the list. Created through the writer's own API so the
+// section does not depend on what earlier sections left behind (by now the
+// first job has been closed out, and a closed job is deliberately not on
+// this list).
+const FLOOR_INVOICE = `01-${String(Math.floor(1000 + Math.random() * 8999))}`;
+const seeded = await admin.evaluate(async ({ base, invoice }) => {
+  const token = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const res = await fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn: 'createJob', token, args: [{
+      invoiceNumber: invoice,
+      customerName: 'AVA STONE',
+      boatInfo: '2021 Yamaha AR195',
+      workRequested: 'Winterise and replace the impeller.',
+    }] }),
+  });
+  return res.json();
+}, { base: BASE, invoice: FLOOR_INVOICE });
+check('a second job is on the floor', !seeded.error, seeded.error);
+
+const floor = await browser.newContext({ viewport: { width: 430, height: 900 } });
+const picker = await floor.newPage();
+const pickerErrors = [];
+picker.on('pageerror', (error) => pickerErrors.push(String(error)));
+picker.on('console', (message) => { if (message.type() === 'error' && !isEnvironmental(message.text())) pickerErrors.push(message.text()); });
+
+await picker.goto(`${BASE}/m/`, { waitUntil: 'networkidle' });
+await picker.waitForSelector('#openjobs');
+
+// Signed out, the list must ask who you are first: one job by number means
+// you hold the paper, the whole list is every customer at once.
+await picker.click('#openjobs');
+await picker.waitForSelector('#name, .namegrid', { timeout: 15000 });
+check('the list asks who you are before showing it',
+  /who is working|your name/i.test(await picker.evaluate(() => document.body.innerText)));
+
+if (await picker.locator('#other').count()) await picker.click('#other');
+await picker.waitForSelector('#name');
+await picker.fill('#name', 'Dale');
+await picker.click('#nameform button[type=submit]');
+
+await picker.waitForSelector('[data-pick]', { timeout: 20000 });
+const listed = await picker.evaluate(() => document.body.innerText);
+check('lists the ticket number', listed.includes(FLOOR_INVOICE), listed.slice(0, 200));
+check('lists the customer', /AVA STONE/i.test(listed));
+check('lists the boat', /2021 Yamaha AR195/i.test(listed));
+check('leaves the closed-out job off it', !listed.includes(invoiceNumber));
+await picker.screenshot({ path: `${SHOTS}/43-open-jobs.png`, fullPage: true });
+
+await picker.click(`[data-pick="0"]`);
+await picker.waitForSelector('.segmented', { timeout: 20000 });
+const opened = await picker.evaluate(() => document.body.innerText);
+check('opens the job straight from the list', opened.includes(FLOOR_INVOICE));
+check('and carries what needs doing with it', /winterise and replace the impeller/i.test(opened),
+  opened.slice(0, 200));
+await picker.close();
+
 /* ------------------------------------------------------------- magic link */
 // Its own context, so it starts signed out and cannot disturb anything above.
 console.log('\n== mailed sign-in link ==');
@@ -396,6 +466,7 @@ check('service writer console clean', adminErrors.length === 0, adminErrors.join
 check('mechanic console clean', mechErrors.length === 0, mechErrors.join(' | '));
 check('customer console clean', customerErrors.length === 0, customerErrors.join(' | '));
 check('sign-in console clean', visitorErrors.length === 0, visitorErrors.join(' | '));
+check('open-jobs console clean', pickerErrors.length === 0, pickerErrors.join(' | '));
 
 await browser.close();
 console.log(`\n${failures.length ? `FAILED: ${failures.join(', ')}` : 'browser-check: all good'}`);

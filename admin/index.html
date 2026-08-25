@@ -282,6 +282,10 @@ async function renderJob(id) {
             <input class="txt${job.needsReview.includes('customerEmail') ? ' field-flag' : ''}" id="customerEmail" type="email" value="${esc(job.customerEmail || '')}">
             <label class="fld" for="boatInfo">Boat / engine</label>
             <input class="txt${job.needsReview.includes('boatInfo') ? ' field-flag' : ''}" id="boatInfo" value="${esc(job.boatInfo || '')}">
+
+            <label class="fld" for="workRequested">What needs doing</label>
+            <textarea class="txt" id="workRequested" rows="3">${esc(job.workRequested || '')}</textarea>
+            <p class="hint">Shown to the mechanic when they open this job.</p>
             <button class="btn navy" type="submit" style="margin-top:14px">Save details</button>
           </form>
         </section>
@@ -495,6 +499,7 @@ async function renderJob(id) {
         customerPhone: $('customerPhone').value,
         customerEmail: $('customerEmail').value,
         boatInfo: $('boatInfo').value,
+        workRequested: $('workRequested').value,
       }]);
       renderJob(job.id);
       toast('Customer details saved.');
@@ -686,6 +691,10 @@ function renderReview() {
       <label class="fld" for="${key}">${label}</label>
       <input class="txt ${extra} ${parsed.missing.includes(key) ? 'field-flag' : ''}" id="${key}" value="${esc(parsed[key] || '')}">
     `).join('')}
+    <label class="fld" for="workRequested">What needs doing</label>
+    <textarea class="txt" id="workRequested" rows="3">${esc(parsed.workRequested || '')}</textarea>
+    <p class="hint">Read off the work order. This is what the mechanic sees when they open the
+      job, so it matters most when they are working from the boat rather than the paper.</p>
     <div class="row" style="margin-top:16px">
       <button class="btn navy" type="button" id="create">Create job &amp; stamp the QR code</button>
       <button class="btn ghost" type="button" id="restart">Start over</button>
@@ -720,6 +729,7 @@ async function createJob() {
       customerPhone: $('customerPhone').value.trim(),
       customerEmail: $('customerEmail').value.trim(),
       boatInfo: $('boatInfo').value.trim(),
+      workRequested: $('workRequested').value.trim(),
     }]);
     const job = created.job;
 

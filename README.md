@@ -28,7 +28,12 @@ change; the logging does.
    stamps a QR code onto the same document. Job status: `Received`.
 3. They print that copy and put it in the folder, same as today.
 4. **Mechanic** opens the app on their phone and scans the QR straight off the
-   paper. The job moves to `Work underway` on that scan.
+   paper. The job moves to `Work underway` on that scan. No paper to hand?
+   They can type the invoice number, or pick the boat off a list of every open
+   job — ticket number, customer and boat — which asks them to sign in first,
+   because that list is every customer on the floor at once.
+   Either way the job opens with **what needs doing** on it, read off the work
+   order at intake.
 5. They tap their name, then log as they go: hours and what they did with them,
    customer notes, internal notes, parts, photos — typed or spoken.
 6. When the boat is physically done they mark **Work finished**.

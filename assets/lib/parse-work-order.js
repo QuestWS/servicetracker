@@ -26,6 +26,7 @@ const INVOICE_PATTERNS = [
 ];
 
 const PHONE_RE = /(\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/;
+const DATE_RE = /\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/;
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 
 const CUSTOMER_BLOCK_LABELS = ['sold to', 'bill to', 'customer', 'billed to', 'sold to:'];
@@ -263,6 +264,51 @@ function findUnitColumn(items) {
 }
 
 /**
+ * What the customer actually asked for, off the body of the work order.
+ *
+ * On a BiT form this sits in a band of its own: below the invoice detail row
+ * (`01-8891  SC  3435  08/25/2026  N`) and above the legal boilerplate that
+ * starts "I hereby authorize". Both edges are stable printed furniture, which
+ * is what makes the band findable without knowing what is written in it.
+ *
+ * The totals column shares rows with the legal text on the last page, so the
+ * end anchor is deliberately the FIRST line of the boilerplate — everything
+ * below it is either legalese or money, and neither is a work instruction.
+ */
+const LEGAL_ANCHOR = /hereby\s+authorize/i;
+const DETAIL_HEADINGS = /\bsalesperson\b/i;
+
+export function findWorkRequested(lines, invoiceNumber) {
+  const legal = lines.findIndex((line) => LEGAL_ANCHOR.test(line));
+  if (legal <= 0) return null;
+
+  let start = -1;
+  for (let i = legal - 1; i >= 0; i--) {
+    const line = lines[i];
+    // The values row: repeats the invoice number alongside the job's date.
+    if (invoiceNumber && line.includes(invoiceNumber) && DATE_RE.test(line)) {
+      start = i + 1;
+      break;
+    }
+    // Fall back to the headings row, whose values row is the line under it.
+    if (DETAIL_HEADINGS.test(line)) {
+      start = i + 2;
+      break;
+    }
+  }
+  if (start === -1 || start >= legal) return null;
+
+  const body = lines
+    .slice(start, legal)
+    .map((line) => line.trim())
+    // Forms carry filler rows — a lone dot, a rule, a row of underscores.
+    // A work instruction has letters or digits in it.
+    .filter((line) => line && !LABEL_WORDS_ONLY.test(line) && /[A-Za-z0-9]/.test(line));
+  if (!body.length) return null;
+  return body.join(' ').replace(/\s+/g, ' ').slice(0, 1000);
+}
+
+/**
  * `input.pages[0].items` is page one's positioned text runs, when available.
  * They are what make a two-column layout readable.
  *
@@ -331,6 +377,9 @@ export function parseWorkOrder(input) {
     customerPhone,
     customerEmail: customerEmail?.toLowerCase() ?? null,
     boatInfo,
+    // Not in `missing`: plenty of jobs are written up at the counter with
+    // nothing typed in this band, and the writer can fill it in by hand.
+    workRequested: findWorkRequested(lines, invoiceNumber),
     missing,
   };
 }

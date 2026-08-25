@@ -48,8 +48,12 @@ the URLs. Safe to re-run: it repairs missing tabs without touching data.
 | `ADMIN_PASSWORD` | the service writer portal password — you are choosing it here, not looking it up |
 | `ASSEMBLYAI_API_KEY` | the AssemblyAI key (optional — without it, voice notes keep the audio but get no text) |
 | `WEB_APP_URL` | the `/exec` URL from step 4, so AssemblyAI can call back |
-| `SITE_URL` | where GitHub Pages serves the four pages |
 | `TEST_EMAIL` | where a held customer email goes to be read (defaults to the service desk) |
+
+`SITE_URL` is **not** a script property — it is a constant at the top of
+`service-tracker.gs`, deliberately. It is printed into every QR code, so
+changing it invalidates paper already in the job folder; that belongs in a
+reviewed, deployed commit rather than a text box.
 
 Two more decide the posture. Both have safe defaults, so neither needs setting
 on a fresh deployment:

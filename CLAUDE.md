@@ -93,6 +93,17 @@ a code path that writes to a sheet without going through `appendRow_` or
 
 - Photos are `[{thumb, full}]` JSON in one cell — the browser uploads two sizes
   so the feed is cheap and the lightbox is sharp.
+- **`work_requested` is what the customer asked for**, parsed off the body of
+  the work order — the band between the invoice detail row and the "I hereby
+  authorize" boilerplate, both of which are printed furniture and so make the
+  band findable without knowing what is in it. It is the one field a mechanic
+  needs before touching the boat, so it rides along with `lookupJob` (a typed
+  number means the paper is elsewhere) and with the open-jobs list. It is
+  never in `missing`: plenty of jobs are written up with that band empty.
+- **`openJobs` needs a signed-in mechanic; `lookupJob` does not.** Looking one
+  job up by its number means you are holding the work order. Listing every
+  open job hands over every customer's name and boat at once — same
+  information, very different disclosure, so the roster is the gate.
 - **The mechanic app logs three things: Hours, Parts, Notes** — in that order.
   Customer notes were dropped; notes are the shop's own record now. The
   `customer_note` type is still live in the backend and still the only thing
