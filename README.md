@@ -36,12 +36,14 @@ change; the logging does.
    invoice, uploads it here with the POS+ payment link. The browser reads the
    totals off it — a job with a deposit against it owes nothing like its grand
    total — and the writer confirms the balance before it goes anywhere.
-8. They **Mark done**. That is the one moment a customer-facing email fires:
-   tracking link, invoice PDF, payment link, and what they actually owe.
+8. They **Mark done**, which closes the ticket and sends nothing.
+9. When they want the customer to have it, they press **Email the invoice** —
+   a separate, deliberate act. That email is the only thing a customer ever
+   receives: the invoice PDF, the payment link, and what they actually owe.
 
 ```
 Received ──scan──▶ Work underway ──mechanic──▶ Work finished ──writer──▶ Done
-                                                                          └─ customer email
+                                                                          └─ writer presses send
 ```
 
 Status never runs backwards.
@@ -52,7 +54,7 @@ Status never runs backwards.
 |---|---|---|
 | `/admin/` | Service writer | Job list, intake, full log, close-out, mechanics roster |
 | `/m/` | Mechanics | Installable PWA: scan → name → log → finish |
-| `/t/?j=…` | Customer | Public, unguessable URL. Status and customer-facing notes only |
+| `/t/?j=…` | Customer | Public, unguessable URL. Status and customer-facing notes only. **Off by default** — see below |
 
 ### The customer never sees
 
@@ -140,25 +142,47 @@ is in [docs/DEPLOY.md](docs/DEPLOY.md).
   parts ordered, invoice paid and ticket closed. Ticking the first draws a line
   under everything logged so far, so anything a mechanic adds later stands out
   as still needing writing up.
+- **This runs as an internal tool.** The customer tracking page is switched
+  off, and nothing is ever sent automatically. See below.
 - **Test mode is on until you turn it off**, so nothing reaches a customer
   while you are still finding your feet. See below.
 - **Nothing is queued offline.** A mechanic needs to know their note landed, so
   a failed save is a visible error, never a silent "saved".
 
+## An internal tool, by choice
+
+The shop runs this for itself. The customer tracking page is **off**
+(`CUSTOMER_TRACKING`, which defaults to `off`), and the only thing that ever
+reaches a customer is the invoice email a service writer sends by hand from a
+finished job. Nothing sends on a timer, on a status change, or as a side effect
+of closing a ticket — the two send sites that could reach a customer both sit
+behind an admin session and a button press.
+
+While the page is off, a customer who scans the QR code on their work order
+gets a short holding message with the shop's phone number, and the invoice
+email carries no tracking link.
+
+The tracking page and everything behind it are kept whole rather than deleted,
+because the decision is worth revisiting once the shop has run a season on
+this. Switching it back on is one button on **App setup** and no code. The QR
+code stays on the work order either way — it is what mechanics scan to open a
+job on the iPad.
+
 ## Test mode
 
-A fresh deployment starts in test mode, and the portal says so on every screen.
-Run as many real work orders through as you like: scanning, logging, hours,
-photos, parts and the invoice all behave exactly as they will in production.
-Two things differ, and only these two:
+A fresh deployment also starts in test mode, and the portal says so on every
+screen. Run as many real work orders through as you like: scanning, logging,
+hours, photos, parts and the invoice all behave exactly as they will in
+production. One thing differs:
 
-- The customer's finished-job email goes to the shop instead, headed with who
-  it was meant for, so you can read exactly what they would have got.
-- Their tracking page shows a holding message to anyone not signed in on the
-  shop side. You can still open the same link and see the real page.
+- The invoice email you send goes to the shop instead, headed with who it was
+  meant for, so you can read exactly what they would have got.
 
-Going live is one button on **App setup**. From that moment, marking a job done
-emails the customer for real.
+(If the tracking page is switched on, test mode also holds it back from anyone
+not signed in on the shop side, while staff still see the real thing.)
+
+Going live is one button on **App setup**. From that moment, the invoice email
+you send reaches the customer. It still only goes when you press send.
 
 ## Relationship to the winter services app
 

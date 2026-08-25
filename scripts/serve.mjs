@@ -22,6 +22,16 @@ const PASSWORD = process.env.ADMIN_PASSWORD || 'shop';
 
 const backend = loadBackend({ properties: { ADMIN_PASSWORD: PASSWORD } });
 
+const CONFIG_JS = path.join(ROOT, 'assets', 'lib', 'config.js');
+
+/** Rewrites the two URLs that must point at this preview, not at the shop. */
+function localConfig(source) {
+  const origin = `http://localhost:${PORT}`;
+  return source
+    .replace(/export const API_URL = '[^']*';/, `export const API_URL = '${origin}/exec';`)
+    .replace(/export const SITE_URL = '[^']*';/, `export const SITE_URL = '${origin}';`);
+}
+
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -72,7 +82,11 @@ const server = http.createServer(async (request, response) => {
     return response.end('no');
   }
   try {
-    const data = fs.readFileSync(filePath);
+    let data = fs.readFileSync(filePath);
+    // config.js carries the LIVE /exec URL once the shop is deployed. Serving
+    // it unchanged would point this preview — and browser-check.mjs, which
+    // creates jobs — at the real backend and the real Sheet. Pin it to ours.
+    if (filePath === CONFIG_JS) data = localConfig(data.toString());
     response.writeHead(200, { 'Content-Type': TYPES[path.extname(filePath)] || 'application/octet-stream' });
     return response.end(data);
   } catch {

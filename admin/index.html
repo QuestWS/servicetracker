@@ -201,8 +201,11 @@ async function renderJob(id) {
   // the split is per entry rather than a flag on the job.
   const pending = entries.filter((entry) => !entry.loggedAt);
   const written = entries.filter((entry) => entry.loggedAt);
-  const doneEmail = emails.find((mail) => mail.kind === 'customer_done');
-  const doneEmailSent = doneEmail && doneEmail.status === 'sent';
+  // Test mode logs the held copy under its own kind, so both count as "the
+  // writer has pressed send" — what differs is only who received it.
+  const invoiceEmail = emails.find((mail) =>
+    mail.kind === 'customer_done' || mail.kind === 'customer_done_test');
+  const invoiceSent = invoiceEmail && invoiceEmail.status !== 'failed' && invoiceEmail.status !== 'skipped';
 
   view.innerHTML = `
     <div class="row" style="justify-content:space-between;margin-bottom:6px">
@@ -245,16 +248,22 @@ async function renderJob(id) {
             ${job.workOrderFile
               ? `<a class="btn ghost" href="${driveFileUrl(job.workOrderFile)}" target="_blank" rel="noreferrer">Open stamped work order (PDF)</a>`
               : `<div class="banner warn">No stamped work order on file. Re-run intake if the printed copy has no QR code.</div>`}
-            <label class="fld">Customer tracking link</label>
+            <label class="fld">${data.customerTracking ? 'Customer tracking link' : 'Job link (shop only)'}</label>
             <div class="row tight" style="flex-wrap:nowrap">
               <input class="txt mono" readonly value="${esc(job.trackingUrl)}" id="tracklink">
               <button class="btn ghost sm" type="button" id="copy">Copy</button>
             </div>
             <a class="btn ghost" href="${esc(job.trackingUrl)}" target="_blank" rel="noreferrer">
-              ${data.testMode ? 'Preview the customer page' : 'Open the customer page'}
+              ${data.customerTracking && !data.testMode ? 'Open the customer page' : 'Preview the customer page'}
             </a>
-            ${data.testMode ? `<p class="hint">You can see it because you are signed in here. A customer
-              opening the same link gets a holding message until you go live.</p>` : ''}
+            ${!data.customerTracking
+              ? `<p class="hint">The customer page is switched off, so this link is yours, not theirs —
+                 a customer opening it gets a holding message. It is the same address the QR code on
+                 the work order carries, which is what mechanics scan.</p>`
+              : data.testMode
+                ? `<p class="hint">You can see it because you are signed in here. A customer
+                   opening the same link gets a holding message until you go live.</p>`
+                : ''}
           </div>
         </section>
 
@@ -265,7 +274,8 @@ async function renderJob(id) {
             <b style="font-family:var(--mono)">${formatMoney(job.grandTotal)}</b></div>` : ''}
           ${job.deposits ? `<div class="kv"><span class="k">Deposits already paid</span>
             <b style="font-family:var(--mono)">${formatMoney(job.deposits)}</b></div>` : ''}
-          <p class="hint">Shown on their tracking page and in the Done email, next to the payment link.</p>
+          <p class="hint">Shown in the invoice email next to the payment link${data.customerTracking
+            ? ', and on their tracking page' : ''}.</p>
         </section>` : ''}
 
         <section class="card">
@@ -328,21 +338,20 @@ async function renderJob(id) {
           <hr style="border:0;border-top:1px solid var(--ice);margin:18px 0">
 
           ${job.status === 'done' ? `
-            <div class="banner ${doneEmailSent ? 'ok' : 'warn'}">
-              Marked done ${formatDateTime(job.doneAt)}${doneEmailSent
-                ? ` — the customer email went to ${esc(doneEmail.recipient)}.`
-                : ' — but the customer email has not gone out. Check the email log below, then send it again.'}
-            </div>
-            <button class="btn ${doneEmailSent ? 'ghost' : 'gold'} block" type="button" id="resend" style="margin-top:12px">
-              ${doneEmailSent ? 'Send the customer email again' : 'Try the customer email again'}
-            </button>`
-          : `
-            <p class="hint" style="margin-bottom:10px">${data.testMode
-              ? 'Test mode: this closes the job and sends the customer\'s email <b>to the shop</b> instead, so you can read exactly what they would have got. Nothing reaches the customer.'
-              : 'Marking done emails the customer their tracking link, the invoice PDF and the payment link. It is the only email they get.'}</p>
-            <button class="btn gold block" type="button" id="markdone"${job.customerEmail ? '' : ' disabled title="Add a customer email address first"'}>
-              ${data.testMode ? 'Mark done (test — email goes to the shop)' : 'Mark done &amp; email the customer'}
+            <div class="banner ok">Marked done ${formatDateTime(job.doneAt)}.</div>
+            ${invoiceSent
+              ? `<p class="hint" style="margin:12px 0 8px">Invoice emailed ${formatDateTime(invoiceEmail.created_at)}
+                 to ${esc(invoiceEmail.recipient)}${data.testMode ? ' — test mode, so that was the shop, not the customer' : ''}.</p>`
+              : `<p class="hint" style="margin:12px 0 8px">Nothing has been emailed to this customer. Sending is a
+                 separate, deliberate step — closing a ticket never posts mail by itself.</p>`}
+            <button class="btn ${invoiceSent ? 'ghost' : 'gold'} block" type="button" id="sendinvoice"${job.customerEmail ? '' : ' disabled title="Add a customer email address first"'}>
+              ${invoiceSent ? 'Send the invoice email again' : 'Email the invoice to the customer'}
             </button>
+            ${job.customerEmail ? '' : '<p class="hint" style="margin-top:8px">No email address on file for this customer.</p>'}`
+          : `
+            <p class="hint" style="margin-bottom:10px">Closes the ticket. It sends nothing —
+              emailing the invoice is a separate button once the job is done.</p>
+            <button class="btn gold block" type="button" id="markdone">Mark done</button>
             <form id="statusform" style="margin-top:12px">
               <label class="fld" for="status">Or set the shop status by hand</label>
               <div class="row tight" style="flex-wrap:nowrap">
@@ -509,28 +518,35 @@ async function renderJob(id) {
   const markdone = $('markdone');
   if (markdone) markdone.onclick = async () => {
     markdone.disabled = true;
-    markdone.textContent = 'Sending…';
+    markdone.textContent = 'Closing…';
     try {
-      const result = await api('markDone', [job.id]);
+      await api('markDone', [job.id]);
       renderJob(job.id);
-      toast(!result.emailed ? 'Marked done, but the email did not send.'
-        : result.testMode ? `Marked done — the customer's email went to ${result.sentTo} instead.`
-        : 'Marked done — the customer email has been sent.');
+      toast('Marked done. Nothing has been emailed.');
     } catch (error) {
       markdone.disabled = false;
-      markdone.textContent = 'Mark done & email the customer';
+      markdone.textContent = 'Mark done';
       notice('warn', error.message);
     }
   };
 
-  const resend = $('resend');
-  if (resend) resend.onclick = async () => {
-    resend.disabled = true;
+  const sendinvoice = $('sendinvoice');
+  if (sendinvoice) sendinvoice.onclick = async () => {
+    const to = job.customerEmail;
+    if (!confirm(`Email the invoice for ${job.id} to ${to}?`)) return;
+    sendinvoice.disabled = true;
+    sendinvoice.textContent = 'Sending…';
     try {
-      const result = await api('resendDoneEmail', [job.id]);
+      const result = await api('sendInvoiceEmail', [job.id]);
       renderJob(job.id);
-      toast(result.emailed ? 'Customer email sent again.' : 'That email did not send — check the log.');
-    } catch (error) { resend.disabled = false; notice('warn', error.message); }
+      toast(!result.emailed ? 'That email did not send — check the log.'
+        : result.testMode ? `Test mode: it went to ${result.sentTo}, not the customer.`
+        : `Invoice emailed to ${result.sentTo}.`);
+    } catch (error) {
+      sendinvoice.disabled = false;
+      sendinvoice.textContent = 'Email the invoice to the customer';
+      notice('warn', error.message);
+    }
   };
 
   const statusform = $('statusform');
@@ -976,16 +992,38 @@ async function renderSetup() {
           holding message to anyone who is not signed in here.
         </p>
         <p class="hint" style="margin-bottom:14px">
-          Turn this off when you are happy. From that moment, marking a job done emails the
-          customer for real — so do it when there is nothing half-finished in the list.
+          Turn this off when you are happy. From that moment, pressing <b>Email the invoice</b> on a
+          finished job reaches the customer for real. Nothing sends by itself either way.
         </p>
-        <button class="btn gold block" type="button" id="golive">Go live — start emailing customers</button>
+        <button class="btn gold block" type="button" id="golive">Go live — let the invoice email reach customers</button>
       ` : `
         <p style="font-size:15px;line-height:1.55;margin-bottom:12px">
-          <b>Off — this deployment is live.</b> Marking a job done emails the customer their
-          tracking link, invoice and payment link.
+          <b>Off — this deployment is live.</b> The invoice email you send from a finished job
+          goes to the customer.
         </p>
         <button class="btn ghost block" type="button" id="gotest">Go back to test mode</button>
+      `}
+    </section>
+
+    <section class="card" style="margin-top:16px">
+      <h2>Customer tracking page</h2>
+      ${settings.customerTracking ? `
+        <p style="font-size:15px;line-height:1.55;margin-bottom:12px">
+          <b>On.</b> A customer who scans the QR code on their work order sees the job's status and
+          any customer notes the mechanics wrote, and the invoice email carries a link to it.
+        </p>
+        <button class="btn ghost block" type="button" id="trackoff">Switch the customer page off</button>
+      ` : `
+        <p style="font-size:15px;line-height:1.55;margin-bottom:12px">
+          <b>Off.</b> This is an internal tool. Customers see nothing — scanning the QR code gets a
+          short holding message — and the only thing they ever receive is the invoice email you send
+          by hand from a finished job.
+        </p>
+        <p class="hint" style="margin-bottom:14px">
+          The page and everything behind it are still here, so this is reversible at any time.
+          The QR code stays on the work order regardless: it is what mechanics scan.
+        </p>
+        <button class="btn ghost block" type="button" id="trackon">Switch the customer page on</button>
       `}
     </section>
 
@@ -1005,10 +1043,24 @@ async function renderSetup() {
 
   const golive = $('golive');
   if (golive) golive.onclick = async () => {
-    if (!confirm('Go live? From now on, marking a job done emails the customer for real.')) return;
+    if (!confirm('Go live? From now on, the invoice email you send from a finished job reaches the customer.')) return;
     await api('setTestMode', [false]);
     renderSetup();
-    toast('Live. Customers will now be emailed when a job is marked done.');
+    toast('Live. The invoice email now reaches customers when you send it.');
+  };
+
+  const trackon = $('trackon');
+  if (trackon) trackon.onclick = async () => {
+    if (!confirm('Switch the customer tracking page on? Customers scanning their work order will start seeing job status and customer notes.')) return;
+    await api('setCustomerTracking', [true]);
+    renderSetup();
+    toast('Customer page on.');
+  };
+  const trackoff = $('trackoff');
+  if (trackoff) trackoff.onclick = async () => {
+    await api('setCustomerTracking', [false]);
+    renderSetup();
+    toast('Customer page off. Customers see a holding message.');
   };
   const gotest = $('gotest');
   if (gotest) gotest.onclick = async () => {

@@ -12,7 +12,15 @@ short list of things that are easy to get wrong.
 2. **Never "New deployment."** It mints a new `/exec` URL, orphaning all four
    pages and every QR code already printed on paper. Update the existing
    deployment — the Actions workflow is built so you cannot do otherwise.
-3. **The customer sees customer notes and nothing else.** Internal notes,
+3. **This is an internal tool.** The customer tracking page is off
+   (`CUSTOMER_TRACKING`, default `off`) and the only thing a customer ever
+   receives is the invoice email a writer sends by hand from a finished job.
+   `markDone` closes the ticket and sends nothing; `sendInvoiceEmail` is a
+   separate call behind a separate button. Do not put those back together, and
+   do not add a send to a status change or a trigger. The tracking code is
+   kept whole on purpose — the shop may want it back — so gate it, never
+   delete it.
+4. **The customer sees customer notes and nothing else.** Internal notes,
    labor hours, part numbers, quantities, mechanic names and the shop's own
    figures never reach `/t/`, at any status. The filter is `customerView_`, it
    is the only thing `publicJob` returns entries through, and
@@ -23,9 +31,9 @@ short list of things that are easy to get wrong.
    The one money figure they do see is **their own balance**, and only once the
    job is Done — at which point they are being handed the invoice anyway.
    `amountDue` is the number after deposits, never the grand total.
-4. **`SITE_URL` is printed onto paper.** Changing it after work orders are in
+5. **`SITE_URL` is printed onto paper.** Changing it after work orders are in
    the folder invalidates every QR code already printed.
-5. **No credential ever lands in this repo.** It is public. Passwords and API
+6. **No credential ever lands in this repo.** It is public. Passwords and API
    keys live in Apps Script → Project Settings → Script properties, and the
    code only ever names them.
 
@@ -152,14 +160,29 @@ Consumer Gmail, not Workspace, and the account is shared with the winter app:
   transcript sweep and the digest, for that reason. The parts list at 3pm is
   the only other one.
 
-## Test mode
+## The two switches
 
-`TEST_MODE` is a script property and defaults to **on**, so a fresh deployment
-cannot email a customer by accident. It changes exactly two things: the
-customer's Done email goes to `TEST_EMAIL` marked as what would have been sent,
-and `/t/` shows a holding notice to anyone not signed in on the shop side.
-Everything else behaves as it will in production — it is a rehearsal, not a
-mock. Going live is one button on the App setup page.
+Both are script properties, both default to the safe side, and both are flipped
+from the App setup page rather than by hand.
+
+`TEST_MODE` defaults to **on**, so a fresh deployment cannot email a customer
+by accident. It changes the invoice email's recipient to `TEST_EMAIL`, marked
+as what would have been sent, and (when tracking is on) holds `/t/` back from
+anyone not signed in on the shop side. Everything else behaves as it will in
+production — it is a rehearsal, not a mock.
+
+`CUSTOMER_TRACKING` defaults to **off**, which is the shop's settled plan.
+While off, `publicJob` answers a holding notice to non-staff and the invoice
+email carries no tracking link. `publicJob` returns a `reason` of `test` or
+`off` so `/t/` can say the right thing: a rehearsal ends and promises a link
+later, an internal-only shop does not.
+
+The QR code goes on the work order either way — it is what a mechanic scans.
+
+Note that `scripts/serve.mjs` rewrites `API_URL` and `SITE_URL` as it serves
+`config.js`, so the local preview and `browser-check.mjs` can never reach the
+shop's live backend. `config.js` holds a real deployment URL now; without that
+rewrite a browser check would write jobs into the production Sheet.
 
 ## Before you push
 

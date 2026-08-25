@@ -43,9 +43,14 @@ beforeEach(() => {
   adminToken = backend.fn('adminSignIn', 'shop-password').token;
 });
 
-/** Most of this suite describes the shop once it has gone live. */
+/**
+ * Most of this suite describes the shop once it has gone live with the
+ * customer page switched on — the arrangement the tracking code exists for,
+ * even though the shop's settled plan is to run without it.
+ */
 function goLive() {
   backend.fn('setTestMode', adminToken, false);
+  backend.fn('setCustomerTracking', adminToken, true);
 }
 
 describe('what the customer is allowed to see', () => {
@@ -381,8 +386,10 @@ describe('test mode', () => {
     backend.fn('saveInvoice', adminToken, id, 'https://pos.example.com/pay/abc', 'JVBERi0=', {
       grandTotal: 100, deposits: 0, amountDue: 100,
     });
-    const result = backend.fn('markDone', adminToken, id);
+    backend.fn('markDone', adminToken, id);
+    expect(backend.sentMail).toHaveLength(0);
 
+    const result = backend.fn('sendInvoiceEmail', adminToken, id);
     expect(result.testMode).toBe(true);
     expect(backend.sentMail).toHaveLength(1);
     const mail = backend.sentMail[0];
@@ -397,6 +404,7 @@ describe('test mode', () => {
   it('says in the log that the email was held, and from whom', () => {
     const { id } = seedJob();
     backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
     const log = backend.fn('getJob', adminToken, id).emails.find((m) => m.kind === 'customer_done_test');
     expect(log.status).toBe('held (test mode)');
     expect(log.error).toContain('jane@example.com');
@@ -428,13 +436,13 @@ describe('test mode', () => {
   });
 
   it('going live is one switch, and it takes', () => {
-    const { id, token } = seedJob();
+    const { id } = seedJob();
     backend.fn('setTestMode', adminToken, false);
     expect(backend.fn('config', adminToken).testMode).toBe(false);
-    expect(backend.fn('publicJob', token, '').notLive).toBeUndefined();
 
     backend.sentMail.length = 0;
     backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
     expect(backend.sentMail[0].to).toBe('jane@example.com');
     expect(backend.sentMail[0].subject).not.toMatch(/TEST/);
   });
@@ -452,6 +460,7 @@ describe('the customer email', () => {
     const { id } = seedJob();
     backend.fn('saveInvoice', adminToken, id, 'https://pos.example.com/pay/abc', 'JVBERi0=');
     backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
 
     expect(backend.sentMail).toHaveLength(1);
     const mail = backend.sentMail[0];
@@ -472,6 +481,7 @@ describe('the customer email', () => {
       grandTotal: 16917.79, deposits: 15285.32, amountDue: 1632.47,
     });
     backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
 
     const html = backend.sentMail[0].opts.htmlBody;
     expect(html).toContain('$1,632.47');
@@ -480,9 +490,100 @@ describe('the customer email', () => {
     expect(backend.sentMail[0].body).toContain('Amount due: $1,632.47');
   });
 
-  it('refuses to mark done with no address on file', () => {
+  it('closes a job with no address on file, and refuses only the email', () => {
+    // Walk-ins take their invoice at the counter; that is not a reason the
+    // ticket cannot be closed.
     backend.fn('createJob', adminToken, { invoiceNumber: '01-9001', customerName: 'No Email' });
-    expect(() => backend.fn('markDone', adminToken, '01-9001')).toThrow(/nobody to send/);
+    backend.fn('markDone', adminToken, '01-9001');
+    expect(backend.fn('jobRow_', '01-9001').status).toBe('done');
+    expect(() => backend.fn('sendInvoiceEmail', adminToken, '01-9001')).toThrow(/nobody to send/);
+  });
+
+  it('will not send before the job is done', () => {
+    const { id } = seedJob();
+    expect(() => backend.fn('sendInvoiceEmail', adminToken, id)).toThrow(/not marked done/);
+    expect(backend.sentMail).toHaveLength(0);
+  });
+
+  it('sends again on demand, because addresses get corrected', () => {
+    goLive();
+    const { id } = seedJob();
+    backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+    expect(backend.sentMail).toHaveLength(2);
+  });
+
+  it('only an admin can send it', () => {
+    goLive();
+    const { id } = seedJob();
+    backend.fn('markDone', adminToken, id);
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => backend.fn('sendInvoiceEmail', mech, id)).toThrow(/Sign in/);
+    expect(backend.sentMail).toHaveLength(0);
+  });
+});
+
+describe('running as an internal tool', () => {
+  it('keeps the customer page dark by default, live or not', () => {
+    const { token } = seedJob();
+    backend.fn('setTestMode', adminToken, false);
+
+    const seen = backend.fn('publicJob', token, '');
+    expect(seen.notLive).toBe(true);
+    expect(seen.reason).toBe('off');
+    expect(seen.entries).toBeUndefined();
+    expect(JSON.stringify(seen)).not.toContain('Impeller was shot');
+  });
+
+  it('tells the customer a different thing while it is only a rehearsal', () => {
+    const { token } = seedJob();
+    backend.fn('setCustomerTracking', adminToken, true);
+    expect(backend.fn('publicJob', token, '').reason).toBe('test');
+  });
+
+  it('stays dark on the strength of either switch alone', () => {
+    const { token } = seedJob();
+    backend.fn('setCustomerTracking', adminToken, true);
+    expect(backend.fn('publicJob', token, '').notLive).toBe(true);
+
+    backend.fn('setCustomerTracking', adminToken, false);
+    backend.fn('setTestMode', adminToken, false);
+    expect(backend.fn('publicJob', token, '').notLive).toBe(true);
+  });
+
+  it('still lets the writer preview the page', () => {
+    const { token } = seedJob();
+    expect(backend.fn('publicJob', token, adminToken).entries).toHaveLength(1);
+  });
+
+  it('leaves no tracking link in the invoice email', () => {
+    backend.fn('setTestMode', adminToken, false);
+    const { id } = seedJob();
+    backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+
+    const mail = backend.sentMail[0];
+    expect(mail.opts.htmlBody).not.toContain('/t/?j=');
+    expect(mail.opts.htmlBody).not.toContain('View your job');
+    expect(mail.body).not.toContain('Job status:');
+    // The invoice itself still goes, which is the whole point of sending it.
+    expect(mail.to).toBe('jane@example.com');
+  });
+
+  it('puts the link back when the page is switched on again', () => {
+    goLive();
+    const { id, token } = seedJob();
+    backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+    expect(backend.sentMail[0].opts.htmlBody).toContain(token);
+    expect(backend.fn('publicJob', token, '').notLive).toBeUndefined();
+  });
+
+  it('only an admin can flip it', () => {
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => backend.fn('setCustomerTracking', mech, true)).toThrow(/Sign in/);
+    expect(() => backend.fn('setCustomerTracking', '', true)).toThrow(/Sign in/);
   });
 });
 

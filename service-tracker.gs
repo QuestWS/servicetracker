@@ -68,6 +68,23 @@ function testEmail_() {
   return props_().getProperty('TEST_EMAIL') || SERVICE_EMAIL;
 }
 
+/**
+ * The customer tracking page. OFF by default: the shop runs this as an
+ * internal tool, and the only thing a customer ever receives is the invoice
+ * email a service writer sends by hand.
+ *
+ * The page and everything behind it are kept whole rather than deleted, so
+ * turning it back on is one script property and no code. While it is off,
+ * `publicJob` answers a holding notice to anyone who is not shop staff, and
+ * the invoice email carries no tracking link.
+ *
+ * The QR code on the work order stays either way — it is what a mechanic
+ * scans to open the job on the iPad.
+ */
+function customerTracking_() {
+  return String(props_().getProperty('CUSTOMER_TRACKING') || 'off') === 'on';
+}
+
 /** Hours a mechanic stays signed in: their own phone vs the shared iPad. */
 const REMEMBER_DAYS = 30;
 const SHIFT_HOURS = 10;
@@ -297,7 +314,7 @@ function doPost(e) {
     saveJobDetails:   function (a) { return saveJobDetails(data.token, a[0], a[1]); },
     saveInvoice:      function (a) { return saveInvoice(data.token, a[0], a[1], a[2], a[3]); },
     markDone:         function (a) { return markDone(data.token, a[0]); },
-    resendDoneEmail:  function (a) { return resendDoneEmail(data.token, a[0]); },
+    sendInvoiceEmail: function (a) { return sendInvoiceEmail(data.token, a[0]); },
     setStatus:        function (a) { return setStatusByWriter(data.token, a[0], a[1]); },
     markLogged:       function (a) { return markEntriesLogged(data.token, a[0]); },
     setJobFlag:       function (a) { return setJobFlag(data.token, a[0], a[1], a[2]); },
@@ -325,6 +342,7 @@ function doPost(e) {
     /* customer page — the token in the URL is the only credential */
     publicJob:        function (a) { return publicJob(a[0], data.token); },
     setTestMode:      function (a) { return setTestMode(data.token, a[0]); },
+    setCustomerTracking: function (a) { return setCustomerTracking(data.token, a[0]); },
     config:           function (a) { return config(data.token); }
   };
 
@@ -528,6 +546,7 @@ function getJob(token, id) {
   const entries = entriesForJob_(id);
   return {
     testMode: testMode_(),
+    customerTracking: customerTracking_(),
     job: jobSummary_(job),
     entries: entries,
     hours: laborTotals_(entries),
@@ -1194,8 +1213,14 @@ function publicJob(trackingToken, shopToken) {
   } catch (err) {
     staff = false;
   }
-  if (testMode_() && !staff) {
-    return { notLive: true, shop: { name: SHOP_NAME, phone: SHOP_PHONE } };
+  // Two separate reasons the page may be dark, and the customer is told a
+  // different thing by each: a rehearsal ends, an internal-only shop does not.
+  if (!staff && (!customerTracking_() || testMode_())) {
+    return {
+      notLive: true,
+      reason: customerTracking_() ? 'test' : 'off',
+      shop: { name: SHOP_NAME, phone: SHOP_PHONE }
+    };
   }
 
   return {
@@ -1359,11 +1384,14 @@ function send_(options) {
 }
 
 /**
- * The single customer-facing email, fired when the service writer marks the
- * job done: tracking link, the final BiT invoice attached, and the POS+
- * payment link.
+ * The single customer-facing email: the final BiT invoice attached, the
+ * balance owed, and the POS+ payment link.
+ *
+ * Nothing fires this on its own. A service writer presses the button, on a
+ * job they have already marked done — marking done and emailing the customer
+ * are two deliberate acts, so closing a ticket can never post mail by itself.
  */
-function sendDoneEmail_(job) {
+function sendInvoiceEmail_(job) {
   if (!job.customer_email) {
     logEmail_(job.id, 'customer_done', '(none on file)', 'Service complete', 'skipped', 'No customer email on the job');
     return false;
@@ -1378,7 +1406,9 @@ function sendDoneEmail_(job) {
     }
   }
 
-  const link = trackingUrl_(job);
+  // No tracking link while the page is switched off — a dead link in a
+  // customer's invoice is worse than no link at all.
+  const link = customerTracking_() ? trackingUrl_(job) : '';
   const first = String(job.customer_name || '').split(' ')[0];
   const due = numberOrNull_(job.amount_due);
   const deposits = numberOrNull_(job.deposits);
@@ -1419,45 +1449,60 @@ function sendDoneEmail_(job) {
         (attachments.length ? 'Your final invoice is attached' : 'Everything is wrapped up') +
         (job.payment_link ? ', and you can pay online with the button below.' : '.') + balance,
       meta: 'INVOICE# ' + job.id + (job.boat_info ? ' · ' + job.boat_info : ''),
-      buttons: button_(link, 'View your job') +
+      buttons: (link ? button_(link, 'View your job') : '') +
         (job.payment_link ? button_(job.payment_link, due === null ? 'Pay online' : 'Pay ' + money_(due), '#C08A22') : '')
     }),
     text: 'The work on your boat is complete.' +
       (due === null ? '' : '\n\nAmount due: ' + money_(due)) +
-      '\n\nJob status: ' + link +
+      (link ? '\n\nJob status: ' + link : '') +
       (job.payment_link ? '\nPay your invoice: ' + job.payment_link : '') +
       '\n\nInvoice ' + job.id + '\n' + SHOP_NAME,
     attachments: attachments
   });
 }
 
+/**
+ * Closes the ticket. Sends nothing.
+ *
+ * A job may be closed for a customer with no email address on file — plenty
+ * of them are walk-ins who take their invoice at the counter — so an address
+ * is a requirement of the email, not of finishing the work.
+ */
 function markDone(token, id) {
   requireAdmin_(token);
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
   if (job.status === 'done') throw new Error('That job was already marked done.');
-  if (!job.customer_email) {
-    throw new Error('This job has no customer email address, so there is nobody to send the invoice to.');
-  }
   setStatus_(job, 'done', 'service_writer', '', 'Marked done');
-  const fresh = jobRow_(id);
-  const sent = sendDoneEmail_(fresh);
-  return { job: jobSummary_(fresh), emailed: sent, testMode: testMode_(), sentTo: testMode_() ? testEmail_() : fresh.customer_email };
+  return { job: jobSummary_(jobRow_(id)) };
 }
 
-/** The mail server was down, or the address was wrong and has been fixed. */
-function resendDoneEmail(token, id) {
+/**
+ * The one thing a customer ever receives, and only because a writer pressed
+ * the button. Sendable more than once on purpose: an address gets corrected,
+ * or Gmail drops a message, and the fix is to send it again.
+ */
+function sendInvoiceEmail(token, id) {
   requireAdmin_(token);
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
   if (job.status !== 'done') throw new Error('That job is not marked done yet.');
-  return { emailed: sendDoneEmail_(job), testMode: testMode_(), sentTo: testMode_() ? testEmail_() : job.customer_email };
+  if (!job.customer_email) {
+    throw new Error('This job has no customer email address, so there is nobody to send the invoice to.');
+  }
+  return { emailed: sendInvoiceEmail_(job), testMode: testMode_(), sentTo: testMode_() ? testEmail_() : job.customer_email };
 }
 
 /** What the portal needs to know about this deployment. */
 function config(token) {
   requireAdmin_(token);
-  return { testMode: testMode_(), testEmail: testEmail_(), siteUrl: SITE_URL, serviceEmail: SERVICE_EMAIL };
+  return {
+    testMode: testMode_(),
+    testEmail: testEmail_(),
+    customerTracking: customerTracking_(),
+    siteUrl: SITE_URL,
+    serviceEmail: SERVICE_EMAIL
+  };
 }
 
 /**
@@ -1468,6 +1513,17 @@ function setTestMode(token, on) {
   requireAdmin_(token);
   props_().setProperty('TEST_MODE', on ? 'true' : 'false');
   return { testMode: testMode_(), testEmail: testEmail_() };
+}
+
+/**
+ * Switches the customer tracking page on or off. Off is the default and the
+ * shop's settled plan; the switch exists so the decision can be revisited
+ * without going back into the code.
+ */
+function setCustomerTracking(token, on) {
+  requireAdmin_(token);
+  props_().setProperty('CUSTOMER_TRACKING', on ? 'on' : 'off');
+  return { customerTracking: customerTracking_() };
 }
 
 /* ========================= writer's close-out ========================== */

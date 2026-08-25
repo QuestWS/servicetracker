@@ -67,14 +67,22 @@ function feedHtml(entries) {
  * Test mode, seen by somebody who is not shop staff. The job is real and the
  * link is right — the shop simply is not showing this yet.
  */
-function holding(shop) {
+/**
+ * Two reasons this page is dark, and the customer is owed a different
+ * sentence by each. `test` is a rehearsal that ends; `off` is the shop
+ * running the tracker internally, where no link is ever coming — so it does
+ * not promise one.
+ */
+function holding(shop, reason) {
+  const line = reason === 'off'
+    ? `Your job is with us and being worked on. We will be in touch as soon as it is finished,
+       and your invoice comes by email when the work is complete.`
+    : `Your job is with us and being worked on — this page just is not switched on yet.
+       We will email you a link the moment it is.`;
   $('main').innerHTML = `
     <div class="card" style="text-align:center;margin-top:24px">
-      <h1 class="page-title">Not quite ready</h1>
-      <p class="lead" style="margin:12px auto 0">
-        Your job is with us and being worked on — this page just is not switched on yet.
-        We will email you a link the moment it is.
-      </p>
+      <h1 class="page-title">${reason === 'off' ? 'We have your boat' : 'Not quite ready'}</h1>
+      <p class="lead" style="margin:12px auto 0">${line}</p>
       <p class="hint" style="margin-top:16px">
         Anything you need in the meantime, call ${esc(shop.name)}${shop.phone ? ` at ${esc(shop.phone)}` : ''}.
       </p>
@@ -82,7 +90,7 @@ function holding(shop) {
 }
 
 function render(data) {
-  if (data.notLive) return holding(data.shop);
+  if (data.notLive) return holding(data.shop, data.reason);
   const { job, entries, shop } = data;
   const state = STATUS_CUSTOMER[job.status];
   const invoiceUrl = job.invoiceFile ? `https://drive.google.com/file/d/${encodeURIComponent(job.invoiceFile)}/view` : null;

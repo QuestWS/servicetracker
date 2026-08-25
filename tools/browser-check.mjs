@@ -227,16 +227,29 @@ await admin.screenshot({ path: `${SHOTS}/45-closeout.png`, fullPage: true });
 
 // The deployment starts in test mode, so this first pass is the rehearsal.
 check('the portal warns it is in test mode', await admin.locator('#testbanner .banner').count() > 0);
-check('the done button says where the email goes',
-  (await admin.textContent('#markdone')).includes('test'),
+check('the done button just closes the ticket',
+  (await admin.textContent('#markdone')).trim() === 'Mark done',
   await admin.textContent('#markdone'));
 
 await admin.click('#markdone');
 await admin.waitForSelector('text=Marked done', { timeout: 30000 });
-check('marks the job done even in test mode', (await admin.content()).includes('Marked done'));
+check('marks the job done', (await admin.content()).includes('Marked done'));
 
-/* --------------------------------------------------------------- test mode */
-console.log('\n== test mode ==');
+// Closing a ticket must never post mail by itself.
+const afterDone = await admin.evaluate(() => document.body.innerText);
+check('and sends nothing on its own', /nothing has been emailed/i.test(afterDone));
+check('the invoice email is a separate button', await admin.locator('#sendinvoice').count() > 0);
+
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#sendinvoice');
+await admin.waitForSelector('text=Invoice emailed', { timeout: 30000 });
+const afterSend = await admin.evaluate(() => document.body.innerText);
+check('and says test mode kept it in the building', /test mode, so that was the shop/i.test(afterSend),
+  afterSend.slice(afterSend.search(/Invoice emailed/i), afterSend.search(/Invoice emailed/i) + 160));
+await admin.screenshot({ path: `${SHOTS}/45b-invoice-sent.png`, fullPage: true });
+
+/* ------------------------------------------------------- as an internal tool */
+console.log('\n== customer page switched off ==');
 // A real customer has no shop session, which is the whole point.
 const stranger = await browser.newContext({ viewport: { width: 430, height: 900 } });
 const outsider = await stranger.newPage();
@@ -244,9 +257,26 @@ const outsiderErrors = [];
 outsider.on('pageerror', (error) => outsiderErrors.push(String(error)));
 await outsider.goto(`${BASE}/t/?j=${token}`, { waitUntil: 'networkidle' });
 await outsider.waitForSelector('.card', { timeout: 15000 });
+const dark = await outsider.evaluate(() => document.body.innerText);
+check('a customer scanning the QR sees a holding message', /we have your boat/i.test(dark), dark.slice(0, 140));
+check('which promises no link that is never coming', !/we will email you a link/i.test(dark));
+check('and shows none of their job', !dark.includes('runs clean') && !dark.includes('1,632.47'));
+await outsider.screenshot({ path: `${SHOTS}/46-internal-only.png`, fullPage: true });
+
+console.log('\n== switching the customer page on ==');
+await admin.goto(`${BASE}/admin/?view=setup`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('#trackon');
+await admin.screenshot({ path: `${SHOTS}/47-setup.png`, fullPage: true });
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#trackon');
+await admin.waitForSelector('#trackoff', { timeout: 20000 });
+check('the tracking page switches on', await admin.locator('#trackoff').count() > 0);
+
+await outsider.reload({ waitUntil: 'networkidle' });
+await outsider.waitForSelector('.card', { timeout: 15000 });
 const holding = await outsider.evaluate(() => document.body.innerText);
-check('a customer sees only a holding message', /not quite ready/i.test(holding), holding.slice(0, 120));
-check('and none of their job', !holding.includes('runs clean') && !holding.includes('1,632.47'));
+check('but test mode still holds the customer back', /not quite ready/i.test(holding), holding.slice(0, 140));
+check('and still shows none of their job', !holding.includes('runs clean'));
 await outsider.screenshot({ path: `${SHOTS}/46-holding.png`, fullPage: true });
 
 // The same link in the service writer's browser, which IS signed in.

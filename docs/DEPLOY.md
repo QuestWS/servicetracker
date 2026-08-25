@@ -48,6 +48,18 @@ the URLs. Safe to re-run: it repairs missing tabs without touching data.
 | `ADMIN_PASSWORD` | the service writer portal password |
 | `ASSEMBLYAI_API_KEY` | the AssemblyAI key (optional — without it, voice notes keep the audio but get no text) |
 | `WEB_APP_URL` | the `/exec` URL from step 4, so AssemblyAI can call back |
+| `SITE_URL` | where GitHub Pages serves the four pages |
+| `TEST_EMAIL` | where a held customer email goes to be read (defaults to the service desk) |
+
+Two more decide the posture. Both have safe defaults, so neither needs setting
+on a fresh deployment:
+
+| Property | Default | What it does |
+|---|---|---|
+| `TEST_MODE` | `true` | The invoice email you send goes to `TEST_EMAIL`, not the customer |
+| `CUSTOMER_TRACKING` | `off` | The customer page answers a holding message to anyone but staff |
+
+Both are switched from **App setup** in the portal rather than here.
 
 **Credentials only ever live here.** Nothing in this repo holds a password or a
 key, and nothing should — the repo is public.
