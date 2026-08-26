@@ -797,6 +797,68 @@ check('a second use is refused', /already been used|newer one replaced/i.test(re
 check('and it does not let them in', !/Jobs/.test(await replay.textContent('.card')));
 await replay.close();
 
+/* ------------------------------------------------- the phone after a deploy */
+console.log('\n== the mechanic PWA after an update ==');
+// The shop's phone stopped at "Starting up…" and stayed there. The service
+// worker served the page network-first and the modules cache-first, so a
+// deploy that added an export handed the phone the NEW page and the OLD
+// module — and an ES import naming a missing export does not degrade, it
+// stops the whole script. This reproduces that exactly: install the worker,
+// poison its cache with a module missing the export the page imports, and
+// reload. Network-first is what has to win.
+const pwa = await browser.newContext({ viewport: { width: 390, height: 844 } });
+const phone = await pwa.newPage();
+const pwaErrors = [];
+phone.on('pageerror', (error) => pwaErrors.push(String(error)));
+
+await phone.goto(`${BASE}/m/`, { waitUntil: 'networkidle' });
+const controlled = await phone.evaluate(async () => {
+  if (!('serviceWorker' in navigator)) return false;
+  await navigator.serviceWorker.register('../sw.js', { updateViaCache: 'none' }).catch(() => {});
+  await navigator.serviceWorker.ready;
+  return true;
+});
+check('the mechanic app installs its service worker', controlled);
+
+await phone.reload({ waitUntil: 'networkidle' });
+await phone.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 20000 });
+check('which then controls the page', true);
+check('and the app boots under it',
+  !/Starting up/.test(await phone.evaluate(() => document.body.innerText)),
+  (await phone.evaluate(() => document.body.innerText)).slice(0, 120));
+
+// Now the deploy. An old module, cached, missing what the page imports.
+const poisoned = await phone.evaluate(async () => {
+  const keys = await caches.keys();
+  if (!keys.length) return false;
+  const cache = await caches.open(keys[0]);
+  const target = new URL('../assets/lib/entry-types.js', location.href).href;
+  await cache.put(target, new Response(
+    'export const ENTRY_LABEL = {};\nexport function formatHours() { return ""; }\n',
+    { headers: { 'Content-Type': 'text/javascript' } }));
+  const stale = await cache.match(target);
+  return !(await stale.text()).includes('formatMinutes');
+});
+check('a stale module can be planted in its cache, the way a deploy used to',
+  poisoned, String(poisoned));
+
+await phone.reload({ waitUntil: 'networkidle' });
+const afterStale = await phone.evaluate(() => document.body.innerText);
+check('and the app still starts, because the network wins over the cache',
+  !/Starting up|did not start/.test(afterStale), afterStale.slice(0, 160));
+check('and it is the real module that loaded, not the planted one',
+  await phone.evaluate(async () => {
+    const module = await import('../assets/lib/entry-types.js');
+    return typeof module.formatMinutes === 'function';
+  }));
+
+// The watchdog: the last line of defence when the module cannot load at all.
+check('a watchdog stands behind all of it',
+  await phone.evaluate(() => typeof window.__questBooted === 'boolean'));
+check('and it knows the app got up', await phone.evaluate(() => window.__questBooted === true));
+check('mechanic PWA console clean', pwaErrors.length === 0, pwaErrors.join(' | '));
+await pwa.close();
+
 /* --------------------------------------------------------------------- done */
 console.log('\n== page errors ==');
 check('service writer console clean', adminErrors.length === 0, adminErrors.join(' | '));

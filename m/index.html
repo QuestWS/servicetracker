@@ -26,14 +26,65 @@
   <main id="view"><p class="loading" style="color:#9fc3dc">Starting up…</p></main>
 </div>
 
+<!-- A watchdog, deliberately NOT a module.
+     If the module below fails to load at all — a bad deploy, a half-cached
+     asset, a phone that has been offline for a month — nothing in it runs and
+     the screen above stays on "Starting up…" forever. A mechanic standing in
+     the shop with a dead app and no message is the worst version of any bug
+     here, so this plain script watches for that and offers the one thing that
+     reliably fixes it: throw away the service worker and everything it has
+     cached, and load again. -->
+<script>
+  window.__questBooted = false;
+  setTimeout(function () {
+    if (window.__questBooted) return;
+    var view = document.getElementById('view');
+    if (!view) return;
+    view.innerHTML =
+      '<div class="card"><h2>The app did not start</h2>' +
+      '<p class="hint">This is usually an update that half-arrived. Clearing what the phone has ' +
+      'stored and loading again fixes it. Nothing you have logged is on the phone, so nothing ' +
+      'is lost.</p>' +
+      '<button class="btn navy big block" type="button" id="resetapp">Clear and try again</button></div>';
+    document.getElementById('resetapp').onclick = function () {
+      var button = document.getElementById('resetapp');
+      button.disabled = true;
+      button.textContent = 'Clearing…';
+      var steps = [];
+      if (window.caches && caches.keys) {
+        steps.push(caches.keys().then(function (keys) {
+          return Promise.all(keys.map(function (key) { return caches.delete(key); }));
+        }));
+      }
+      if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+        steps.push(navigator.serviceWorker.getRegistrations().then(function (regs) {
+          return Promise.all(regs.map(function (reg) { return reg.unregister(); }));
+        }));
+      }
+      Promise.all(steps).catch(function () {}).then(function () {
+        // A cache-busting query, because the failure being recovered from can
+        // itself be a stale copy of this very page.
+        location.replace(location.pathname + '?fresh=' + Date.now());
+      });
+    };
+  }, 8000);
+</script>
+
 <script type="module">
 import { api, ApiError, storeSession, storedWho, clearSession, storedToken } from '../assets/lib/api.js';
 import { ENTRY_LABEL, formatHours, formatMinutes } from '../assets/lib/entry-types.js';
 import { tokenFromScan } from '../assets/lib/tracking.js';
 import { $, esc, toast, formatDateTime, fileToBase64, preparePhoto, driveImageUrl, driveFileUrl } from '../assets/lib/ui.js';
 
+// The module evaluated, so the watchdog above has nothing to recover from.
+window.__questBooted = true;
+
 if ('serviceWorker' in navigator) {
-  addEventListener('load', () => navigator.serviceWorker.register('../sw.js').catch(() => {}));
+  // updateViaCache: 'none' — the worker script itself must never come from the
+  // HTTP cache, or a broken generation could keep re-serving the worker that
+  // is keeping it broken.
+  addEventListener('load', () => navigator.serviceWorker
+    .register('../sw.js', { updateViaCache: 'none' }).catch(() => {}));
 }
 
 const view = $('view');
