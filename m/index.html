@@ -609,6 +609,15 @@ function renderJob() {
     button.onclick = () => { state.tab = button.dataset.tab; renderJob(); };
   });
   $('another').onclick = (event) => { event.preventDefault(); state.job = null; renderHome(); };
+
+  view.querySelectorAll('[data-recheck]').forEach((button) => {
+    button.onclick = () => {
+      button.textContent = 'Checking…';
+      // Attempt 0 waits two seconds, which reads as instant next to a button
+      // that has just changed its own label.
+      watchTranscript(button.dataset.recheck, 0);
+    };
+  });
   const finish = $('finish');
   if (finish) finish.onclick = confirmFinish;
   $('save').onclick = saveEntry;
@@ -810,13 +819,63 @@ async function saveEntry() {
     state.hoursValue = '';
     renderJob();
     toast('Saved.');
-    // The transcript lands a little after the entry does.
-    if (result.entry.transcriptStatus === 'pending') setTimeout(refresh, 12000);
+    // The words land a moment after the entry does, and the mechanic is
+    // still standing there — so watch for them rather than making them
+    // reload to find out whether the recording came out.
+    if (result.entry.transcriptStatus === 'pending') watchTranscript(result.entry.id);
   } catch (error) {
     button.disabled = false;
     button.textContent = 'Save entry';
     $('notice').innerHTML = `<div class="banner warn" style="margin-bottom:12px">${esc(error.message)}</div>`;
   }
+}
+
+/**
+ * Polls for one voice note's transcript and drops it into the feed in place.
+ *
+ * Backed off rather than on a fixed tick: most come back in a few seconds,
+ * and a phone on shop wifi should not hammer the backend for a minute over
+ * one note. Gives up quietly after about ninety seconds and leaves the
+ * "check again" button, because the hourly sweep is still behind this and
+ * the words will arrive eventually either way.
+ */
+const TRANSCRIPT_WAITS = [2000, 2000, 3000, 3000, 4000, 5000, 6000, 8000, 10000, 12000, 15000, 20000];
+let transcriptTimer = null;
+
+function stopWatchingTranscript() {
+  if (transcriptTimer) clearTimeout(transcriptTimer);
+  transcriptTimer = null;
+}
+
+function watchTranscript(entryId, attempt = 0) {
+  stopWatchingTranscript();
+  if (attempt >= TRANSCRIPT_WAITS.length) return;
+
+  transcriptTimer = setTimeout(async () => {
+    let found = null;
+    try {
+      const data = await api('transcriptsFor', [state.job.token]);
+      found = data.entries.find((e) => e.id === entryId) || null;
+    } catch {
+      // Offline for a moment, or the session lapsed. Try again; a failed
+      // poll must never look like a failed recording.
+      return watchTranscript(entryId, attempt + 1);
+    }
+    if (!found || found.transcriptStatus === 'pending') {
+      return watchTranscript(entryId, attempt + 1);
+    }
+
+    const entry = state.entries.find((e) => e.id === entryId);
+    if (entry) {
+      entry.text = found.text;
+      entry.transcriptStatus = found.transcriptStatus;
+      entry.transcriptError = found.transcriptError;
+      renderJob();
+    }
+    toast(found.transcriptStatus === 'done'
+      ? 'Transcript is in — check it reads right.'
+      : 'That recording could not be transcribed.');
+  }, TRANSCRIPT_WAITS[attempt]);
 }
 
 async function refresh() {

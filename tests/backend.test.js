@@ -599,6 +599,45 @@ describe('a voice note coming back with its words', () => {
     expect(back.fn('getJob', admin, '01-8891').entries[0].transcriptStatus).toBe('pending');
   });
 
+  it('answers the phone with just the transcript state', () => {
+    // The mechanic is still standing there, so the phone polls for the
+    // words. Polling jobForMechanic would re-read every entry, the job and
+    // the hours to watch one field change.
+    const { back } = assemblyBackend();
+    const mech = back.fn('mechanicSignIn', 'Dale', true).token;
+    const jobToken = back.fn('jobRow_', '01-8891').token;
+
+    const waiting = back.fn('transcriptsFor', mech, jobToken);
+    expect(waiting.entries).toHaveLength(1);
+    expect(waiting.entries[0].transcriptStatus).toBe('pending');
+    // Nothing but what the poll needs.
+    expect(Object.keys(waiting.entries[0]).sort())
+      .toEqual(['id', 'text', 'transcriptError', 'transcriptStatus']);
+
+    back.fn('sweepTranscripts_');
+    const done = back.fn('transcriptsFor', mech, jobToken);
+    expect(done.entries[0].transcriptStatus).toBe('done');
+    expect(done.entries[0].text).toBe('Impeller was shot, swapped it out.');
+  });
+
+  it('leaves out entries that were never spoken', () => {
+    const { back, admin } = assemblyBackend();
+    const mech = back.fn('mechanicSignIn', 'Dale', true).token;
+    const jobToken = back.fn('jobRow_', '01-8891').token;
+    back.fn('addEntry', mech, jobToken, { entryType: 'internal_note', text: 'Typed, not spoken.' });
+
+    expect(back.fn('transcriptsFor', mech, jobToken).entries).toHaveLength(1);
+    expect(back.fn('getJob', admin, '01-8891').entries).toHaveLength(2);
+  });
+
+  it('needs a signed-in mechanic, and a job that exists', () => {
+    const { back } = assemblyBackend();
+    const jobToken = back.fn('jobRow_', '01-8891').token;
+    expect(() => back.fn('transcriptsFor', '', jobToken)).toThrow(/Sign in/);
+    const mech = back.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => back.fn('transcriptsFor', mech, 'NOPE')).toThrow(/No such job/);
+  });
+
   it('still catches it on the hourly sweep if the callback never arrives', () => {
     const { back, admin } = assemblyBackend();
     back.fn('sweepTranscripts_');

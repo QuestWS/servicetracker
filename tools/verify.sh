@@ -75,6 +75,12 @@ grep -q '"access": "ANYONE_ANONYMOUS"' apps-script/appsscript.json \
   && note "web app stays reachable without a Google login" \
   || bad "the manifest no longer grants anonymous access — the customer page would ask for a Google login"
 
+# If this section fails for no visible reason and passes on a re-run, check
+# whether tools/browser-check.mjs was running at the same time. Twice now the
+# suite has reported a failure with no diff in the tree, both times with
+# Chromium driving five browser contexts on the same machine — a starved
+# vitest worker, not a broken test. The deploy workflow runs this alone on a
+# clean runner and has never flaked. Do not run them side by side.
 echo "== unit tests =="
 if npm test --silent >/tmp/test.out 2>&1; then
   note "$(grep -Eo 'Tests +[0-9]+ passed' /tmp/test.out | tail -1)"

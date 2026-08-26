@@ -433,6 +433,7 @@ function doPost(e) {
     lookupJob:        function (a) { return lookupJob(a[0], a[1]); },
     jobForMechanic:   function (a) { return jobForMechanic(data.token, a[0]); },
     openJobs:         function (a) { return openJobs(data.token); },
+    transcriptsFor:   function (a) { return transcriptsFor(data.token, a[0]); },
     addEntry:         function (a) { return addEntry(data.token, a[0], a[1]); },
     finishWork:       function (a) { return finishWork(data.token, a[0]); },
 
@@ -1392,6 +1393,34 @@ function lookupJob(code, source) {
       status: fresh.status,
       statusLabel: STATUS_LABEL[fresh.status]
     }
+  };
+}
+
+/**
+ * Just the transcript state of a job's voice notes, for the phone to poll
+ * while the mechanic is still standing there.
+ *
+ * Deliberately not jobForMechanic: that returns every entry, the job and the
+ * hours, and polling it every few seconds to watch one field change is a lot
+ * of spreadsheet reading for a shop on wifi. This is the smallest answer to
+ * "are the words back yet".
+ */
+function transcriptsFor(token, jobToken) {
+  requireMechanic_(token);
+  const job = jobByToken_(jobToken);
+  if (!job) throw new Error('No such job.');
+
+  return {
+    entries: entriesForJob_(job.id)
+      .filter(function (entry) { return Boolean(entry.audioFile); })
+      .map(function (entry) {
+        return {
+          id: entry.id,
+          text: entry.text,
+          transcriptStatus: entry.transcriptStatus,
+          transcriptError: entry.transcriptError
+        };
+      })
   };
 }
 
