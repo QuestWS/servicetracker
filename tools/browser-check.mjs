@@ -161,13 +161,13 @@ await mech.click('#save');
 await mech.waitForSelector('.entry.labor', { timeout: 15000 });
 check('logs hours with a description', (await mech.textContent('.entry.labor')).includes('1.5 h'));
 
-// A voice note whose player points at the wrong Drive endpoint looks fine
-// and plays nothing — 0:00 / 0:00 — so the URL itself is what gets checked.
-// `uc?export=download` answers a media element with an HTML interstitial.
-const audioSrcs = await mech.evaluate(() =>
-  [...document.querySelectorAll('audio')].map((a) => a.getAttribute('src') || ''));
-check('no player points at the retired uc?export endpoint',
-  !audioSrcs.some((src) => src.includes('/uc?export=download')), audioSrcs.join(' | '));
+// A logged voice note links out to Drive rather than embedding a player.
+// An embedded one pointed at the retired `uc?export=download` endpoint and
+// showed 0:00 / 0:00 for months; the shop reads the transcript anyway. The
+// preview of a recording not yet saved is a local blob and stays.
+const feedAudio = await mech.evaluate(() =>
+  [...document.querySelectorAll('.entry audio')].length);
+check('a logged voice note embeds no player', feedAudio === 0, String(feedAudio));
 // Logging the first entry starts the job; the phone must show that, not the
 // status it was opened with.
 check('the status pill catches up after the first entry',

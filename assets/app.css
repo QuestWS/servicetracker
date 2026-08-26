@@ -357,11 +357,10 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
   background: var(--ice);
 }
 .entry audio { width: 100%; margin-top: 10px; }
-/* The Drive link under a player is the fallback when inline playback fails,
-   so it must stay visible rather than being tucked away. */
+/* A voice note links out to Drive rather than embedding a player: the shop
+   reads the transcript, and the recording is a fallback worth one click. */
 .audiorow { margin-top: 10px; }
-.audiorow audio { margin-top: 0; }
-.audiorow a { display: inline-block; margin-top: 6px; font-size: 12px; }
+.audiorow a { display: inline-block; font-size: 13px; }
 
 .empty {
   text-align: center;

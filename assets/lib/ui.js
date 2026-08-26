@@ -112,16 +112,12 @@ export function driveFileUrl(id) {
 }
 
 /**
- * Bytes for a stored file, for an <audio> element to play.
+ * Kept, unused by the pages: recordings are reached through driveFileUrl and
+ * Drive's own player now. The shop uses the transcript almost always, and an
+ * embedded <audio> was one more thing to break — it did, silently, pointing
+ * at the retired `uc?export=download` endpoint and showing 0:00 / 0:00.
  *
- * NOT `drive.google.com/uc?export=download`. That is the old endpoint and it
- * answers a media element with an HTML interstitial rather than the file, so
- * the player loads nothing and sits at 0:00 / 0:00 — which is exactly how a
- * voice note looked in the shop. `drive.usercontent.google.com/download`
- * serves the bytes, with range requests, so the recording plays and seeks.
- *
- * Pair it with driveFileUrl: a player that fails in some browser must never
- * be the only way to reach a recording.
+ * If a player ever comes back, this is the endpoint that serves bytes.
  */
 export function driveDownloadUrl(id) {
   return `https://drive.usercontent.google.com/download?id=${encodeURIComponent(id)}&export=download`;

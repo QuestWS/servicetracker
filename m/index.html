@@ -30,7 +30,7 @@
 import { api, ApiError, storeSession, storedWho, clearSession, storedToken } from '../assets/lib/api.js';
 import { ENTRY_LABEL, formatHours } from '../assets/lib/entry-types.js';
 import { tokenFromScan } from '../assets/lib/tracking.js';
-import { $, esc, toast, formatDateTime, fileToBase64, preparePhoto, driveImageUrl, driveFileUrl, driveDownloadUrl } from '../assets/lib/ui.js';
+import { $, esc, toast, formatDateTime, fileToBase64, preparePhoto, driveImageUrl, driveFileUrl } from '../assets/lib/ui.js';
 
 if ('serviceWorker' in navigator) {
   addEventListener('load', () => navigator.serviceWorker.register('../sw.js').catch(() => {}));
@@ -532,8 +532,7 @@ function entryHtml(entry) {
     ${entry.entryType === 'labor' && entry.hours !== null ? `<div class="hoursline">${formatHours(entry.hours)}</div>` : ''}
     ${body}
     ${entry.audioFile ? `<div class="audiorow">
-      <audio controls preload="none" src="${driveDownloadUrl(entry.audioFile)}"></audio>
-      <a href="${driveFileUrl(entry.audioFile)}" target="_blank" rel="noreferrer" class="hint">Open the recording in Drive</a>
+      <a href="${driveFileUrl(entry.audioFile)}" target="_blank" rel="noreferrer">Open the recording in Drive</a>
     </div>` : ''}
     ${entry.photos.length ? `<div class="photos">${entry.photos.map((p) => `
       <a href="${driveImageUrl(p.full, 1600)}" target="_blank" rel="noreferrer">
