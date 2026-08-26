@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import { chromium } from 'playwright-core';
 import { makeWorkOrderPdf, makeInvoicePdf } from '../scripts/lib/sample-work-order.mjs';
+import { encode as encodePng } from '../scripts/lib/png.mjs';
 
 const BASE = process.env.BASE || 'http://localhost:8787';
 const PASSWORD = process.env.ADMIN_PASSWORD || 'shop';
@@ -219,6 +220,39 @@ check('three twenty-minute stints come to exactly an hour on top of the first',
   (await mech.evaluate(() => document.body.innerText)).includes('2h 30m on this job so far'),
   (await mech.evaluate(() => document.body.innerText)).slice(0, 200));
 
+/* ------------------------------------------------------------ a prop out */
+console.log('\n== a prop going out for repair ==');
+// A prop has no barcode. What identifies it is the paper tag wired to it, so
+// the mechanic photographs that — this stands in for the tag.
+const TAG_PNG = 'scratch/browser-check-tag.png';
+fs.writeFileSync(TAG_PNG, encodePng({
+  width: 48, height: 48,
+  data: Buffer.from(Array.from({ length: 48 * 48 * 4 }, (_, i) => (i % 4 === 3 ? 255 : (i * 7) % 256))),
+}));
+
+const tagInputs = await mech.evaluate(() => {
+  const read = (sel) => {
+    const el = document.querySelector(sel);
+    return el ? { capture: el.getAttribute('capture'), multiple: el.hasAttribute('multiple') } : null;
+  };
+  return { camera: read('#tagcamera'), library: read('#taglibrary') };
+});
+check('the tag gets its own camera door', tagInputs.camera && tagInputs.camera.capture === 'environment');
+check('and its own library door', tagInputs.library && tagInputs.library.capture === null);
+check('a tag is one tag, so neither takes several', !tagInputs.camera.multiple && !tagInputs.library.multiple);
+
+await mech.setInputFiles('#tagcamera', TAG_PNG);
+await mech.waitForSelector('#tagthumb figure img', { timeout: 20000 });
+check('the tag photo previews before it is sent', await mech.locator('#tagthumb img').count() === 1);
+await mech.fill('#propdesc', 'Stainless 3-blade, port side');
+await mech.click('#saveprop');
+await mech.waitForSelector('.proprow', { timeout: 20000 });
+check('the prop lands on the job, ready for pick-up',
+  /ready for pick-up/i.test(await mech.textContent('.proprow')),
+  await mech.textContent('.proprow'));
+check('and the tag photo comes back with it', await mech.locator('.proprow img').count() === 1);
+await mech.screenshot({ path: `${SHOTS}/55-prop-mechanic.png`, fullPage: true });
+
 // A logged voice note links out to Drive rather than embedding a player.
 // An embedded one pointed at the retired `uc?export=download` endpoint and
 // showed 0:00 / 0:00 for months; the shop reads the transcript anyway. The
@@ -330,8 +364,45 @@ await admin.waitForSelector('text=From the office', { timeout: 20000 });
 check('the writer can put a note on the job',
   /owner wants a call before you pull/i.test(await admin.evaluate(() => document.body.innerText)));
 
+/* ---------------------------------------------------------- the props list */
+console.log('\n== the props list ==');
+await admin.goto(`${BASE}/admin/?view=props`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.partlist', { timeout: 20000 });
+const propsText = () => admin.evaluate(() => document.body.innerText);
+check('the prop is waiting on the bench', /Stainless 3-blade/.test(await propsText()));
+check('the tag photo is on the list, not a part number',
+  await admin.locator('.tagshot img').count() > 0);
+// Drive does not serve images to the preview server, so this run is also the
+// broken-image case — which is exactly the one that used to shove three lines
+// of blue alt text through the middle of the row.
+const tagBox = await admin.locator('.tagshot').first().boundingBox();
+check('and a tag photo that will not load stays inside its own box',
+  tagBox.width <= 64 && tagBox.height <= 64, JSON.stringify(tagBox));
+check('and it says which boat it came off', /JOHN SMITH/.test(await propsText()));
+await admin.screenshot({ path: `${SHOTS}/56-props-ready.png`, fullPage: true });
+
+// Out it goes, against whoever took it.
+await admin.locator('.proppick').first().check();
+await admin.fill('#propvendor', 'Ottawa Prop Works');
+await admin.click('#markpicked');
+await admin.waitForSelector('[data-fixed]', { timeout: 20000 });
+check('a picked-up prop moves out for repair', /Ottawa Prop Works/.test(await propsText()));
+check('and offers both ways back', await admin.locator('[data-unfixable]').count() === 1);
+
+// It cannot be removed from the list once it has left the building.
+check('and can no longer be pulled off the list',
+  await admin.locator('[data-propcancel]').count() === 0);
+
+await admin.click('[data-fixed]');
+await admin.waitForFunction(() => document.querySelectorAll('[data-fixed]').length === 0,
+  null, { timeout: 20000 });
+check('and comes back fixed', /Returned — fixed/.test(await propsText()), (await propsText()).slice(0, 200));
+await admin.screenshot({ path: `${SHOTS}/57-props-back.png`, fullPage: true });
+
 /* ------------------------------------------------------------- the alert */
 console.log('\n== the red alert ==');
+// The props list left the portal on another page.
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
 const ALERT = 'Do not start — owner is disputing the estimate.';
 await admin.fill('#alerttext', ALERT);
 await admin.click('#setalert');
@@ -508,6 +579,8 @@ check('hides the hours figure', !seen.includes('1.5 h') && !seen.includes('1h 30
 check('hides the part number', !seen.includes('6BH-44352'));
 check('hides the mechanic name', !seen.includes('Dale'));
 check('hides the red alert entirely', !seen.includes('disputing'));
+check('and says nothing about the prop that went out',
+  !seen.includes('3-blade') && !/prop/i.test(seen));
 check('offers the invoice now the job is done', seen.includes('View your invoice'));
 // The number that matters: what they owe after their deposit, not the total.
 check('shows the balance, not the grand total', seen.includes('$1,632.47'), seen.slice(0, 300));

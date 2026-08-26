@@ -197,6 +197,37 @@ alert nobody sees until they have already picked the job is half an alert.
   read back as undefined and never appear — and the writer would have no way to
   tell that from a mechanic ignoring it.
 
+## Props out for repair
+
+A propeller off a customer's boat, away at the prop shop and back again. It
+mirrors the parts list — a floor-to-office handoff with a batch step in the
+middle — and differs in the two ways that matter.
+
+- **A photograph of the tag is the identity.** A prop has no barcode and no
+  part number. What tells the prop shop whose it is, and tells the writer
+  which boat it goes back on, is the paper tag wired to it — so the mechanic
+  photographs the tag and that photo leads every row on both screens. It is
+  asked for, not insisted on: like the stock request's part number, a
+  description alone still gets a prop onto the list, because a mechanic
+  holding a prop and a camera that will not focus should not be stuck.
+- **The stages are its own**: `ready` → `picked_up` → `fixed` *or*
+  `unfixable`. Not the parts lifecycle reworded. A part is bought and arrives;
+  a prop is the customer's own property leaving the building, and it can come
+  back unusable — which is a real ending, and the one that means somebody has
+  a phone call to make. So `unfixable` is a status, not a failed `returned`.
+- It goes out in a batch against whoever collected it, the way parts go on an
+  order against a vendor. Once it has left it can no longer be pulled off the
+  list — only marked returned.
+- The floor creates one; the office moves it along. `addPropRepair` needs a
+  signed-in mechanic, everything after it needs the writer, and `listProps`
+  is writer-only for the same reason `openJobs` is gated: it is every
+  customer's name and boat in one list.
+- **None of it reaches `/t/`.** It is its own tab, `publicJob` never touches
+  it, and a test walks a job with a prop out all the way to done and asserts
+  the customer page says nothing about it.
+- A new tab needs `setup()` run once, same as a new column. `sheet_` already
+  fails with "Run setup()." if the tab is missing, so this one guards itself.
+
 ## Parts, and the writer's checklist
 
 - A **part entry** can carry two extra asks: order one for this job, and put one

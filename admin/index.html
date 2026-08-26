@@ -20,6 +20,7 @@
     <a class="linkbtn" href="?" data-nav="jobs">Jobs</a>
     <a class="linkbtn" href="?view=intake" data-nav="intake">New work order</a>
     <a class="linkbtn" href="?view=parts" data-nav="parts">Parts</a>
+    <a class="linkbtn" href="?view=props" data-nav="props">Props</a>
     <a class="linkbtn" href="?view=mechanics" data-nav="mechanics">Mechanics</a>
     <a class="linkbtn" href="?view=setup" data-nav="setup">App setup</a>
     <button class="linkbtn" type="button" id="signout">Sign out</button>
@@ -242,7 +243,7 @@ async function renderJob(id) {
   view.innerHTML = `<p class="loading">Loading job ${esc(id)}…</p>`;
   const data = await api('getJob', [id]);
   showTestBanner(data.testMode);
-  const { job, entries, hours, timeline, emails } = data;
+  const { job, entries, hours, props, timeline, emails } = data;
   // A mechanic can add to a job after the writer has written the rest up, so
   // the split is per entry rather than a flag on the job.
   const pending = entries.filter((entry) => !entry.loggedAt);
@@ -448,6 +449,22 @@ async function renderJob(id) {
             : `<p class="hint" style="margin:0">No time logged yet. Mechanics add it from the job screen
               as they finish each stint.</p>`}
         </section>
+
+        ${props && props.length ? `<section class="card">
+          <h2>Props out (${props.length})</h2>
+          <div class="proplist">${props.map((prop) => `
+            <div class="proprow">
+              ${prop.tagPhoto
+                ? `<a href="${driveFileUrl(prop.tagPhoto.full)}" target="_blank" rel="noopener"><img
+                     src="${driveImageUrl(prop.tagPhoto.thumb)}" alt="Tag"></a>`
+                : `<div class="notag">no tag<br>photo</div>`}
+              <div class="grow">
+                <div class="who">${esc(prop.description || 'Prop')}</div>
+                <div class="sub">${esc(prop.statusLabel)}${prop.vendor ? ` · ${esc(prop.vendor)}` : ''}</div>
+              </div>
+            </div>`).join('')}</div>
+          <p class="hint">Moved along from the <a href="?view=props">props list</a>.</p>
+        </section>` : ''}
 
         <section class="card">
           <h2>Shop log (${entries.length})${hours.total ? ` · ${formatHours(hours.total)} logged` : ''}</h2>
@@ -1067,6 +1084,131 @@ async function renderParts() {
   });
 }
 
+/* -------------------------------------------------------------- props --- */
+
+/**
+ * One prop on the list. The tag photo leads, because a prop has no number to
+ * read instead — the tag wired to it is the whole of its identity, and the
+ * writer matching a returned prop to a boat is reading that photo.
+ */
+function propLine(prop, options) {
+  const tail = [];
+  if (prop.jobId) tail.push(`<a href="?job=${encodeURIComponent(prop.jobId)}">job ${esc(prop.jobId)}</a>`);
+  if (prop.customerName) tail.push(esc(prop.customerName));
+  if (prop.boatInfo) tail.push(esc(prop.boatInfo));
+  if (prop.requestedBy) tail.push(`pulled by ${esc(prop.requestedBy)}`);
+  tail.push(formatDate(prop.createdAt));
+
+  const pill = { ready: 'blue', picked_up: 'gold', fixed: 'green', unfixable: 'red' }[prop.status];
+
+  return `<div class="partrow proprow-admin" data-prop="${esc(prop.id)}">
+    <div class="row" style="justify-content:space-between;align-items:flex-start;gap:10px">
+      ${prop.tagPhoto
+        ? `<a href="${driveFileUrl(prop.tagPhoto.full)}" target="_blank" rel="noopener" class="tagshot">
+             <img src="${driveImageUrl(prop.tagPhoto.thumb)}" alt="Tag"></a>`
+        : `<div class="tagshot notag">no tag photo</div>`}
+      <div style="flex:1;min-width:0">
+        <div>${options.select ? `<input type="checkbox" class="proppick" value="${esc(prop.id)}">` : ''}
+          <b>${esc(prop.description || 'Prop')}</b>
+          <span class="pill ${pill}">${esc(prop.statusLabel)}</span>
+        </div>
+        <div class="sub">${tail.join(' · ')}</div>
+        ${prop.vendor ? `<div class="sub">${esc(prop.vendor)}${prop.pickedUpAt ? ` · picked up ${formatDate(prop.pickedUpAt)}` : ''}${prop.returnedAt ? ` · back ${formatDate(prop.returnedAt)}` : ''}</div>` : ''}
+      </div>
+      <div class="row tight" style="justify-content:flex-end">
+        ${options.returnable ? `
+          <button class="btn ghost sm" type="button" data-fixed="${esc(prop.id)}">Back, fixed</button>
+          <button class="btn danger sm" type="button" data-unfixable="${esc(prop.id)}">Unfixable</button>` : ''}
+        ${options.cancel ? `<button class="btn ghost sm" type="button" data-propcancel="${esc(prop.id)}">Remove</button>` : ''}
+      </div>
+    </div>
+    <div class="row tight" style="flex-wrap:nowrap;margin-top:6px">
+      <input class="txt" data-propnote="${esc(prop.id)}" value="${esc(prop.notes)}"
+        placeholder="Note — quoted at, owner called, back Friday…" aria-label="Note">
+      <button class="btn ghost sm" type="button" data-savepropnote="${esc(prop.id)}">Save</button>
+    </div>
+  </div>`;
+}
+
+async function renderProps() {
+  view.className = 'wrap';
+  view.innerHTML = `<p class="loading">Loading the props…</p>`;
+  const { ready, pickedUp, back } = await api('listProps', []);
+
+  view.innerHTML = `
+    <h1 class="page-title">Props</h1>
+    <p class="lead">
+      Propellers off customers' boats and away at the prop shop. A mechanic pulls one, photographs
+      the tag wired to it, and it lands here — the tag photo is what tells you whose it is when it
+      comes back. None of this reaches the customer.
+    </p>
+    <div id="notice"></div>
+
+    <section class="card" style="margin-top:16px">
+      <h2>Ready for pick-up (${ready.length})</h2>
+      ${ready.length ? `
+        <div class="partlist">${ready.map((p) => propLine(p, { select: true, cancel: true })).join('')}</div>
+        <div class="card flat" style="margin-top:14px;background:#f4f9fc">
+          <label class="fld" for="propvendor">Picked up by</label>
+          <input class="txt" id="propvendor" placeholder="Which prop shop">
+          <button class="btn navy" type="button" id="markpicked" style="margin-top:12px">
+            Mark the ticked props picked up
+          </button>
+        </div>`
+        : `<div class="empty">Nothing waiting on the bench.</div>`}
+    </section>
+
+    <section class="card" style="margin-top:16px">
+      <h2>Out for repair (${pickedUp.length})</h2>
+      ${pickedUp.length
+        ? `<div class="partlist">${pickedUp.map((p) => propLine(p, { returnable: true })).join('')}</div>`
+        : `<div class="empty">Nothing out at the moment.</div>`}
+    </section>
+
+    <section class="card" style="margin-top:16px">
+      <h2>Back (${back.length})</h2>
+      ${back.length
+        ? `<div class="partlist">${back.map((p) => propLine(p, {})).join('')}</div>`
+        : `<div class="empty">Nothing has come back yet.</div>`}
+    </section>`;
+
+  const fail = (error) => {
+    $('notice').innerHTML = `<div class="banner warn">${esc(error.message)}</div>`;
+  };
+
+  const markpicked = $('markpicked');
+  if (markpicked) markpicked.onclick = async () => {
+    const ids = Array.from(view.querySelectorAll('.proppick:checked')).map((box) => box.value);
+    if (!ids.length) return fail(new Error('Tick the props that went.'));
+    try {
+      await api('markPropsPickedUp', [ids, $('propvendor').value]);
+      renderProps();
+      toast('Marked picked up.');
+    } catch (error) { fail(error); }
+  };
+
+  const returned = (attribute, outcome, said) => {
+    view.querySelectorAll(`[data-${attribute}]`).forEach((button) => {
+      button.onclick = () => api('markPropReturned', [button.dataset[attribute], outcome])
+        .then(() => { renderProps(); toast(said); }).catch(fail);
+    });
+  };
+  returned('fixed', 'fixed', 'Back on the bench.');
+  returned('unfixable', 'unfixable', 'Marked unfixable — the owner will need a new one.');
+
+  view.querySelectorAll('[data-propcancel]').forEach((button) => {
+    button.onclick = () => api('cancelProp', [button.dataset.propcancel])
+      .then(renderProps).catch(fail);
+  });
+  view.querySelectorAll('[data-savepropnote]').forEach((button) => {
+    button.onclick = () => {
+      const field = view.querySelector(`[data-propnote="${button.dataset.savepropnote}"]`);
+      api('setPropNote', [button.dataset.savepropnote, field.value])
+        .then(() => toast('Note saved.')).catch(fail);
+    };
+  });
+}
+
 /* -------------------------------------------------------------- setup --- */
 
 async function renderSetup() {
@@ -1228,6 +1370,7 @@ async function route() {
     if (job) return await renderJob(job);
     if (which === 'intake') return renderIntake();
     if (which === 'parts') return await renderParts();
+    if (which === 'props') return await renderProps();
     if (which === 'mechanics') return await renderMechanics();
     if (which === 'setup') return await renderSetup();
     if (params.get('setup')) return await renderSetup();

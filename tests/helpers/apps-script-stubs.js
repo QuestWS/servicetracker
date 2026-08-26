@@ -62,6 +62,14 @@ function fakeSheet(name) {
     appendRow: (row) => rows.push(row.map((value, c) => coerce(value, formatAt(rows.length, c)))),
     getLastRow: () => rows.length,
     setFrozenRows: () => sheet,
+    // 1-indexed, like the real thing, and it shifts every row below up — which
+    // is exactly why the backend has to forget_() its memoised rows after
+    // calling this. Both cancel paths in the backend depend on it.
+    deleteRow: (rowNumber) => {
+      rows.splice(rowNumber - 1, 1);
+      formats.splice(rowNumber - 1, 1);
+      return sheet;
+    },
     getRange: (row, col, numRows, numCols) => {
       const range = {
         getValues: () => {

@@ -309,6 +309,136 @@ describe('the job alert', () => {
   });
 });
 
+describe('a prop out for repair', () => {
+  const TAG = { thumb: 'dGh1bWI=', full: 'ZnVsbA==' };
+
+  function sendProp(id = '01-8886', extra = {}) {
+    const seeded = seedJob(id);
+    backend.fn('addPropRepair', seeded.mech, seeded.token,
+      Object.assign({ tagPhoto: TAG, description: 'Stainless 3-blade, port' }, extra));
+    return seeded;
+  }
+
+  it('starts on the bench, ready for pick-up', () => {
+    sendProp();
+    const list = backend.fn('listPropRepairs', adminToken);
+    expect(list.ready).toHaveLength(1);
+    expect(list.ready[0].statusLabel).toBe('Ready for pick-up');
+    expect(list.pickedUp).toHaveLength(0);
+    expect(list.back).toHaveLength(0);
+  });
+
+  it('carries the tag photo, which is the whole of its identity', () => {
+    sendProp();
+    const prop = backend.fn('listPropRepairs', adminToken).ready[0];
+    // Two sizes, same as every other photo: a thumb for the list, a full one
+    // for reading a handwritten name off.
+    expect(prop.tagPhoto.thumb).toBeTruthy();
+    expect(prop.tagPhoto.full).toBeTruthy();
+    expect(prop.tagPhoto.thumb).not.toBe(prop.tagPhoto.full);
+  });
+
+  it('takes a described prop when the camera will not play', () => {
+    const { token, mech } = seedJob();
+    expect(() => backend.fn('addPropRepair', mech, token, { description: 'Aluminium spare' }))
+      .not.toThrow();
+  });
+
+  it('refuses one with neither a photo nor a word about it', () => {
+    const { token, mech } = seedJob();
+    expect(() => backend.fn('addPropRepair', mech, token, {}))
+      .toThrow(/photograph the tag/i);
+  });
+
+  it('goes out against whoever took it', () => {
+    sendProp();
+    const id = backend.fn('listPropRepairs', adminToken).ready[0].id;
+    const list = backend.fn('markPropsPickedUp', adminToken, [id], 'Ottawa Prop Works');
+    expect(list.ready).toHaveLength(0);
+    expect(list.pickedUp[0].vendor).toBe('Ottawa Prop Works');
+    expect(list.pickedUp[0].pickedUpAt).toBeTruthy();
+  });
+
+  it('will not let a batch out without saying who took it', () => {
+    sendProp();
+    const id = backend.fn('listPropRepairs', adminToken).ready[0].id;
+    expect(() => backend.fn('markPropsPickedUp', adminToken, [id], '  ')).toThrow(/who took them/i);
+  });
+
+  it('comes back fixed', () => {
+    sendProp();
+    const id = backend.fn('listPropRepairs', adminToken).ready[0].id;
+    backend.fn('markPropsPickedUp', adminToken, [id], 'Ottawa Prop Works');
+    const list = backend.fn('markPropReturned', adminToken, id, 'fixed');
+    expect(list.pickedUp).toHaveLength(0);
+    expect(list.back[0].status).toBe('fixed');
+    expect(list.back[0].returnedAt).toBeTruthy();
+  });
+
+  it('or comes back unfixable, which is an ending of its own', () => {
+    sendProp();
+    const id = backend.fn('listPropRepairs', adminToken).ready[0].id;
+    backend.fn('markPropsPickedUp', adminToken, [id], 'Ottawa Prop Works');
+    const list = backend.fn('markPropReturned', adminToken, id, 'unfixable');
+    expect(list.back[0].status).toBe('unfixable');
+    expect(list.back[0].statusLabel).toBe('Returned — unfixable');
+  });
+
+  it('cannot come back before it has gone out', () => {
+    sendProp();
+    const id = backend.fn('listPropRepairs', adminToken).ready[0].id;
+    expect(() => backend.fn('markPropReturned', adminToken, id, 'fixed')).toThrow(/not gone out/i);
+  });
+
+  it('will not accept an outcome that is neither', () => {
+    sendProp();
+    const id = backend.fn('listPropRepairs', adminToken).ready[0].id;
+    backend.fn('markPropsPickedUp', adminToken, [id], 'Ottawa Prop Works');
+    expect(() => backend.fn('markPropReturned', adminToken, id, 'received'))
+      .toThrow(/fixed, or unfixable/i);
+  });
+
+  it('can be pulled off the list before it leaves, but not after', () => {
+    sendProp();
+    const id = backend.fn('listPropRepairs', adminToken).ready[0].id;
+    expect(backend.fn('cancelPropRepair', adminToken, id).ready).toHaveLength(0);
+
+    sendProp('01-8887');
+    const second = backend.fn('listPropRepairs', adminToken).ready[0].id;
+    backend.fn('markPropsPickedUp', adminToken, [second], 'Ottawa Prop Works');
+    expect(() => backend.fn('cancelPropRepair', adminToken, second)).toThrow(/already out/i);
+  });
+
+  it('rides along with the job on both sides of the shop', () => {
+    const { id, token, mech } = sendProp();
+    expect(backend.fn('jobForMechanic', mech, token).props).toHaveLength(1);
+    expect(backend.fn('getJob', adminToken, id).props).toHaveLength(1);
+  });
+
+  it('is the floor that sends one out and the office that moves it along', () => {
+    const { id: jobId, token, mech } = seedJob();
+    // A signed-out phone cannot put a prop on the list.
+    expect(() => backend.fn('addPropRepair', 'not-a-token', token, { description: 'x' })).toThrow();
+    backend.fn('addPropRepair', mech, token, { description: 'Stainless 3-blade' });
+    const id = backend.fn('listPropRepairs', adminToken).ready[0].id;
+    // And the floor cannot mark it picked up or read the whole shop's list.
+    expect(() => backend.fn('listPropRepairs', mech)).toThrow();
+    expect(() => backend.fn('markPropsPickedUp', mech, [id], 'Anyone')).toThrow();
+    expect(jobId).toBeTruthy();
+  });
+
+  it('never reaches the customer', () => {
+    const { id, token } = sendProp();
+    backend.fn('props_').setProperty('CUSTOMER_TRACKING', 'on');
+    backend.fn('props_').setProperty('TEST_MODE', 'false');
+    backend.fn('setStatusByWriter', adminToken, id, 'work_finished');
+    backend.fn('markDone', adminToken, id);
+    const seen = JSON.stringify(backend.fn('publicJob', token, ''));
+    expect(seen).not.toContain('prop');
+    expect(seen).not.toContain('3-blade');
+  });
+});
+
 describe('signing in by name', () => {
   it('matches somebody already on the roster, however they type it', () => {
     backend.fn('mechanicSignIn', 'Dale', true);

@@ -790,3 +790,81 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
   letter-spacing: .05em;
   text-transform: uppercase;
 }
+
+
+/* -------------------------------------------------------------- props --- */
+/* A prop that has left the building. The tag photo is the whole identity, so
+   it leads the row — a prop has no part number to read instead. */
+.proplist { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.proprow {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+.proprow img, .proprow .notag, .proprow a {
+  width: 46px;
+  height: 46px;
+  flex: none;
+  border-radius: 7px;
+  object-fit: cover;
+  overflow: hidden;
+  background: var(--ice);
+  font-size: 9px;
+  line-height: 1.15;
+  color: var(--muted);
+  text-decoration: none;
+}
+.proprow a img { width: 100%; height: 100%; }
+.proprow .notag {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 9.5px;
+  line-height: 1.25;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.proprow .grow { flex: 1 1 auto; min-width: 0; }
+.proprow .who { font-weight: 600; color: var(--navy); font-size: 15px; }
+.proprow .sub { font-size: 13px; color: var(--muted); }
+
+/* The writer's side: the tag photo leads the row, big enough to read a
+   handwritten name off without opening it.
+   The tight font and the clipping are not decoration. When Drive does not
+   serve the image — a hiccup, a permission, a preview server with no Drive
+   behind it at all — the browser falls back to rendering the alt text, and at
+   inherited link size that is three lines of blue that shove the prop's own
+   details out of the row. Boxed and shrunk, a missing photo stays a small
+   grey square and the row still reads. */
+.tagshot {
+  flex: none;
+  display: block;
+  width: 62px;
+  height: 62px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--ice);
+  font-size: 9px;
+  line-height: 1.15;
+  color: var(--muted);
+  text-decoration: none;
+}
+.tagshot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tagshot.notag {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background: var(--ice);
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  padding: 4px;
+}

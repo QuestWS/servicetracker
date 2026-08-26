@@ -100,6 +100,23 @@ const STATUS_LABEL = {
   done: 'Done'
 };
 /** Why a part is on the list. */
+/**
+ * Where a prop is in its trip out of the building.
+ *
+ * Not the parts lifecycle with different words. A part is ordered and arrives;
+ * a prop is the customer's own, it leaves, and it may come back unusable — at
+ * which point somebody has to ring the owner about a new one. So "unfixable"
+ * is an ending in its own right, not a failure state of "returned".
+ */
+const PROP_STATUS = ['ready', 'picked_up', 'fixed', 'unfixable'];
+
+const PROP_STATUS_LABEL = {
+  ready: 'Ready for pick-up',
+  picked_up: 'Picked up',
+  fixed: 'Returned — fixed',
+  unfixable: 'Returned — unfixable'
+};
+
 const PART_REASON_LABEL = {
   job: 'For this job',
   restock: 'Restock',
@@ -168,6 +185,12 @@ const SHEETS = {
   PartsOrders: ['id', 'job_id', 'source_entry', 'part_identifier', 'description', 'quantity',
                 'reason', 'status', 'vendor', 'order_number', 'notes', 'requested_by',
                 'created_at', 'ordered_at', 'received_at'],
+  // A propeller off a boat, away at the prop shop. Deliberately its own tab
+  // rather than a PartsOrders row: a prop is not bought, it is the customer's
+  // own part leaving the building and coming back, and its stages say so.
+  // What identifies it is a photograph of the tag tied to it, not a number.
+  PropRepairs: ['id', 'job_id', 'tag_photo', 'description', 'status', 'vendor',
+                'notes', 'requested_by', 'created_at', 'picked_up_at', 'returned_at'],
   Mechanics: ['id', 'name', 'active', 'created_at'],
   StatusEvents: ['id', 'job_id', 'from_status', 'to_status', 'actor_type', 'actor', 'note', 'created_at'],
   EmailLog: ['id', 'job_id', 'kind', 'recipient', 'subject', 'status', 'error', 'created_at']
@@ -474,6 +497,13 @@ function doPost(e) {
     partNote:         function (a) { return setPartNote(data.token, a[0], a[1]); },
     cancelPart:       function (a) { return cancelPartOrder(data.token, a[0]); },
 
+    /* props out for repair */
+    listProps:        function (a) { return listPropRepairs(data.token); },
+    markPropsPickedUp: function (a) { return markPropsPickedUp(data.token, a[0], a[1]); },
+    markPropReturned: function (a) { return markPropReturned(data.token, a[0], a[1]); },
+    setPropNote:      function (a) { return setPropNote(data.token, a[0], a[1]); },
+    cancelProp:       function (a) { return cancelPropRepair(data.token, a[0]); },
+
     /* mechanic app */
     roster:           function (a) { return roster(); },
     signIn:           function (a) { return mechanicSignIn(a[0], a[1]); },
@@ -482,6 +512,7 @@ function doPost(e) {
     openJobs:         function (a) { return openJobs(data.token); },
     transcriptsFor:   function (a) { return transcriptsFor(data.token, a[0]); },
     addEntry:         function (a) { return addEntry(data.token, a[0], a[1]); },
+    addPropRepair:    function (a) { return addPropRepair(data.token, a[0], a[1]); },
     finishWork:       function (a) { return finishWork(data.token, a[0]); },
 
     /* customer page — the token in the URL is the only credential */
@@ -704,6 +735,7 @@ function getJob(token, id) {
     job: jobSummary_(job),
     entries: entries,
     hours: laborTotals_(entries),
+    props: propsForJob_(id),
     timeline: rows_('StatusEvents').filter(function (event) { return event.job_id === id; }),
     emails: rows_('EmailLog').filter(function (mail) { return mail.job_id === id; }).reverse()
   };
@@ -894,7 +926,8 @@ function jobForMechanic(token, jobToken) {
     mechanic: { id: who.id, name: who.name },
     job: jobSummary_(job),
     entries: entriesForJob_(job.id),
-    hours: laborTotals_(entriesForJob_(job.id))
+    hours: laborTotals_(entriesForJob_(job.id)),
+    props: propsForJob_(job.id)
   };
 }
 
@@ -1218,6 +1251,183 @@ function cancelPartOrder(token, id) {
   sheet.deleteRow(part._row);
   forget_('PartsOrders');
   return listPartsOrders(token);
+}
+
+/* ============================ prop repairs ============================= */
+
+function propView_(prop) {
+  return {
+    id: prop.id,
+    jobId: prop.job_id || null,
+    // One photo, in the same two sizes every other photo is stored in: a thumb
+    // for the list and a full one for when somebody needs to read the tag.
+    tagPhoto: parsePhotos_(prop.tag_photo)[0] || null,
+    description: prop.description || '',
+    status: prop.status,
+    statusLabel: PROP_STATUS_LABEL[prop.status] || prop.status,
+    vendor: prop.vendor || null,
+    notes: prop.notes || '',
+    requestedBy: prop.requested_by || null,
+    createdAt: prop.created_at,
+    pickedUpAt: prop.picked_up_at || null,
+    returnedAt: prop.returned_at || null
+  };
+}
+
+function propRow_(id) {
+  const all = rows_('PropRepairs');
+  for (let i = 0; i < all.length; i++) {
+    if (all[i].id === id) return all[i];
+  }
+  return null;
+}
+
+/**
+ * A prop coming off a boat and going out for repair, logged from the floor by
+ * whoever pulled it.
+ *
+ * The tag is the identity. A prop has no barcode and no part number — what
+ * tells the prop shop whose it is, and tells the writer which boat it goes
+ * back on, is the paper tag wired to it. So the mechanic photographs the tag
+ * and that photo travels with the row.
+ *
+ * The photo is asked for, not insisted on, for the same reason the stock
+ * request does not insist on a part number: a mechanic holding a prop with a
+ * camera that will not focus should still be able to get it onto the list, so
+ * long as they say in words which prop it is.
+ */
+function addPropRepair(token, jobToken, payload) {
+  const who = requireMechanic_(token);
+  const job = jobByToken_(jobToken);
+  if (!job) throw new Error('No such job.');
+
+  const description = String((payload && payload.description) || '').trim();
+  const photo = (payload && payload.tagPhoto) || null;
+  if (!photo && !description) {
+    throw new Error('Photograph the tag, or say which prop this is.');
+  }
+
+  return withLock_(function () {
+    let stored = '';
+    if (photo) {
+      stored = JSON.stringify([{
+        thumb: saveFile_(job.id, 'prop-tag-' + Date.now() + '-thumb.jpg', 'image/jpeg', photo.thumb),
+        full: saveFile_(job.id, 'prop-tag-' + Date.now() + '.jpg', 'image/jpeg', photo.full)
+      }]);
+    }
+    const row = {
+      id: newId_('prop'),
+      job_id: job.id,
+      tag_photo: stored,
+      description: description,
+      status: 'ready',
+      vendor: '',
+      notes: String((payload && payload.notes) || '').trim(),
+      requested_by: who.name,
+      created_at: nowIso_(),
+      picked_up_at: '',
+      returned_at: ''
+    };
+    appendRow_('PropRepairs', row);
+    return { prop: propView_(row), props: propsForJob_(job.id) };
+  });
+}
+
+function propsForJob_(jobId) {
+  return rows_('PropRepairs')
+    .filter(function (prop) { return prop.job_id === jobId; })
+    .map(propView_)
+    .sort(function (a, b) { return String(a.createdAt).localeCompare(String(b.createdAt)); });
+}
+
+/** Waiting to go, away at the shop, and what has come back. */
+function listPropRepairs(token) {
+  requireAdmin_(token);
+  const all = rows_('PropRepairs').map(propView_);
+  const jobs = {};
+  const boats = {};
+  rows_('Jobs').forEach(function (job) {
+    jobs[job.id] = job.customer_name || '';
+    boats[job.id] = job.boat_info || '';
+  });
+  all.forEach(function (prop) {
+    prop.customerName = prop.jobId ? (jobs[prop.jobId] || null) : null;
+    prop.boatInfo = prop.jobId ? (boats[prop.jobId] || null) : null;
+  });
+
+  const byNewest = function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); };
+  const pick = function (status) {
+    return all.filter(function (p) { return p.status === status; }).sort(byNewest);
+  };
+  const back = all
+    .filter(function (p) { return p.status === 'fixed' || p.status === 'unfixable'; })
+    .sort(function (a, b) { return String(b.returnedAt).localeCompare(String(a.returnedAt)); });
+
+  return { ready: pick('ready'), pickedUp: pick('picked_up'), back: back };
+}
+
+/**
+ * The prop shop's van has been. Props go out in a batch against whoever took
+ * them, the same way parts go on an order against a vendor.
+ */
+function markPropsPickedUp(token, ids, vendor) {
+  requireAdmin_(token);
+  const cleanVendor = String(vendor || '').trim();
+  if (!cleanVendor) throw new Error('Who took them?');
+  if (!Array.isArray(ids) || !ids.length) throw new Error('Tick the props that went.');
+
+  return withLock_(function () {
+    const at = nowIso_();
+    ids.forEach(function (id) {
+      const prop = propRow_(id);
+      if (!prop || prop.status !== 'ready') return;
+      updateRow_('PropRepairs', prop._row, {
+        status: 'picked_up', vendor: cleanVendor, picked_up_at: at
+      });
+    });
+    return listPropRepairs(token);
+  });
+}
+
+/**
+ * Back on the bench. Fixed, or not worth fixing — the second is a real ending,
+ * and the one that means somebody has a phone call to make.
+ */
+function markPropReturned(token, id, outcome) {
+  requireAdmin_(token);
+  if (outcome !== 'fixed' && outcome !== 'unfixable') {
+    throw new Error('Did it come back fixed, or unfixable?');
+  }
+  const prop = propRow_(id);
+  if (!prop) throw new Error('No such prop.');
+  if (prop.status !== 'picked_up') throw new Error('That one has not gone out yet.');
+  updateRow_('PropRepairs', prop._row, { status: outcome, returned_at: nowIso_() });
+  return listPropRepairs(token);
+}
+
+/** Free text against a prop at any stage — a quote, a delay, whose it is. */
+function setPropNote(token, id, note) {
+  requireShop_(token);
+  const prop = propRow_(id);
+  if (!prop) throw new Error('No such prop.');
+  updateRow_('PropRepairs', prop._row, { notes: String(note || '').trim() });
+  return { prop: propView_(propRow_(id)) };
+}
+
+/** Pulled off the list before it ever left. Once it is gone, it is gone. */
+function cancelPropRepair(token, id) {
+  requireAdmin_(token);
+  const prop = propRow_(id);
+  if (!prop) throw new Error('No such prop.');
+  if (prop.status !== 'ready') {
+    throw new Error('That prop is already out — mark it returned instead.');
+  }
+  const sheet = sheet_('PropRepairs');
+  sheet.deleteRow(prop._row);
+  // deleteRow does not go through appendRow_/updateRow_, so it has to forget
+  // the memoised rows itself or the next read in this execution is stale.
+  forget_('PropRepairs');
+  return listPropRepairs(token);
 }
 
 /* ============================= mechanics =============================== */

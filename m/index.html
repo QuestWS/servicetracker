@@ -45,6 +45,8 @@ const state = {
   tab: 'labor',
   audio: null,
   photos: [],
+  props: [],
+  tagPhoto: null,
   scanning: null,
 };
 
@@ -490,6 +492,7 @@ async function loadJob() {
     state.job = data.job;
     state.entries = data.entries;
     state.hours = data.hours;
+    state.props = data.props;
     renderJob();
   } catch (error) {
     if (error instanceof ApiError && /Sign in/.test(error.message)) {
@@ -613,6 +616,33 @@ function renderJob() {
     </section>
 
     <section class="card" style="margin-bottom:14px">
+      <h2>Props out for repair${state.props && state.props.length ? ` (${state.props.length})` : ''}</h2>
+      ${state.props && state.props.length ? `<div class="proplist">${state.props.map((prop) => `
+        <div class="proprow">
+          ${prop.tagPhoto ? `<img src="${driveImageUrl(prop.tagPhoto.thumb)}" alt="Tag">`
+            : `<div class="notag">no tag<br>photo</div>`}
+          <div class="grow">
+            <div class="who">${esc(prop.description || 'Prop')}</div>
+            <div class="sub">${esc(prop.statusLabel)}${prop.vendor ? ` · ${esc(prop.vendor)}` : ''}</div>
+          </div>
+        </div>`).join('')}</div>` : ''}
+
+      <p class="hint" style="margin-top:0">Pulling a prop to send out? Photograph the tag that goes with
+        it — that tag is how the prop shop knows whose it is and how the office knows which boat it goes
+        back on.</p>
+      <div class="row tight">
+        <button class="btn ghost block" type="button" id="taketag">Photograph the tag</button>
+        <button class="btn ghost block" type="button" id="picktag">Choose a photo</button>
+      </div>
+      <input id="tagcamera" type="file" accept="image/*" capture="environment" class="hidden">
+      <input id="taglibrary" type="file" accept="image/*" class="hidden">
+      <div class="thumbrow" id="tagthumb"></div>
+      <label class="fld" for="propdesc">Which prop</label>
+      <input class="txt" id="propdesc" placeholder="Stainless 3-blade, port side">
+      <button class="btn ghost block" type="button" id="saveprop" style="margin-top:10px">Ready for pick-up</button>
+    </section>
+
+    <section class="card" style="margin-bottom:14px">
       <h2>Job log (${state.entries.length})</h2>
       ${state.entries.length ? `<div class="feed">${state.entries.map(entryHtml).join('')}</div>`
         : `<div class="empty">Nothing logged yet.</div>`}
@@ -648,9 +678,18 @@ function renderJob() {
   $('photolibrary').onchange = onPhotos;
   $('takephoto').onclick = () => $('photocamera').click();
   $('pickphoto').onclick = () => $('photolibrary').click();
+  // The tag gets its own pair of doors for the same reason the log photos do:
+  // the phone will not offer a choice on its own. One photo only — a tag is
+  // one tag.
+  $('tagcamera').onchange = onTagPhoto;
+  $('taglibrary').onchange = onTagPhoto;
+  $('taketag').onclick = () => $('tagcamera').click();
+  $('picktag').onclick = () => $('taglibrary').click();
+  $('saveprop').onclick = saveProp;
   drawFields();
   drawRecorder();
   drawThumbs();
+  drawTagThumb();
 }
 
 function drawFields() {
@@ -831,6 +870,53 @@ function drawThumbs() {
   });
 }
 
+/* --------------------------------------------------------- prop tags ---- */
+
+async function onTagPhoto(event) {
+  const file = (event.target.files || [])[0];
+  event.target.value = '';
+  if (!file) return;
+  try {
+    state.tagPhoto = await preparePhoto(file);
+  } catch {
+    toast('Could not read that photo.');
+  }
+  drawTagThumb();
+}
+
+function drawTagThumb() {
+  const box = $('tagthumb');
+  if (!box) return;
+  box.innerHTML = state.tagPhoto ? `<figure>
+    <img src="data:image/jpeg;base64,${state.tagPhoto.thumb}" alt="">
+    <button type="button" data-cleartag aria-label="Remove the tag photo">&#10005;</button>
+  </figure>` : '';
+  const clear = box.querySelector('[data-cleartag]');
+  if (clear) clear.onclick = () => { state.tagPhoto = null; drawTagThumb(); };
+}
+
+async function saveProp() {
+  const button = $('saveprop');
+  const description = $('propdesc').value.trim();
+  if (!state.tagPhoto && !description) {
+    return toast('Photograph the tag, or say which prop this is.');
+  }
+  button.disabled = true;
+  button.textContent = 'Saving…';
+  try {
+    const result = await api('addPropRepair', [state.job.token,
+      { tagPhoto: state.tagPhoto, description }]);
+    state.props = result.props;
+    state.tagPhoto = null;
+    renderJob();
+    toast('On the list for pick-up.');
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = 'Ready for pick-up';
+    toast(error.message);
+  }
+}
+
 /* -------------------------------------------------------------- save ---- */
 
 async function saveEntry() {
@@ -935,6 +1021,7 @@ async function refresh() {
     const data = await api('jobForMechanic', [state.job.token]);
     state.entries = data.entries;
     state.hours = data.hours;
+    state.props = data.props;
     renderJob();
   } catch { /* the page is still usable; the next save will refresh it */ }
 }
