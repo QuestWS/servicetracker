@@ -106,6 +106,39 @@ const PART_REASON_LABEL = {
   stock: 'Stock'
 };
 
+/**
+ * Time, in hours and minutes.
+ *
+ * The sheet stores decimal hours and always has — it is what an estimate is
+ * written in and what gets re-keyed into BiT — but nothing in this file adds
+ * decimals together. Every figure is turned into whole minutes first, added
+ * there, and turned back. Sum 0.3333 three times and a mechanic's three
+ * twenty-minute stints come to 59 minutes; sum 20 three times and they come
+ * to the hour they actually worked.
+ *
+ * These are duplicated from assets/lib/entry-types.js on purpose: Apps Script
+ * has no imports, and the two copies are pinned together by a unit test.
+ */
+function minutesFromHours_(hours) {
+  const number = Number(hours);
+  return isFinite(number) ? Math.round(number * 60) : 0;
+}
+
+/** 4dp holds any whole number of minutes exactly enough to survive the trip. */
+function hoursFromMinutes_(minutes) {
+  return Math.round((Number(minutes) / 60) * 10000) / 10000;
+}
+
+/** "2h 30m", "45m", "3h" — how the shop says it, everywhere it is shown. */
+function formatDuration_(minutes) {
+  const total = Math.max(0, Math.round(Number(minutes) || 0));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (!h) return m + 'm';
+  if (!m) return h + 'h';
+  return h + 'h ' + m + 'm';
+}
+
 const ENTRY_LABEL = {
   customer_note: 'Customer note',
   internal_note: 'Internal note',
@@ -124,7 +157,7 @@ const SHEETS = {
          'status', 'needs_review', 'work_order_file', 'invoice_file', 'payment_link',
          'created_at', 'updated_at', 'work_started_at', 'work_finished_at', 'done_at',
          'grand_total', 'deposits', 'amount_due',
-         'parts_ordered_at', 'paid_at', 'work_requested'],
+         'parts_ordered_at', 'paid_at', 'work_requested', 'alert', 'alert_at'],
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
                'transcript_id', 'transcript_error', 'notified_at', 'created_at',
@@ -261,6 +294,19 @@ function appendRow_(name, obj) {
  * field. Each setValue is a round trip to Google, and a status change used
  * to spend three of them.
  */
+/**
+ * Guards a write against a header setup() has not caught up with. Only worth
+ * calling from a new feature's entry point, in the window between a deploy and
+ * somebody running setup() — after that it is always true.
+ */
+function requireColumn_(name, column) {
+  const header = sheet_(name).getRange(1, 1, 1, SHEETS[name].length).getValues()[0];
+  if (header.indexOf(column) === -1) {
+    throw new Error('This needs a one-time setup step: open the Apps Script project and run setup(), ' +
+      'then try again. (The ' + name + ' sheet has no "' + column + '" column yet.)');
+  }
+}
+
 function updateRow_(name, rowNumber, patch) {
   const columns = SHEETS[name];
   const keys = Object.keys(patch).filter(function (key) { return columns.indexOf(key) !== -1; });
@@ -413,6 +459,7 @@ function doPost(e) {
     setStatus:        function (a) { return setStatusByWriter(data.token, a[0], a[1]); },
     markLogged:       function (a) { return markEntriesLogged(data.token, a[0]); },
     addWriterNote:    function (a) { return addWriterNote(data.token, a[0], a[1]); },
+    setJobAlert:      function (a) { return setJobAlert(data.token, a[0], a[1]); },
     setJobFlag:       function (a) { return setJobFlag(data.token, a[0], a[1], a[2]); },
     listMechanics:    function (a) { return listMechanicsAdmin(data.token); },
     addMechanic:      function (a) { return addMechanic(data.token, a[0]); },
@@ -522,6 +569,10 @@ function jobSummary_(job) {
     deposits: numberOrNull_(job.deposits),
     amountDue: numberOrNull_(job.amount_due),
     workRequested: job.work_requested || null,
+    // The red banner on the mechanic's job screen. Shop-side only: publicJob
+    // builds the customer's payload field by field and never reads this.
+    alert: job.alert || null,
+    alertAt: job.alert_at || null,
     partsOrderedAt: job.parts_ordered_at || null,
     paidAt: job.paid_at || null,
     trackingUrl: trackingUrl_(job),
@@ -614,7 +665,7 @@ function listJobs(token, filter) {
   entries.forEach(function (entry) {
     counts[entry.job_id] = (counts[entry.job_id] || 0) + 1;
     if (entry.entry_type === 'labor' && entry.hours) {
-      hours[entry.job_id] = (hours[entry.job_id] || 0) + Number(entry.hours);
+      hours[entry.job_id] = (hours[entry.job_id] || 0) + minutesFromHours_(entry.hours);
     }
   });
 
@@ -629,7 +680,8 @@ function listJobs(token, filter) {
     .map(function (job) {
       const summary = jobSummary_(job);
       summary.entryCount = counts[job.id] || 0;
-      summary.hours = Math.round((hours[job.id] || 0) * 100) / 100;
+      summary.minutes = hours[job.id] || 0;
+      summary.hours = hoursFromMinutes_(summary.minutes);
       return summary;
     })
     .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
@@ -815,16 +867,22 @@ function laborTotals_(entries) {
   const byPerson = {};
   entries.forEach(function (entry) {
     if (entry.entryType !== 'labor' || !entry.hours) return;
-    total += entry.hours;
+    const minutes = minutesFromHours_(entry.hours);
+    total += minutes;
     const who = entry.mechanicName || 'Unknown';
-    byPerson[who] = (byPerson[who] || 0) + entry.hours;
+    byPerson[who] = (byPerson[who] || 0) + minutes;
   });
-  const round = function (n) { return Math.round(n * 100) / 100; };
   return {
-    total: round(total),
+    // Both units travel: `hours` is the figure the writer re-keys into BiT,
+    // `minutes` is what the pages render, and neither is derived from a
+    // rounded version of the other.
+    total: hoursFromMinutes_(total),
+    totalMinutes: total,
     byMechanic: Object.keys(byPerson)
-      .map(function (name) { return { name: name, hours: round(byPerson[name]) }; })
-      .sort(function (a, b) { return b.hours - a.hours; })
+      .map(function (name) {
+        return { name: name, hours: hoursFromMinutes_(byPerson[name]), minutes: byPerson[name] };
+      })
+      .sort(function (a, b) { return b.minutes - a.minutes; })
   };
 }
 
@@ -856,10 +914,21 @@ function addEntry(token, jobToken, payload) {
   const hasAudio = Boolean(payload.audio);
   const photos = payload.photos || [];
 
-  const hours = payload.hours === '' || payload.hours === null || payload.hours === undefined
-    ? null : Number(payload.hours);
+  // The mechanic app sends whole minutes, because that is what it asks for.
+  // `hours` is still accepted: it is what the estimate side of the same screen
+  // has always sent, and what anything already on the wire sends.
+  let hours = null;
+  if (payload.minutes !== '' && payload.minutes !== null && payload.minutes !== undefined) {
+    const minutes = Number(payload.minutes);
+    if (!isFinite(minutes) || minutes <= 0 || Math.round(minutes) !== minutes) {
+      throw new Error('Time has to be a whole number of minutes, greater than zero.');
+    }
+    hours = hoursFromMinutes_(minutes);
+  } else if (payload.hours !== '' && payload.hours !== null && payload.hours !== undefined) {
+    hours = Number(payload.hours);
+  }
   if (hours !== null && (!isFinite(hours) || hours <= 0)) {
-    throw new Error('Hours must be a number greater than zero.');
+    throw new Error('Time on the job has to be greater than zero.');
   }
   const quantity = payload.quantity ? Number(payload.quantity) : null;
   if (quantity !== null && (!isFinite(quantity) || quantity <= 0)) {
@@ -870,7 +939,7 @@ function addEntry(token, jobToken, payload) {
     throw new Error('Scan or type the part number.');
   }
   if (type === 'labor') {
-    if (hours === null) throw new Error('How many hours did this take?');
+    if (hours === null) throw new Error('How long did this take?');
     // Hours with no description are no use to whoever writes the invoice.
     if (!text && !hasAudio) throw new Error('Say what you did with that time.');
   } else if (type !== 'part' && !text && !hasAudio && !photos.length) {
@@ -1448,6 +1517,9 @@ function openJobs(token) {
         customerName: job.customer_name || '',
         boatInfo: job.boat_info || '',
         workRequested: job.work_requested || '',
+        // Carried so the list can flag the job before it is opened — an alert
+        // nobody sees until they have picked the job is half an alert.
+        alert: job.alert || '',
         status: job.status,
         statusLabel: STATUS_LABEL[job.status]
       };
@@ -1457,6 +1529,10 @@ function openJobs(token) {
   // waiting, then finished but not yet written up.
   const rank = { work_underway: 0, received: 1, work_finished: 2 };
   jobs.sort(function (a, b) {
+    // A job carrying an alert goes to the top whatever its status, because the
+    // whole point of the alert is that it is read before work starts.
+    const byAlert = (b.alert ? 1 : 0) - (a.alert ? 1 : 0);
+    if (byAlert !== 0) return byAlert;
     const byStatus = (rank[a.status] === undefined ? 9 : rank[a.status]) -
                      (rank[b.status] === undefined ? 9 : rank[b.status]);
     return byStatus !== 0 ? byStatus : String(a.id).localeCompare(String(b.id));
@@ -1781,6 +1857,65 @@ function markDone(token, id) {
  * in the order it was said, alongside what the mechanic found — a note added
  * on Tuesday should not appear to have been there since intake.
  */
+/**
+ * The red banner on a job: the thing a mechanic must not start work without
+ * reading. "Owner is disputing the estimate — do not order the outdrive."
+ *
+ * Deliberately not the same as a note in the shop log. A note is one line in a
+ * feed that a busy mechanic scrolls past; this sits across the top of the job
+ * in red until somebody takes it down, and marks the job in the open-jobs list
+ * so it is visible before the job is even opened. Because it is that loud, it
+ * is meant to be cleared once it has been acted on — a banner that is always
+ * there is a banner nobody reads.
+ *
+ * Setting one also writes it into the shop log, so the record of what was said
+ * and when survives the banner being taken down. Clearing does not: the log
+ * already has it.
+ *
+ * Never reaches the customer. It is a Jobs column, and publicJob names the
+ * columns it returns one at a time.
+ */
+function setJobAlert(token, id, text) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such job.');
+  const body = String(text || '').trim();
+
+  // rows_ keys every row off the sheet's own header, so a column that setup()
+  // has not written yet reads back as undefined — the alert would save and
+  // then simply never appear, which is the worst way for this particular
+  // feature to fail. Say so instead.
+  requireColumn_('Jobs', 'alert');
+
+  updateRow_('Jobs', job._row, {
+    alert: body,
+    alert_at: body ? nowIso_() : '',
+    updated_at: nowIso_()
+  });
+
+  if (body) {
+    appendRow_('LogEntries', {
+      id: newId_('log'),
+      job_id: job.id,
+      mechanic_id: '',
+      mechanic_name: SHOP_WRITER_NAME,
+      entry_type: 'writer_note',
+      text: 'Alert: ' + body,
+      hours: '',
+      part_identifier: '',
+      quantity: '',
+      audio_file: '',
+      photos: '',
+      transcript_status: '',
+      transcript_id: '',
+      transcript_error: '',
+      notified_at: '',
+      created_at: nowIso_()
+    });
+  }
+  return { job: jobSummary_(jobRow_(id)), entries: entriesForJob_(job.id) };
+}
+
 function addWriterNote(token, id, text) {
   requireAdmin_(token);
   const job = jobRow_(id);
@@ -1927,7 +2062,7 @@ function sendDigest() {
 
     const rowsHtml = entries.map(function (entry) {
       const bits = [];
-      if (entry.hours) bits.push('<b>' + entry.hours + ' h</b>');
+      if (entry.hours) bits.push('<b>' + formatDuration_(minutesFromHours_(entry.hours)) + '</b>');
       if (entry.partIdentifier) {
         bits.push('<b>' + esc_(entry.partIdentifier) + '</b>' + (entry.quantity ? ' &times; ' + entry.quantity : ''));
       }

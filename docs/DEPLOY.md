@@ -39,6 +39,12 @@ prompt (it needs Sheets, Drive, Gmail and external requests).
 It creates the spreadsheet, the Drive folder and the hourly trigger, then logs
 the URLs. Safe to re-run: it repairs missing tabs without touching data.
 
+**Re-run it after any deploy that adds a column.** `rows_` keys every row off
+the sheet's own header, so a column the header does not have yet reads back
+empty — the feature saves and then simply does not work. The deploy cannot do
+this for you: it only pushes code. The job alert guards itself and says so
+(`requireColumn_`), but not every column will.
+
 ### 3. Set the script properties
 
 **Project Settings → Script properties → Add script property:**

@@ -110,6 +110,14 @@ a code path that writes to a sheet without going through `appendRow_` or
   `customerView_` lets through, so the customer page can be switched back on
   without one. Nothing in the UI creates one, so `browser-check.mjs` posts one
   on the wire to keep the boundary test honest.
+- **Time is entered and shown as hours and minutes**, never as a decimal. The
+  sheet still stores decimal hours — that is what an estimate is written in and
+  what gets re-keyed into BiT — but nothing adds decimals together. Every
+  figure goes through `minutesFromHours_` first, is summed in whole minutes,
+  and comes back through `hoursFromMinutes_`. Sum 0.3333 three times and a
+  mechanic's three twenty-minute stints come to 59 minutes. The service
+  writer's Labor card is the one place that still shows the decimal, because
+  BiT will not take "2h 30m"; the mechanic's app and the customer never see it.
 - A fourth entry type, `labor`, carries `hours` plus what the time went on.
   Like `part` it is internal-only; `addEntry` pins `hours` to `''` for every
   other type so the figure cannot ride along on a customer note.
@@ -164,6 +172,30 @@ invoice with a deposit against it (`01-7153`) — and encoded in
   infrastructure — a separate script, sheet and Drive folder.
 - **Drive files are link-shared**, matching how the shop already handles unit
   photos. See the comment on `saveFile_` for what actually protects them.
+
+## The red alert on a job
+
+A per-job `alert` (plus `alert_at`), set and cleared by the service writer from
+the job page, shown in red across the top of the mechanic's job screen and on
+the open-jobs list — where an alerted job also sorts to the front, because an
+alert nobody sees until they have already picked the job is half an alert.
+
+- **It is not another kind of note.** A note is a line in a feed that a busy
+  mechanic scrolls past. This is for "do not start — the owner is disputing the
+  estimate". Because it is that loud it is meant to be taken down once it has
+  been acted on, and the writer's card says so. Setting one also writes it into
+  the shop log, so the record survives the banner coming down.
+- It is not dismissible from the phone. It comes down when the office takes it
+  down, not when the floor taps it away.
+- **It never reaches `/t/`.** It is a Jobs column, so `customerView_` never
+  sees it — what keeps it in the building is that `publicJob` names the
+  customer's fields one at a time instead of handing back the row.
+  `tools/verify.sh` fails the deploy if `publicJob` so much as mentions it, or
+  if it stops building that payload field by field.
+- `setJobAlert` calls `requireColumn_` before writing, because the column only
+  exists once somebody has run `setup()`. Without that the alert would save,
+  read back as undefined and never appear — and the writer would have no way to
+  tell that from a mechanic ignoring it.
 
 ## Parts, and the writer's checklist
 

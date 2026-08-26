@@ -5,7 +5,7 @@ let backend;
 let adminToken;
 
 /** A job with one of every kind of entry logged against it. */
-function seedJob(id = '01-8886') {
+function seedJob(id = '01-8886', { seedLabor = true } = {}) {
   backend.fn('createJob', adminToken, {
     invoiceNumber: id,
     customerName: 'Jane Rivers',
@@ -30,11 +30,13 @@ function seedJob(id = '01-8886') {
     partIdentifier: '6BH-44352-00-00',
     quantity: 2,
   });
-  backend.fn('addEntry', mech, token, {
-    entryType: 'labor',
-    hours: 1.5,
-    text: 'Pulled and reset the impeller housing.',
-  });
+  if (seedLabor) {
+    backend.fn('addEntry', mech, token, {
+      entryType: 'labor',
+      hours: 1.5,
+      text: 'Pulled and reset the impeller housing.',
+    });
+  }
   return { id, token, mech };
 }
 
@@ -166,11 +168,39 @@ describe('hours', () => {
     backend.fn('addEntry', rae, token, { entryType: 'internal_note', text: 'Ordered a clamp.' });
 
     const totals = backend.fn('getJob', adminToken, id).hours;
+    expect(totals.totalMinutes).toBe(210);
     expect(totals.total).toBe(3.5);
     expect(totals.byMechanic).toEqual([
-      { name: 'Rae', hours: 2 },
-      { name: 'Dale', hours: 1.5 },
+      { name: 'Rae', hours: 2, minutes: 120 },
+      { name: 'Dale', hours: 1.5, minutes: 90 },
     ]);
+  });
+
+  it('takes the time in minutes, which is what the app sends', () => {
+    const { id, token, mech } = seedJob();
+    backend.fn('addEntry', mech, token, { entryType: 'labor', minutes: 20, text: 'Impeller.' });
+    const totals = backend.fn('getJob', adminToken, id).hours;
+    expect(totals.totalMinutes).toBe(20 + 90);
+  });
+
+  it('adds three twenty-minute stints up to exactly an hour', () => {
+    // The reason the arithmetic is done in minutes at all. Three entries of
+    // 0.3333 h summed as decimals come to 0.9999 — 59 minutes — and the
+    // mechanic who worked an hour is short one minute on the invoice.
+    const { id, token, mech } = seedJob('01-8886', { seedLabor: false });
+    for (let i = 0; i < 3; i++) {
+      backend.fn('addEntry', mech, token, { entryType: 'labor', minutes: 20, text: 'Stint.' });
+    }
+    const totals = backend.fn('getJob', adminToken, id).hours;
+    expect(totals.totalMinutes).toBe(60);
+    expect(backend.fn('listJobs', adminToken, {}).jobs.find((j) => j.id === id).minutes).toBe(60);
+  });
+
+  it('refuses half a minute', () => {
+    const { token, mech } = seedJob();
+    expect(() => backend.fn('addEntry', mech, token, {
+      entryType: 'labor', minutes: 20.5, text: 'Stint.',
+    })).toThrow(/whole number of minutes/i);
   });
 
   it('takes an estimate-sized figure without complaint', () => {
@@ -185,9 +215,97 @@ describe('hours', () => {
     expect(() => backend.fn('addEntry', mech, token, { entryType: 'labor', hours: 2 }))
       .toThrow(/what you did/i);
     expect(() => backend.fn('addEntry', mech, token, { entryType: 'labor', text: 'a while' }))
-      .toThrow(/how many hours/i);
+      .toThrow(/how long/i);
     expect(() => backend.fn('addEntry', mech, token, { entryType: 'labor', hours: 0, text: 'x' }))
       .toThrow(/greater than zero/);
+  });
+});
+
+describe('the job alert', () => {
+  it('shows up on the job the mechanic opens', () => {
+    const { id, token, mech } = seedJob();
+    backend.fn('setJobAlert', adminToken, id, 'Do not start — owner is disputing the estimate.');
+    const seen = backend.fn('jobForMechanic', mech, token).job;
+    expect(seen.alert).toBe('Do not start — owner is disputing the estimate.');
+    expect(seen.alertAt).toBeTruthy();
+  });
+
+  it('flags the job in the open-jobs list and floats it to the top', () => {
+    seedJob('01-8886');
+    seedJob('01-8887');
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    // 01-8887 sorts second by id; the alert is what puts it first.
+    backend.fn('setJobAlert', adminToken, '01-8887', 'Call the owner before you touch it.');
+    const jobs = backend.fn('openJobs', mech).jobs;
+    expect(jobs[0].id).toBe('01-8887');
+    expect(jobs[0].alert).toBe('Call the owner before you touch it.');
+    expect(jobs[1].alert).toBe('');
+  });
+
+  it('comes down when the office takes it down', () => {
+    const { id, token, mech } = seedJob();
+    backend.fn('setJobAlert', adminToken, id, 'Hold this boat.');
+    backend.fn('setJobAlert', adminToken, id, '');
+    const seen = backend.fn('jobForMechanic', mech, token).job;
+    expect(seen.alert).toBe(null);
+    expect(seen.alertAt).toBe(null);
+  });
+
+  it('leaves what it said in the shop log after the banner is gone', () => {
+    const { id } = seedJob();
+    backend.fn('setJobAlert', adminToken, id, 'Hold this boat.');
+    backend.fn('setJobAlert', adminToken, id, '');
+    const logged = backend.fn('getJob', adminToken, id).entries
+      .filter((entry) => entry.entryType === 'writer_note');
+    expect(logged.map((entry) => entry.text)).toContain('Alert: Hold this boat.');
+  });
+
+  it('never reaches the customer, at any status', () => {
+    const { id, token } = seedJob();
+    backend.fn('props_').setProperty('CUSTOMER_TRACKING', 'on');
+    backend.fn('props_').setProperty('TEST_MODE', 'false');
+    backend.fn('setJobAlert', adminToken, id, 'Owner is disputing the estimate.');
+    // The lifecycle only runs forwards, and seeding entries already started
+    // the job — so walk it the rest of the way from where it actually is.
+    const check = () => {
+      const seen = JSON.stringify(backend.fn('publicJob', token, ''));
+      expect(seen).not.toContain('disputing');
+      expect(seen).not.toContain('alert');
+    };
+    check();
+    backend.fn('setStatusByWriter', adminToken, id, 'work_finished');
+    check();
+    // Done is the one status the writer reaches through markDone, not the
+    // status setter — and it is the status that opens the invoice and the
+    // balance to the customer, so it is the one most worth checking.
+    backend.fn('markDone', adminToken, id);
+    check();
+  });
+
+  it('belongs to the writer, not the floor', () => {
+    const { id, mech } = seedJob();
+    expect(() => backend.fn('setJobAlert', mech, id, 'Anything at all.')).toThrow();
+  });
+
+  it('says to run setup() rather than saving into a column that is not there', () => {
+    // Exactly the state a deploy leaves behind: new code, old header. Without
+    // this the alert saves, reads back as undefined, and never appears — and
+    // the writer has no way to tell that from "the mechanic ignored it".
+    const { id } = seedJob();
+    const jobs = backend.sheet('Jobs');
+    jobs.rows[0] = jobs.rows[0].filter((column) => column !== 'alert' && column !== 'alert_at');
+    expect(() => backend.fn('setJobAlert', adminToken, id, 'Hold this boat.'))
+      .toThrow(/run setup\(\)/i);
+  });
+
+  it('does not disturb the fields the writer types on the job', () => {
+    const { id } = seedJob();
+    backend.fn('setJobAlert', adminToken, id, 'Hold this boat.');
+    backend.fn('saveJobDetails', adminToken, id, {
+      customerName: 'Jane Rivers', customerPhone: '(815) 555-0142',
+      customerEmail: 'jane@example.com', boatInfo: '2019 Yamaha 242X',
+    });
+    expect(backend.fn('getJob', adminToken, id).job.alert).toBe('Hold this boat.');
   });
 });
 

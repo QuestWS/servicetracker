@@ -28,7 +28,7 @@
 
 <script type="module">
 import { api, ApiError, storeSession, storedWho, clearSession, storedToken } from '../assets/lib/api.js';
-import { ENTRY_LABEL, formatHours } from '../assets/lib/entry-types.js';
+import { ENTRY_LABEL, formatHours, formatMinutes } from '../assets/lib/entry-types.js';
 import { tokenFromScan } from '../assets/lib/tracking.js';
 import { $, esc, toast, formatDateTime, fileToBase64, preparePhoto, driveImageUrl, driveFileUrl } from '../assets/lib/ui.js';
 
@@ -251,12 +251,14 @@ async function renderOpenJobs() {
     </div>
     ${jobs.length ? `<div class="stack">
       ${jobs.map((job, index) => `
-        <button class="btn ghost block joblist" type="button" data-pick="${index}"
+        <button class="btn ghost block joblist${job.alert ? ' flagged' : ''}" type="button" data-pick="${index}"
                 style="text-align:left;padding:14px">
           <div style="font-family:var(--mono);font-weight:bold">${esc(job.id)}</div>
           <div style="font-size:15px;margin-top:2px">${esc(job.customerName || '(no name)')}</div>
           <div style="font-size:14px;opacity:.8">${esc(job.boatInfo || '(no boat details)')}</div>
-          <div style="font-size:12px;opacity:.7;margin-top:4px">${esc(job.statusLabel)}</div>
+          ${job.alert ? `<div style="margin-top:7px"><span class="alertflag">${ALERT_MARK} Read first</span></div>
+            <div style="font-size:14px;line-height:1.4;color:var(--alert);font-weight:600;margin-top:5px">${esc(job.alert)}</div>`
+          : `<div style="font-size:12px;opacity:.7;margin-top:4px">${esc(job.statusLabel)}</div>`}
         </button>`).join('')}
     </div>` : `<p style="color:#9fc3dc">Nothing open right now.</p>`}`;
 
@@ -268,7 +270,7 @@ async function renderOpenJobs() {
       // the job — opening it does what a scan would have done next.
       state.job = { id: job.id, token: job.token, boatInfo: job.boatInfo,
                     customerName: job.customerName, workRequested: job.workRequested,
-                    status: job.status, statusLabel: job.statusLabel };
+                    alert: job.alert, status: job.status, statusLabel: job.statusLabel };
       // loadJob, not renderJob: the log and the hours have to come with it.
       loadJob();
     };
@@ -512,7 +514,14 @@ const TABS = [
   ['part', 'Parts'],
   ['internal_note', 'Notes'],
 ];
-const HOUR_STEPS = ['0.25', '0.5', '1', '1.5', '2', '4'];
+// The chips a mechanic actually reaches for, in minutes. A quarter hour is
+// the smallest stint anybody books, and anything past four hours gets typed.
+const TIME_STEPS = [15, 30, 45, 60, 120, 240];
+// Inline SVG rather than an emoji: the warning triangle renders as a different
+// glyph, and sometimes a colour, on every phone in the shop.
+const ALERT_MARK = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"
+  style="flex:none"><path fill="currentColor" d="M12 2.6 1.2 21.4h21.6L12 2.6Zm0 5.6a1 1 0 0 1 1 1v5a1 1 0
+  0 1-2 0v-5a1 1 0 0 1 1-1Zm0 8.4a1.2 1.2 0 1 1 0 2.4 1.2 1.2 0 0 1 0-2.4Z"/></svg>`;
 
 function entryHtml(entry) {
   const pill = { customer_note: 'green', internal_note: 'blue', writer_note: 'gold', labor: 'frost', part: 'gold' }[entry.entryType];
@@ -545,6 +554,11 @@ function renderJob() {
   const job = state.job;
   const finished = job.status === 'work_finished' || job.status === 'done';
   view.innerHTML = `
+    ${job.alert ? `<div class="alertbanner" role="alert" data-alert>
+      <div class="tag">${ALERT_MARK} Read this first</div>
+      <div class="msg">${esc(job.alert)}</div>
+      ${job.alertAt ? `<div class="when">From the office · ${formatDateTime(job.alertAt)}</div>` : ''}
+    </div>` : ''}
     <div class="card" style="margin-bottom:14px">
       <div class="row" style="justify-content:space-between">
         <div>
@@ -643,14 +657,33 @@ function drawFields() {
   const box = $('fields');
   if (state.tab === 'labor') {
     box.innerHTML = `
-      <label class="fld" for="hours">Hours on this job</label>
-      <input class="txt mono" id="hours" inputmode="decimal" placeholder="1.5" value="${esc(state.hoursValue || '')}">
-      <div class="hourchips">${HOUR_STEPS.map((h) => `<button type="button" data-h="${h}">${h} h</button>`).join('')}</div>
+      <label class="fld">Time on this job</label>
+      <div class="hm">
+        <div><input class="txt mono" id="hours" inputmode="numeric" placeholder="0"
+          value="${esc(state.hoursValue || '')}"><span>hours</span></div>
+        <div><input class="txt mono" id="minutes" inputmode="numeric" placeholder="0"
+          value="${esc(state.minutesValue || '')}"><span>minutes</span></div>
+      </div>
+      <div class="hourchips">${TIME_STEPS.map((m) => `<button type="button" data-m="${m}">${formatMinutes(m)}</button>`).join('')}</div>
       <p class="hint">Log the time as you finish a stint. Several entries in a day is normal — they add up on the job.</p>`;
+    // A chip sets the whole figure rather than adding to it: tapping "30m"
+    // after typing 2 in the hours box means thirty minutes, not two and a half
+    // hours. Every chip fills both boxes so what is about to be saved is
+    // always the two numbers on screen.
     box.querySelectorAll('.hourchips button').forEach((button) => {
-      button.onclick = () => { $('hours').value = button.dataset.h; state.hoursValue = button.dataset.h; };
+      button.onclick = () => {
+        const total = Number(button.dataset.m);
+        state.hoursValue = String(Math.floor(total / 60));
+        state.minutesValue = String(total % 60);
+        $('hours').value = state.hoursValue;
+        $('minutes').value = state.minutesValue;
+      };
     });
-    $('hours').oninput = (event) => { state.hoursValue = event.target.value.replace(/[^0-9.]/g, ''); event.target.value = state.hoursValue; };
+    const digits = (event) => event.target.value.replace(/[^0-9]/g, '').slice(0, 4);
+    $('hours').oninput = (event) => { state.hoursValue = digits(event); event.target.value = state.hoursValue; };
+    // 90 in the minutes box is a real thing to type after a long stint, so it
+    // is not clamped to 59 — it is carried into hours when the entry is saved.
+    $('minutes').oninput = (event) => { state.minutesValue = digits(event); event.target.value = state.minutesValue; };
   } else if (state.tab === 'part') {
     box.innerHTML = `
       <label class="fld" for="part">Part number / UPC</label>
@@ -805,7 +838,13 @@ async function saveEntry() {
   const text = $('text').value.trim();
   const payload = { entryType: state.tab, text };
 
-  if (state.tab === 'labor') payload.hours = ($('hours') || {}).value || '';
+  if (state.tab === 'labor') {
+    // One figure goes over the wire. 1h 90m is 150 minutes, which is a
+    // reasonable thing to have typed and not an error to hand back.
+    const h = Number(($('hours') || {}).value || 0) || 0;
+    const m = Number(($('minutes') || {}).value || 0) || 0;
+    payload.minutes = String(h * 60 + m);
+  }
   if (state.tab === 'part') {
     payload.partIdentifier = ($('part') || {}).value || '';
     payload.quantity = ($('qty') || {}).value || '';
@@ -829,6 +868,7 @@ async function saveEntry() {
     state.audio = null;
     state.photos = [];
     state.hoursValue = '';
+    state.minutesValue = '';
     renderJob();
     toast('Saved.');
     // The words land a moment after the entry does, and the mechanic is

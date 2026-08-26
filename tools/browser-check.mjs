@@ -184,11 +184,40 @@ check('the job screen shows what needs doing',
 
 await mech.click('.segmented button[data-tab="labor"]');
 await mech.waitForSelector('#hours');
-await mech.click('.hourchips button[data-h="1.5"]');
+check('time is asked for in hours and minutes', await mech.locator('#minutes').count() === 1);
+// A chip fills both boxes, so what is about to be saved is always the two
+// numbers on screen — not a hidden figure the chip set behind them.
+await mech.click('.hourchips button[data-m="240"]');
+check('a chip fills both boxes',
+  (await mech.inputValue('#hours')) === '4' && (await mech.inputValue('#minutes')) === '0',
+  `${await mech.inputValue('#hours')}h ${await mech.inputValue('#minutes')}m`);
+await mech.click('.hourchips button[data-m="45"]');
+check('and a later chip replaces the figure rather than adding to it',
+  (await mech.inputValue('#hours')) === '0' && (await mech.inputValue('#minutes')) === '45',
+  `${await mech.inputValue('#hours')}h ${await mech.inputValue('#minutes')}m`);
+// Typed by hand, which is the other half of the entry path.
+await mech.fill('#hours', '1');
+await mech.fill('#minutes', '30');
 await mech.fill('#text', 'Pulled and reset the impeller housing.');
 await mech.click('#save');
 await mech.waitForSelector('.entry.labor', { timeout: 15000 });
-check('logs hours with a description', (await mech.textContent('.entry.labor')).includes('1.5 h'));
+check('logs the time with a description', (await mech.textContent('.entry.labor')).includes('1h 30m'));
+check('and never shows it as a decimal',
+  !(await mech.textContent('.entry.labor')).includes('1.5'));
+
+// Three twenty-minute stints are an hour. Added up as decimals they are 59
+// minutes, and the mechanic is short a minute on every invoice.
+for (let i = 0; i < 3; i++) {
+  await mech.fill('#hours', '');
+  await mech.fill('#minutes', '20');
+  await mech.fill('#text', `Twenty-minute stint ${i + 1}.`);
+  await mech.click('#save');
+  await mech.waitForFunction((n) => document.querySelectorAll('.entry.labor').length === n,
+    i + 2, { timeout: 15000 });
+}
+check('three twenty-minute stints come to exactly an hour on top of the first',
+  (await mech.evaluate(() => document.body.innerText)).includes('2h 30m on this job so far'),
+  (await mech.evaluate(() => document.body.innerText)).slice(0, 200));
 
 // A logged voice note links out to Drive rather than embedding a player.
 // An embedded one pointed at the retired `uc?export=download` endpoint and
@@ -287,8 +316,8 @@ check('and archives once every line is in',
   afterText.slice(afterText.indexOf('Completed'), afterText.indexOf('Completed') + 160));
 await admin.screenshot({ path: `${SHOTS}/50-parts-done.png`, fullPage: true });
 
-/* --------------------------------------------------------------- close out */
-console.log('\n== close out ==');
+/* ----------------------------------------------------- the office writes in */
+console.log('\n== notes from the office ==');
 const INVOICE_PDF = 'scratch/browser-check-invoice.pdf';
 fs.writeFileSync(INVOICE_PDF, await makeInvoicePdf({ invoice: INVOICE }));
 
@@ -301,6 +330,66 @@ await admin.waitForSelector('text=From the office', { timeout: 20000 });
 check('the writer can put a note on the job',
   /owner wants a call before you pull/i.test(await admin.evaluate(() => document.body.innerText)));
 
+/* ------------------------------------------------------------- the alert */
+console.log('\n== the red alert ==');
+const ALERT = 'Do not start — owner is disputing the estimate.';
+await admin.fill('#alerttext', ALERT);
+await admin.click('#setalert');
+await admin.waitForSelector('.alertbox', { timeout: 20000 });
+check('the writer can put an alert on the job',
+  (await admin.textContent('.alertbox-text')).includes('disputing'));
+await admin.screenshot({ path: `${SHOTS}/52-alert-writer.png`, fullPage: true });
+
+// The floor: on the job screen, and on the list before the job is even opened.
+// The phone is a single-page app, so re-open the job the way a mechanic does
+// — by its number — rather than reloading onto the home screen.
+const openJobByNumber = async () => {
+  await mech.goto(`${BASE}/m/`, { waitUntil: 'networkidle' });
+  await mech.click('#manual');
+  await mech.fill('#code', invoiceNumber);
+  await mech.click('button[type=submit]');
+  await mech.waitForSelector('.segmented', { timeout: 20000 });
+};
+await openJobByNumber();
+await mech.waitForSelector('[data-alert]', { timeout: 20000 });
+const banner = mech.locator('[data-alert]');
+check('the mechanic gets it in red across the top of the job',
+  (await banner.textContent()).includes('disputing'));
+const bannerColour = await banner.evaluate((el) => getComputedStyle(el).backgroundColor);
+check('and it is actually red', bannerColour === 'rgb(179, 38, 30)', bannerColour);
+// Above the fold matters more than merely present: it is the first thing on
+// the screen, not something to be found by scrolling.
+const bannerTop = (await banner.boundingBox()).y;
+const headerTop = (await mech.locator('.card').first().boundingBox()).y;
+check('it sits above the job it is about', bannerTop < headerTop);
+await mech.screenshot({ path: `${SHOTS}/53-alert-mechanic.png`, fullPage: true });
+
+await mech.goto(`${BASE}/m/`, { waitUntil: 'networkidle' });
+await mech.click('#openjobs');
+await mech.waitForSelector('.joblist', { timeout: 20000 });
+check('the open-jobs list flags it before the job is opened',
+  await mech.locator('.joblist.flagged').count() > 0);
+check('and the flagged job is first in the list',
+  (await mech.locator('.joblist').first().getAttribute('class')).includes('flagged'));
+await mech.screenshot({ path: `${SHOTS}/54-alert-list.png`, fullPage: true });
+
+// Taking it down leaves the record behind.
+await admin.click('#clearalert');
+await admin.waitForSelector('#alerttext', { timeout: 20000 });
+check('the writer can take it back down', await admin.locator('.alertbox').count() === 0);
+check('and what it said stays in the shop log',
+  /alert: do not start/i.test(await admin.evaluate(() => document.body.innerText)));
+await mech.goto(`${BASE}/m/`, { waitUntil: 'networkidle' });
+await mech.click('#openjobs');
+await mech.waitForSelector('.joblist', { timeout: 20000 });
+check('and the flag comes off the list', await mech.locator('.joblist.flagged').count() === 0);
+
+// Put it back for the customer-boundary checks further down.
+await admin.fill('#alerttext', ALERT);
+await admin.click('#setalert');
+await admin.waitForSelector('.alertbox', { timeout: 20000 });
+
+console.log('\n== close out ==');
 // The writer's checklist: everything logged so far moves behind the line.
 check('entries start as needing writing up', (await admin.textContent('.card')).length > 0);
 await admin.click('#marklogged');
@@ -415,9 +504,10 @@ check('shows the customer note', seen.includes('runs clean'));
 check('hides the internal note', !seen.includes('winterised'));
 check("hides the office's note to the floor", !seen.includes('pull the lower unit'));
 check('hides the labor description', !seen.includes('impeller housing'));
-check('hides the hours figure', !seen.includes('1.5 h'));
+check('hides the hours figure', !seen.includes('1.5 h') && !seen.includes('1h 30m'));
 check('hides the part number', !seen.includes('6BH-44352'));
 check('hides the mechanic name', !seen.includes('Dale'));
+check('hides the red alert entirely', !seen.includes('disputing'));
 check('offers the invoice now the job is done', seen.includes('View your invoice'));
 // The number that matters: what they owe after their deposit, not the total.
 check('shows the balance, not the grand total', seen.includes('$1,632.47'), seen.slice(0, 300));
@@ -437,6 +527,7 @@ const wire = await customer.evaluate(async (base) => {
   return res.text();
 }, BASE);
 check('sends the customer nothing internal', !/6BH-44352|impeller housing|Dale|hours/.test(wire), wire.slice(0, 200));
+check('and nothing about the alert', !/disputing|alert/i.test(wire), wire.slice(0, 200));
 
 await customer.goto(`${BASE}/t/?j=ZZZZZZZZZZZZZZZZZZZZ`, { waitUntil: 'networkidle' });
 check('a wrong token says so plainly', (await customer.content()).includes('Link not found'));

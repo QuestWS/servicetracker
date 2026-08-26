@@ -61,6 +61,18 @@ for field in mechanicName hours partIdentifier audioFile transcriptStatus; do
 done
 note "customerView_ leaks none of: mechanicName, hours, partIdentifier, audioFile, transcriptStatus"
 
+# The job alert is a Jobs column, not a log entry, so customerView_ never sees
+# it — publicJob is what keeps it in the building, by naming the columns it
+# returns one at a time instead of handing back the row. That is easy to
+# "tidy up" into a spread years from now, and the customer would then be
+# reading "do not start, owner is disputing the estimate" about their own boat.
+if awk '/^function publicJob/,/^}/' service-tracker.gs | grep -q "alert"; then
+  bad "publicJob mentions the job alert — it is shop-only and must never reach /t/"
+fi
+awk '/^function publicJob/,/^}/' service-tracker.gs | grep -q "job: {" \
+  && note "publicJob still names the customer's fields one at a time, and none of them is the alert" \
+  || bad "publicJob no longer builds the customer payload field by field"
+
 echo "== the one shared URL =="
 # API_URL lives in exactly one file so the four pages cannot drift apart.
 hits=$(grep -rl "script.google.com/macros" --include=*.js --include=*.html . 2>/dev/null | grep -v node_modules | grep -v '^./assets/lib/config.js' | wc -l)

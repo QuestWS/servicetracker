@@ -32,7 +32,7 @@
 <script type="module">
 import { api, storeSession, storedToken, clearSession } from '../assets/lib/api.js';
 import { SITE_URL } from '../assets/lib/config.js';
-import { ENTRY_LABEL, STATUSES, STATUS_LABEL, STATUS_PILL, formatHours } from '../assets/lib/entry-types.js';
+import { ENTRY_LABEL, STATUSES, STATUS_LABEL, STATUS_PILL, formatHours, decimalHours } from '../assets/lib/entry-types.js';
 import { extractPdf } from '../assets/lib/extract.js';
 import { parseWorkOrder, FIELD_LABELS } from '../assets/lib/parse-work-order.js';
 import { parseInvoiceTotals, formatMoney } from '../assets/lib/parse-invoice.js';
@@ -317,11 +317,33 @@ async function renderJob(id) {
           </div>
         </section>
 
-        <section class="card">
-          <h2>Note for the mechanic</h2>
-          <p class="hint" style="margin-top:0">Goes into the shop log where whoever is working the
-            boat will see it. Never reaches the customer.</p>
-          <textarea class="txt" id="writernote" rows="3"
+        <section class="card${job.alert ? ' alerting' : ''}">
+          <h2>For the mechanic</h2>
+          <p class="hint" style="margin-top:0">Two ways to reach the floor, neither of which the
+            customer ever sees. An alert is for what cannot be missed; a note is for everything else.</p>
+
+          <div class="subhead">Alert banner</div>
+          ${job.alert ? `
+            <div class="alertbox">
+              <div class="alertbox-tag">Showing on the mechanic's screen</div>
+              <div class="alertbox-text">${esc(job.alert)}</div>
+              ${job.alertAt ? `<div class="alertbox-when">Set ${formatDateTime(job.alertAt)}</div>` : ''}
+            </div>
+            <button class="btn ghost block" type="button" id="clearalert" style="margin-top:10px">Take it down</button>
+            <p class="hint">Take it down once it has been acted on — a banner that is always up is one
+              nobody reads. What it said stays in the shop log either way.</p>`
+          : `
+            <p class="hint" style="margin-top:0">Hold the job, call the owner first, do not order the
+              part. Goes across the top of the job in red and pushes it to the top of the open-jobs
+              list.</p>
+            <textarea class="txt" id="alerttext" rows="2"
+              placeholder="Do not start — owner is disputing the estimate."></textarea>
+            <button class="btn red block" type="button" id="setalert" style="margin-top:10px">Put up the alert</button>`}
+
+          <div class="subhead">Note in the shop log</div>
+          <p class="hint" style="margin-top:0">Sits in the log with everything else, where whoever is
+            working the boat will read it.</p>
+          <textarea class="txt" id="writernote" rows="2"
             placeholder="Owner wants a call before you pull the lower unit…"></textarea>
           <button class="btn ghost block" type="button" id="addnote" style="margin-top:10px">Add the note</button>
         </section>
@@ -416,11 +438,14 @@ async function renderJob(id) {
           <h2>Labor logged</h2>
           ${hours.total ? `
             <div class="hourstotal">${formatHours(hours.total)}</div>
+            <div class="forbit">${decimalHours(hours.total)} to key into BiT</div>
             ${hours.byMechanic.map((row) => `<div class="kv"><span class="k">${esc(row.name)}</span>
-              <b style="font-family:var(--mono)">${formatHours(row.hours)}</b></div>`).join('')}
-            <p class="hint">This is what the mechanics logged as they worked — key it into BiT with the
-              parts when you write the invoice up. The customer never sees it.</p>`
-            : `<p class="hint" style="margin:0">No hours logged yet. Mechanics add them from the job screen
+              <b style="font-family:var(--mono)">${formatHours(row.hours)}
+                <span class="dim">· ${decimalHours(row.hours)}</span></b></div>`).join('')}
+            <p class="hint">Mechanics log the time in hours and minutes as they work. BiT wants it as a
+              decimal, so both are here — the second figure is the one to type. The customer never sees
+              either.</p>`
+            : `<p class="hint" style="margin:0">No time logged yet. Mechanics add it from the job screen
               as they finish each stint.</p>`}
         </section>
 
@@ -571,6 +596,38 @@ async function renderJob(id) {
       toast('Invoice and payment link saved.');
     } catch (error) {
       button.disabled = false;
+      notice('warn', error.message);
+    }
+  };
+
+  const setalert = $('setalert');
+  if (setalert) setalert.onclick = async () => {
+    const text = $('alerttext').value.trim();
+    if (!text) return notice('warn', 'Write the alert first.');
+    setalert.disabled = true;
+    setalert.textContent = 'Putting it up…';
+    try {
+      await api('setJobAlert', [job.id, text]);
+      renderJob(job.id);
+      toast('Alert is up on the mechanic\u2019s screen.');
+    } catch (error) {
+      setalert.disabled = false;
+      setalert.textContent = 'Put up the alert';
+      notice('warn', error.message);
+    }
+  };
+
+  const clearalert = $('clearalert');
+  if (clearalert) clearalert.onclick = async () => {
+    clearalert.disabled = true;
+    clearalert.textContent = 'Taking it down…';
+    try {
+      await api('setJobAlert', [job.id, '']);
+      renderJob(job.id);
+      toast('Alert taken down.');
+    } catch (error) {
+      clearalert.disabled = false;
+      clearalert.textContent = 'Take it down';
       notice('warn', error.message);
     }
   };
