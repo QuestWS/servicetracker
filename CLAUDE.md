@@ -293,6 +293,16 @@ the day's Gmail allowance.
 
 ## What makes saving slow
 
+**There is a plan for this: [docs/FASTER.md](docs/FASTER.md).** It carries the
+measurements, the four fixes in order, and why the shop is staying on Apps
+Script for now. `tools/bench-reads.mjs` reproduces the numbers — run it before
+and after any change that claims to make things faster.
+
+The short version: a Sheet has no index, `rows_` reads the whole tab, and
+`_rowCache` is per-execution — so at 400 jobs one `addEntry` reads 64,000
+cells to append one row, and that figure grows linearly forever.
+
+
 Apps Script charges for round trips, and a save used to make a lot of them.
 If a save gets sluggish again, look here first:
 
