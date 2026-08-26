@@ -137,17 +137,29 @@ await mech.click('#nameform button[type=submit]');
 await mech.waitForSelector('.segmented', { timeout: 15000 });
 check('signs in by typing a name', (await mech.textContent('.card')).includes(invoiceNumber));
 
-// `capture` on the photo input makes a phone open the camera and offer no
-// way to reach a picture already taken. The QR scanner must keep working
-// regardless — it is a live getUserMedia stream, not a file input, and the
-// two are only ever confused by someone editing this page in a hurry.
-const photoInput = await mech.evaluate(() => {
-  const el = document.querySelector('#photos');
-  return el ? { capture: el.getAttribute('capture'), accept: el.getAttribute('accept') } : null;
+// Whether a bare file input offers "camera or library" is the phone's
+// choice, and the shop's phone offered neither — first the camera only,
+// then the gallery only. So there are two inputs and two buttons, and the
+// OS is only ever asked for one specific thing. The QR scanner is a live
+// getUserMedia stream, not a file input, and is untouched by any of it.
+const photoInputs = await mech.evaluate(() => {
+  const read = (sel) => {
+    const el = document.querySelector(sel);
+    return el ? { capture: el.getAttribute('capture'), accept: el.getAttribute('accept'),
+                  multiple: el.hasAttribute('multiple') } : null;
+  };
+  return {
+    camera: read('#photocamera'),
+    library: read('#photolibrary'),
+    buttons: ['#takephoto', '#pickphoto'].filter((s) => document.querySelector(s)).length,
+  };
 });
-check('the photo picker offers camera or library', photoInput && photoInput.capture === null,
-  JSON.stringify(photoInput));
-check('and still only takes images', photoInput && photoInput.accept === 'image/*');
+check('both photo buttons are there', photoInputs.buttons === 2, JSON.stringify(photoInputs));
+check('one door goes to the camera', photoInputs.camera && photoInputs.camera.capture === 'environment');
+check('the other to the library', photoInputs.library && photoInputs.library.capture === null);
+check('the library one takes several at once', photoInputs.library && photoInputs.library.multiple);
+check('and both only take images',
+  photoInputs.camera.accept === 'image/*' && photoInputs.library.accept === 'image/*');
 
 // What needs doing has to reach the person holding the wrench.
 check('the job screen shows what needs doing',

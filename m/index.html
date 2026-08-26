@@ -575,17 +575,24 @@ function renderJob() {
 
       <div style="margin-top:12px" id="recorder"></div>
 
-      <label class="fld" for="photos">Photos</label>
-      <!-- No capture attribute. With it, the phone opens straight into the
-           camera and there is no way to reach a picture already taken - of a
-           part number photographed at the counter, say, or a shot from
-           earlier in the job. Without it the OS offers both. This does not
-           touch the QR scanner, which is a live getUserMedia stream and not
-           a file input at all.
-           (No backticks in here: this comment lives inside a template
+      <label class="fld">Photos</label>
+      <!-- Two buttons and two hidden inputs, rather than one input and a
+           choice. Whether a bare file input offers "camera or library" is up
+           to the phone: the shop's opened straight into the gallery, and
+           before that the capture attribute sent it straight into the
+           camera. Neither
+           gave the mechanic the choice, so the choice is made explicit here
+           and the OS is only ever asked for one specific thing.
+           Neither input is the QR scanner, which is a live getUserMedia
+           stream and untouched by any of this.
+           (No backticks in here: this comment sits inside a template
            literal, and one would end the string.) -->
-      <input class="txt" id="photos" type="file" accept="image/*" multiple>
-      <p class="hint" style="margin-top:6px">Take one now or pick one already on the phone.</p>
+      <div class="row tight">
+        <button class="btn ghost block" type="button" id="takephoto">Take a photo</button>
+        <button class="btn ghost block" type="button" id="pickphoto">Choose a photo</button>
+      </div>
+      <input id="photocamera" type="file" accept="image/*" capture="environment" class="hidden">
+      <input id="photolibrary" type="file" accept="image/*" multiple class="hidden">
       <div class="thumbrow" id="thumbs"></div>
 
       <button class="btn navy big block" type="button" id="save" style="margin-top:16px">Save entry</button>
@@ -621,7 +628,12 @@ function renderJob() {
   const finish = $('finish');
   if (finish) finish.onclick = confirmFinish;
   $('save').onclick = saveEntry;
-  $('photos').onchange = onPhotos;
+  // Both feed the same handler: what differs is only which door the phone
+  // opens. The camera takes one shot at a time, so it carries no `multiple`.
+  $('photocamera').onchange = onPhotos;
+  $('photolibrary').onchange = onPhotos;
+  $('takephoto').onclick = () => $('photocamera').click();
+  $('pickphoto').onclick = () => $('photolibrary').click();
   drawFields();
   drawRecorder();
   drawThumbs();
