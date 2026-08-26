@@ -9,7 +9,14 @@
 <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;600&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+<!-- Loaded without blocking the page. A stylesheet from another origin holds
+     up first paint until it answers, and when Google cannot be reached it does
+     not fail fast — it sits for about twelve seconds and then resets. On shop
+     wifi that is twelve seconds of a mechanic looking at "Starting up…". The
+     media/onload swap lets the page paint immediately in the fallback stack
+     and take the webfont whenever it turns up. -->
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;600&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;600&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet"></noscript>
 <link rel="stylesheet" href="assets/app.css">
 </head>
 <body>

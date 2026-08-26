@@ -29,6 +29,28 @@ function check(label, condition, detail) {
 }
 
 const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium', args: ['--no-sandbox'] });
+
+/**
+ * A context with the webfonts cut off at the door.
+ *
+ * The pages pull Barlow Condensed and friends from fonts.googleapis.com with
+ * a render-blocking <link>. When the browser cannot reach Google — a sandbox
+ * with no route out, a runner behind a proxy Chromium is not using, shop wifi
+ * having a bad afternoon — that request does not fail fast. It sits for about
+ * twelve seconds and then resets, and DOMContentLoaded waits the whole time.
+ * Across the thirty-odd navigations in this script that was six minutes of a
+ * six-and-a-half minute run: the checks themselves cost seconds.
+ *
+ * Blocking them is not a workaround, it is the right thing for a test to do.
+ * Nothing here is checking Google's CDN, every family has a real fallback
+ * stack, and a suite whose runtime depends on a third party's uptime tells
+ * you very little on the day it is slow.
+ */
+async function shopContext(options) {
+  const context = await browser.newContext(options);
+  await context.route(/fonts\.(googleapis|gstatic)\.com/, (route) => route.abort());
+  return context;
+}
 fs.mkdirSync(SHOTS, { recursive: true });
 
 // A fresh invoice number per run: the backend refuses a duplicate, which is
@@ -41,7 +63,7 @@ fs.writeFileSync(WORK_ORDER, await makeWorkOrderPdf({
 }));
 
 /* ------------------------------------------------------------ service writer */
-const desk = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
+const desk = await shopContext({ viewport: { width: 1280, height: 1000 } });
 const admin = await desk.newPage();
 const adminErrors = [];
 admin.on('pageerror', (error) => adminErrors.push(String(error)));
@@ -133,7 +155,7 @@ await admin.setViewportSize({ width: 1280, height: 1000 });
 
 /* ----------------------------------------------------------------- mechanic */
 console.log('\n== mechanic ==');
-const shop = await browser.newContext({ viewport: { width: 390, height: 844 } });
+const shop = await shopContext({ viewport: { width: 390, height: 844 } });
 const mech = await shop.newPage();
 const mechErrors = [];
 mech.on('pageerror', (error) => mechErrors.push(String(error)));
@@ -607,7 +629,7 @@ await admin.screenshot({ path: `${SHOTS}/45b-invoice-sent.png`, fullPage: true }
 /* ------------------------------------------------------- as an internal tool */
 console.log('\n== customer page switched off ==');
 // A real customer has no shop session, which is the whole point.
-const stranger = await browser.newContext({ viewport: { width: 430, height: 900 } });
+const stranger = await shopContext({ viewport: { width: 430, height: 900 } });
 const outsider = await stranger.newPage();
 const outsiderErrors = [];
 outsider.on('pageerror', (error) => outsiderErrors.push(String(error)));
@@ -721,7 +743,7 @@ const seeded = await admin.evaluate(async ({ base, invoice }) => {
 }, { base: BASE, invoice: FLOOR_INVOICE });
 check('a second job is on the floor', !seeded.error, seeded.error);
 
-const floor = await browser.newContext({ viewport: { width: 430, height: 900 } });
+const floor = await shopContext({ viewport: { width: 430, height: 900 } });
 const picker = await floor.newPage();
 const pickerErrors = [];
 picker.on('pageerror', (error) => pickerErrors.push(String(error)));
@@ -761,7 +783,7 @@ await picker.close();
 /* ------------------------------------------------------------- magic link */
 // Its own context, so it starts signed out and cannot disturb anything above.
 console.log('\n== mailed sign-in link ==');
-const lockedOut = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+const lockedOut = await shopContext({ viewport: { width: 1280, height: 900 } });
 const visitor = await lockedOut.newPage();
 const visitorErrors = [];
 visitor.on('pageerror', (error) => visitorErrors.push(String(error)));
@@ -788,7 +810,7 @@ await visitor.screenshot({ path: `${SHOTS}/48-magic-link.png`, fullPage: true })
 
 // Spent means spent. A fresh context is the honest test: somebody else with
 // the same link and no session of their own.
-const stale = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+const stale = await shopContext({ viewport: { width: 1280, height: 900 } });
 const replay = await stale.newPage();
 await replay.goto(`${BASE}/admin/?k=${nonce[1]}`, { waitUntil: 'networkidle' });
 await replay.waitForSelector('#maillink', { timeout: 20000 });
@@ -806,7 +828,7 @@ console.log('\n== the mechanic PWA after an update ==');
 // stops the whole script. This reproduces that exactly: install the worker,
 // poison its cache with a module missing the export the page imports, and
 // reload. Network-first is what has to win.
-const pwa = await browser.newContext({ viewport: { width: 390, height: 844 } });
+const pwa = await shopContext({ viewport: { width: 390, height: 844 } });
 const phone = await pwa.newPage();
 const pwaErrors = [];
 phone.on('pageerror', (error) => pwaErrors.push(String(error)));
