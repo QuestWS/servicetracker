@@ -105,6 +105,12 @@ a code path that writes to a sheet without going through `appendRow_` or
   open job hands over every customer's name and boat at once — same
   information, very different disclosure, so the roster is the gate.
 - **The mechanic app logs three things: Hours, Parts, Notes** — in that order.
+  A fourth tab, **Prop**, sits beside them and is deliberately not one of them:
+  it writes a PropRepairs row, not a log entry. It shares the strip because
+  that is where a mechanic looks for the thing they do next — as its own card
+  below the log, it sat under everything nobody scrolls to. The tab hides the
+  note, recorder and photo controls, and the one save button at the foot of
+  the card does whatever the current tab is for.
   Customer notes were dropped; notes are the shop's own record now. The
   `customer_note` type is still live in the backend and still the only thing
   `customerView_` lets through, so the customer page can be switched back on
@@ -242,6 +248,24 @@ middle — and differs in the two ways that matter.
 - **"Parts and labor logged" is not a job flag.** It stamps `logged_at` on each
   entry, so anything a mechanic adds afterwards shows up below the line as
   still needing writing up. Parts-ordered and paid/closed are job flags.
+- **A completed order can be filed away or deleted.** Filing is the normal
+  one: the parts list is a working list, and a year of finished orders buried
+  under it makes the three lines that still need doing hard to find. An
+  archived part keeps everything and moves to `?view=archive`; `archived_at`
+  is a flag, not a status, so nothing about the order grouping changes.
+  Deleting is for the duplicate row, not for tidying history — it asks first,
+  and only ever touches parts that have arrived. Anything still needed or on
+  order goes through `cancelPartOrder`, which refuses to lose a placed order.
+- **The archive is a table, and the only one in the app.** Everything else is
+  a list of cards because everything else is read one item at a time; the
+  archive is read by scanning a column for a supplier or a name. It searches
+  and sorts on part, customer, supplier and work order — in the browser, off
+  one fetch, because Apps Script charges per round trip and a query per
+  keystroke would be unusable.
+- `deletePartsOrders` removes rows highest-first. Deleting row 4 shifts row 5
+  up into its place, so an ascending loop takes out the wrong rows from the
+  second one onward; there is a test with two orders that catches exactly
+  that, and `deleteRow` has to `forget_` the memoised rows itself.
 - None of it reaches `/t/` — it is all shop bookkeeping.
 
 ## Signing in to the portal

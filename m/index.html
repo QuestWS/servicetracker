@@ -507,6 +507,7 @@ const TAB_HELP = {
   internal_note: 'What you found, what you did, anything the writer should know.',
   labor: 'Your time and what you did with it — this is what gets billed.',
   part: 'What you fitted, and whether any needs ordering or putting back on the shelf.',
+  prop: 'A prop coming off this boat to go out for repair. Photograph the tag.',
 };
 // Hours first: it is what a mechanic reaches for most, and the one thing the
 // writer cannot reconstruct afterwards. Customer notes are gone — everything
@@ -516,6 +517,10 @@ const TABS = [
   ['labor', 'Hours'],
   ['part', 'Parts'],
   ['internal_note', 'Notes'],
+  // Not a log entry — a prop leaving the building. It shares the strip
+  // because that is where a mechanic looks for "the thing I do next", and
+  // splitting it into its own card put it below the log where nobody scrolled.
+  ['prop', 'Prop'],
 ];
 // The chips a mechanic actually reaches for, in minutes. A quarter hour is
 // the smallest stint anybody books, and anything past four hours gets typed.
@@ -587,6 +592,7 @@ function renderJob() {
       <p class="hint" style="margin-top:0">${esc(TAB_HELP[state.tab])}</p>
       <div id="fields"></div>
 
+      ${state.tab === 'prop' ? '' : `
       <label class="fld" for="text">${state.tab === 'part' ? 'Note about this part (optional)' : state.tab === 'labor' ? 'What you did with that time — type it or say it' : 'Note — type it or say it'}</label>
       <textarea class="txt" id="text" placeholder="${state.tab === 'labor' ? 'Pulled and reset the impeller housing, re-torqued the mounts…' : 'What did you find or do?'}"></textarea>
 
@@ -610,36 +616,10 @@ function renderJob() {
       </div>
       <input id="photocamera" type="file" accept="image/*" capture="environment" class="hidden">
       <input id="photolibrary" type="file" accept="image/*" multiple class="hidden">
-      <div class="thumbrow" id="thumbs"></div>
+      <div class="thumbrow" id="thumbs"></div>`}
 
-      <button class="btn navy big block" type="button" id="save" style="margin-top:16px">Save entry</button>
-    </section>
-
-    <section class="card" style="margin-bottom:14px">
-      <h2>Props out for repair${state.props && state.props.length ? ` (${state.props.length})` : ''}</h2>
-      ${state.props && state.props.length ? `<div class="proplist">${state.props.map((prop) => `
-        <div class="proprow">
-          ${prop.tagPhoto ? `<img src="${driveImageUrl(prop.tagPhoto.thumb)}" alt="Tag">`
-            : `<div class="notag">no tag<br>photo</div>`}
-          <div class="grow">
-            <div class="who">${esc(prop.description || 'Prop')}</div>
-            <div class="sub">${esc(prop.statusLabel)}${prop.vendor ? ` · ${esc(prop.vendor)}` : ''}</div>
-          </div>
-        </div>`).join('')}</div>` : ''}
-
-      <p class="hint" style="margin-top:0">Pulling a prop to send out? Photograph the tag that goes with
-        it — that tag is how the prop shop knows whose it is and how the office knows which boat it goes
-        back on.</p>
-      <div class="row tight">
-        <button class="btn ghost block" type="button" id="taketag">Photograph the tag</button>
-        <button class="btn ghost block" type="button" id="picktag">Choose a photo</button>
-      </div>
-      <input id="tagcamera" type="file" accept="image/*" capture="environment" class="hidden">
-      <input id="taglibrary" type="file" accept="image/*" class="hidden">
-      <div class="thumbrow" id="tagthumb"></div>
-      <label class="fld" for="propdesc">Which prop</label>
-      <input class="txt" id="propdesc" placeholder="Stainless 3-blade, port side">
-      <button class="btn ghost block" type="button" id="saveprop" style="margin-top:10px">Ready for pick-up</button>
+      <button class="btn navy big block" type="button" id="save" style="margin-top:16px">${
+        state.tab === 'prop' ? 'Ready for pick-up' : 'Save entry'}</button>
     </section>
 
     <section class="card" style="margin-bottom:14px">
@@ -671,25 +651,24 @@ function renderJob() {
   });
   const finish = $('finish');
   if (finish) finish.onclick = confirmFinish;
-  $('save').onclick = saveEntry;
-  // Both feed the same handler: what differs is only which door the phone
-  // opens. The camera takes one shot at a time, so it carries no `multiple`.
-  $('photocamera').onchange = onPhotos;
-  $('photolibrary').onchange = onPhotos;
-  $('takephoto').onclick = () => $('photocamera').click();
-  $('pickphoto').onclick = () => $('photolibrary').click();
-  // The tag gets its own pair of doors for the same reason the log photos do:
-  // the phone will not offer a choice on its own. One photo only — a tag is
-  // one tag.
-  $('tagcamera').onchange = onTagPhoto;
-  $('taglibrary').onchange = onTagPhoto;
-  $('taketag').onclick = () => $('tagcamera').click();
-  $('picktag').onclick = () => $('taglibrary').click();
-  $('saveprop').onclick = saveProp;
+  // A prop is not a log entry, so the one button at the bottom of the card
+  // does the thing the current tab is for.
+  $('save').onclick = () => (state.tab === 'prop' ? saveProp() : saveEntry());
+  // drawFields() builds the prop tab's own controls, so everything below only
+  // exists on the three tabs that write a log entry.
+  if (state.tab !== 'prop') {
+    // Both feed the same handler: what differs is only which door the phone
+    // opens. The camera takes one shot at a time, so it carries no `multiple`.
+    $('photocamera').onchange = onPhotos;
+    $('photolibrary').onchange = onPhotos;
+    $('takephoto').onclick = () => $('photocamera').click();
+    $('pickphoto').onclick = () => $('photolibrary').click();
+  }
   drawFields();
-  drawRecorder();
-  drawThumbs();
-  drawTagThumb();
+  if (state.tab !== 'prop') {
+    drawRecorder();
+    drawThumbs();
+  }
 }
 
 function drawFields() {
@@ -723,6 +702,40 @@ function drawFields() {
     // 90 in the minutes box is a real thing to type after a long stint, so it
     // is not clamped to 59 — it is carried into hours when the entry is saved.
     $('minutes').oninput = (event) => { state.minutesValue = digits(event); event.target.value = state.minutesValue; };
+  } else if (state.tab === 'prop') {
+    box.innerHTML = `
+      ${state.props && state.props.length ? `
+        <label class="fld">Already out (${state.props.length})</label>
+        <div class="proplist">${state.props.map((prop) => `
+          <div class="proprow">
+            ${prop.tagPhoto ? `<img src="${driveImageUrl(prop.tagPhoto.thumb)}" alt="Tag">`
+              : `<div class="notag">no tag<br>photo</div>`}
+            <div class="grow">
+              <div class="who">${esc(prop.description || 'Prop')}</div>
+              <div class="sub">${esc(prop.statusLabel)}${prop.vendor ? ` · ${esc(prop.vendor)}` : ''}</div>
+            </div>
+          </div>`).join('')}</div>` : ''}
+
+      <label class="fld">The tag on this prop</label>
+      <div class="row tight">
+        <button class="btn ghost block" type="button" id="taketag">Photograph the tag</button>
+        <button class="btn ghost block" type="button" id="picktag">Choose a photo</button>
+      </div>
+      <input id="tagcamera" type="file" accept="image/*" capture="environment" class="hidden">
+      <input id="taglibrary" type="file" accept="image/*" class="hidden">
+      <div class="thumbrow" id="tagthumb"></div>
+      <label class="fld" for="propdesc">Which prop</label>
+      <input class="txt" id="propdesc" placeholder="Stainless 3-blade, port side">
+      <p class="hint">That tag is how the prop shop knows whose it is, and how the office knows which
+        boat it goes back on.</p>`;
+    // The tag gets its own pair of doors for the same reason the log photos
+    // do: the phone will not offer a choice on its own. One shot — a tag is
+    // one tag.
+    $('tagcamera').onchange = onTagPhoto;
+    $('taglibrary').onchange = onTagPhoto;
+    $('taketag').onclick = () => $('tagcamera').click();
+    $('picktag').onclick = () => $('taglibrary').click();
+    drawTagThumb();
   } else if (state.tab === 'part') {
     box.innerHTML = `
       <label class="fld" for="part">Part number / UPC</label>
@@ -896,7 +909,7 @@ function drawTagThumb() {
 }
 
 async function saveProp() {
-  const button = $('saveprop');
+  const button = $('save');
   const description = $('propdesc').value.trim();
   if (!state.tagPhoto && !description) {
     return toast('Photograph the tag, or say which prop this is.');

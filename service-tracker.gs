@@ -184,7 +184,7 @@ const SHEETS = {
   // group is done when every row in it has been received.
   PartsOrders: ['id', 'job_id', 'source_entry', 'part_identifier', 'description', 'quantity',
                 'reason', 'status', 'vendor', 'order_number', 'notes', 'requested_by',
-                'created_at', 'ordered_at', 'received_at'],
+                'created_at', 'ordered_at', 'received_at', 'archived_at'],
   // A propeller off a boat, away at the prop shop. Deliberately its own tab
   // rather than a PartsOrders row: a prop is not bought, it is the customer's
   // own part leaving the building and coming back, and its stages say so.
@@ -496,6 +496,9 @@ function doPost(e) {
     partReceived:     function (a) { return markPartReceived(data.token, a[0], a[1]); },
     partNote:         function (a) { return setPartNote(data.token, a[0], a[1]); },
     cancelPart:       function (a) { return cancelPartOrder(data.token, a[0]); },
+    archiveParts:     function (a) { return setPartsArchived(data.token, a[0], a[1]); },
+    deleteParts:      function (a) { return deletePartsOrders(data.token, a[0]); },
+    listArchivedParts: function (a) { return listArchivedParts(data.token); },
 
     /* props out for repair */
     listProps:        function (a) { return listPropRepairs(data.token); },
@@ -1099,7 +1102,10 @@ function partView_(part) {
     requestedBy: part.requested_by || null,
     createdAt: part.created_at,
     orderedAt: part.ordered_at || null,
-    receivedAt: part.received_at || null
+    receivedAt: part.received_at || null,
+    // Filed away rather than deleted. A flag, not a status: an archived part
+    // is still a received one, so nothing about the order grouping changes.
+    archivedAt: part.archived_at || null
   };
 }
 
@@ -1127,7 +1133,8 @@ function addPartOrder_(fields) {
     requested_by: fields.requestedBy || '',
     created_at: nowIso_(),
     ordered_at: '',
-    received_at: ''
+    received_at: '',
+    archived_at: ''
   };
   appendRow_('PartsOrders', row);
   return row;
@@ -1179,7 +1186,9 @@ function listPartsOrders(token) {
 
   // An order is finished when every line on it has come in. Lines received
   // without an order number (walked in, found on the shelf) group on their own.
-  const received = all.filter(function (p) { return p.status === 'received'; });
+  // An archived part drops out of the working list entirely. It is still a
+  // received part on a completed order — it has just been filed.
+  const received = all.filter(function (p) { return p.status === 'received' && !p.archivedAt; });
   const groups = {};
   received.forEach(function (part) {
     const key = part.orderNumber || ('(no order number) ' + part.id);
@@ -1240,6 +1249,89 @@ function setPartNote(token, id, note) {
   if (!part) throw new Error('No such part.');
   updateRow_('PartsOrders', part._row, { notes: String(note || '').trim() });
   return { part: partView_(partRow_(id)) };
+}
+
+/**
+ * Files a completed order away, or brings it back.
+ *
+ * Archiving is not deleting, and the difference is the point: the parts list
+ * is a working list, and a year of completed orders buried under it makes the
+ * three lines that still need doing hard to find. An archived order keeps
+ * everything — what it was, whose boat, which supplier, what it cost to chase
+ * — on a page built for looking things up rather than working from.
+ *
+ * Takes ids rather than an order number because that is what the page already
+ * has, and because an order line that never got a number is its own group.
+ */
+function setPartsArchived(token, ids, archived) {
+  requireAdmin_(token);
+  if (!Array.isArray(ids) || !ids.length) throw new Error('Nothing picked to file away.');
+
+  return withLock_(function () {
+    const at = archived ? nowIso_() : '';
+    ids.forEach(function (id) {
+      const part = partRow_(id);
+      if (!part) return;
+      // Only a part that has actually arrived can be filed. Anything still
+      // needed or on order belongs on the working list.
+      if (archived && part.status !== 'received') return;
+      updateRow_('PartsOrders', part._row, { archived_at: at });
+    });
+    return listPartsOrders(token);
+  });
+}
+
+/**
+ * Gone for good — for the duplicate row and the order that was never really
+ * placed, not for tidying up history. Only ever reaches parts that have
+ * arrived; anything still needed or on order goes through cancelPartOrder,
+ * which refuses to lose an order somebody has actually placed.
+ */
+function deletePartsOrders(token, ids) {
+  requireAdmin_(token);
+  if (!Array.isArray(ids) || !ids.length) throw new Error('Nothing picked to delete.');
+
+  return withLock_(function () {
+    const sheet = sheet_('PartsOrders');
+    const targets = [];
+    ids.forEach(function (id) {
+      const part = partRow_(id);
+      if (part && part.status === 'received') targets.push(part._row);
+    });
+    // Highest row first. Deleting row 4 shifts row 5 up to 4, so deleting in
+    // ascending order takes out the wrong rows from the second one onward.
+    targets.sort(function (a, b) { return b - a; });
+    targets.forEach(function (rowNumber) { sheet.deleteRow(rowNumber); });
+    // deleteRow bypasses appendRow_/updateRow_, so it has to forget the
+    // memoised rows itself.
+    forget_('PartsOrders');
+    return listPartsOrders(token);
+  });
+}
+
+/**
+ * The filing cabinet. Flat rows rather than grouped orders, because this page
+ * exists to be searched — "which supplier did that impeller come from" is a
+ * question about one line, not about an order.
+ *
+ * Everything comes back in one answer and the browser does the searching and
+ * sorting. Apps Script charges per round trip, and a query per keystroke would
+ * be unusable; the whole tab is already read to build this, so the rows cost
+ * nothing extra to send.
+ */
+function listArchivedParts(token) {
+  requireAdmin_(token);
+  const jobs = {};
+  rows_('Jobs').forEach(function (job) { jobs[job.id] = job.customer_name || ''; });
+
+  const archived = rows_('PartsOrders')
+    .map(partView_)
+    .filter(function (part) { return Boolean(part.archivedAt); });
+  archived.forEach(function (part) {
+    part.customerName = part.jobId ? (jobs[part.jobId] || null) : null;
+  });
+  archived.sort(function (a, b) { return String(b.archivedAt).localeCompare(String(a.archivedAt)); });
+  return { parts: archived };
 }
 
 function cancelPartOrder(token, id) {

@@ -1038,7 +1038,13 @@ async function renderParts() {
     </section>
 
     <section class="card" style="margin-top:16px">
-      <h2>Completed orders (${completed.length})</h2>
+      <div class="row" style="justify-content:space-between;align-items:baseline">
+        <h2 style="margin:0">Completed orders (${completed.length})</h2>
+        <a href="?view=archive">Archived orders &rarr;</a>
+      </div>
+      <p class="hint" style="margin-top:6px">File an order away once it is written up. It keeps
+        everything and stays searchable on the archive page — this list is for what still needs
+        doing.</p>
       ${completed.length ? completed.map((group) => `
         <details style="border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:8px">
           <summary style="cursor:pointer;color:var(--navy);font-weight:600">
@@ -1048,6 +1054,13 @@ async function renderParts() {
           <div style="margin-top:8px">${group.parts.map((p) => `
             <div class="kv"><span class="k">${p.quantity ? `${p.quantity}× ` : ''}${esc(p.partIdentifier || p.description || 'part')}</span>
               <b>${esc(p.description || '')}</b></div>`).join('')}</div>
+          <div class="row tight" style="margin-top:10px;justify-content:flex-end">
+            <button class="btn ghost sm" type="button"
+              data-archive="${esc(group.parts.map((p) => p.id).join(','))}">Archive this order</button>
+            <button class="btn danger sm" type="button"
+              data-delete="${esc(group.parts.map((p) => p.id).join(','))}"
+              data-what="${esc(group.vendor || 'this order')}${group.orderNumber ? ` · order ${esc(group.orderNumber)}` : ''}">Delete</button>
+          </div>
         </details>`).join('')
         : `<div class="empty">No completed orders yet.</div>`}
     </section>`;
@@ -1082,6 +1095,178 @@ async function renderParts() {
         .then(() => toast('Note saved.')).catch(fail);
     };
   });
+  view.querySelectorAll('[data-archive]').forEach((button) => {
+    button.onclick = () => api('archiveParts', [button.dataset.archive.split(','), true])
+      .then(() => { renderParts(); toast('Filed away. It is on the archive page.'); }).catch(fail);
+  });
+  view.querySelectorAll('[data-delete]').forEach((button) => {
+    button.onclick = () => {
+      const lines = button.dataset.delete.split(',').length;
+      // Deleting is the one thing here that cannot be undone, so it asks —
+      // the same way going live and switching tracking on do.
+      if (!confirm(`Delete ${button.dataset.what} — ${lines} line${lines === 1 ? '' : 's'}? `
+        + 'This cannot be undone. Archive it instead if you only want it off this list.')) return;
+      api('deleteParts', [button.dataset.delete.split(',')])
+        .then(() => { renderParts(); toast('Deleted.'); }).catch(fail);
+    };
+  });
+}
+
+/* ------------------------------------------------------------ archive --- */
+
+/**
+ * Filed-away parts orders, as a flat table rather than grouped orders.
+ *
+ * This page exists to be searched, and the questions it answers are about one
+ * line — "who did we get that impeller from", "what went on the Purnell job".
+ * Grouping by order would bury exactly the field being looked for.
+ *
+ * The searching and sorting happen here in the browser off one fetch. Apps
+ * Script charges per round trip; a query per keystroke would be unusable, and
+ * the backend has to read the whole tab to answer at all.
+ */
+const ARCHIVE_COLUMNS = [
+  ['part', 'Part', (p) => p.partIdentifier || p.description || ''],
+  ['customerName', 'Customer', (p) => p.customerName || ''],
+  ['vendor', 'Supplier', (p) => p.vendor || ''],
+  ['jobId', 'Work order', (p) => p.jobId || ''],
+  ['orderNumber', 'Order no.', (p) => p.orderNumber || ''],
+  ['archivedAt', 'Filed', (p) => p.archivedAt || ''],
+];
+
+async function renderArchive() {
+  view.className = 'wrap';
+  view.innerHTML = `<p class="loading">Loading the archive…</p>`;
+  const { parts } = await api('listArchivedParts', []);
+
+  // Newest first is the useful default: the thing filed last week is the
+  // thing most likely being looked for.
+  let sortKey = 'archivedAt';
+  let ascending = false;
+  let search = '';
+
+  const value = (part, key) => {
+    const column = ARCHIVE_COLUMNS.find((c) => c[0] === key);
+    return column ? column[2](part) : '';
+  };
+
+  const shown = () => {
+    const needle = search.trim().toLowerCase();
+    const matched = !needle ? parts.slice() : parts.filter((part) =>
+      ARCHIVE_COLUMNS.some((column) => column[2](part).toLowerCase().includes(needle))
+      || String(part.description || '').toLowerCase().includes(needle));
+    return matched.sort((a, b) => {
+      const left = value(a, sortKey);
+      const right = value(b, sortKey);
+      // Blanks last whichever way the column is pointing — an empty supplier
+      // is not the "smallest" supplier, it is a row with nothing to say.
+      if (!left && right) return 1;
+      if (left && !right) return -1;
+      return (ascending ? 1 : -1) * String(left).localeCompare(String(right), undefined, { numeric: true });
+    });
+  };
+
+  const draw = () => {
+    const rows = shown();
+    $('archivebody').innerHTML = rows.length ? rows.map((part) => `
+      <tr>
+        <td>
+          <b style="font-family:var(--mono)">${esc(part.partIdentifier || '(no part number)')}</b>
+          ${part.quantity ? `<span class="sub"> &times;${part.quantity}</span>` : ''}
+          ${part.description ? `<div class="sub">${esc(part.description)}</div>` : ''}
+        </td>
+        <td>${esc(part.customerName || '—')}</td>
+        <td>${esc(part.vendor || '—')}</td>
+        <td>${part.jobId ? `<a href="?job=${encodeURIComponent(part.jobId)}">${esc(part.jobId)}</a>` : '<span class="sub">stock</span>'}</td>
+        <td class="mono">${esc(part.orderNumber || '—')}</td>
+        <td class="sub">${formatDate(part.archivedAt)}</td>
+        <td class="row tight" style="justify-content:flex-end">
+          <button class="btn ghost sm" type="button" data-unarchive="${esc(part.id)}">Restore</button>
+          <button class="btn danger sm" type="button" data-archdelete="${esc(part.id)}"
+            data-what="${esc(part.partIdentifier || part.description || 'this part')}">Delete</button>
+        </td>
+      </tr>`).join('')
+      : `<tr><td colspan="7"><div class="empty" style="margin:0">${
+          search ? 'Nothing archived matches that.' : 'Nothing filed away yet.'}</div></td></tr>`;
+
+    $('archivecount').textContent = search
+      ? `${rows.length} of ${parts.length}`
+      : `${parts.length}`;
+
+    view.querySelectorAll('[data-sort]').forEach((th) => {
+      const on = th.dataset.sort === sortKey;
+      th.classList.toggle('on', on);
+      th.querySelector('span').textContent = on ? (ascending ? ' ▲' : ' ▼') : '';
+    });
+    wire();
+  };
+
+  const fail = (error) => {
+    $('notice').innerHTML = `<div class="banner warn">${esc(error.message)}</div>`;
+  };
+
+  // Rows are redrawn on every keystroke, so their buttons are rebound here
+  // rather than once at the top.
+  const wire = () => {
+    view.querySelectorAll('[data-unarchive]').forEach((button) => {
+      button.onclick = async () => {
+        try {
+          await api('archiveParts', [[button.dataset.unarchive], false]);
+          renderArchive();
+          toast('Back on the parts list.');
+        } catch (error) { fail(error); }
+      };
+    });
+    view.querySelectorAll('[data-archdelete]').forEach((button) => {
+      button.onclick = async () => {
+        if (!confirm(`Delete ${button.dataset.what}? This cannot be undone.`)) return;
+        try {
+          await api('deleteParts', [[button.dataset.archdelete]]);
+          renderArchive();
+          toast('Deleted.');
+        } catch (error) { fail(error); }
+      };
+    });
+  };
+
+  view.innerHTML = `
+    <div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <h1 class="page-title" style="margin:0">Archived orders</h1>
+      <a class="btn ghost" href="?view=parts">Back to parts</a>
+    </div>
+    <p class="lead">Completed orders that have been filed away — kept whole and searchable, and off
+      the working parts list. <b id="archivecount">0</b> filed.</p>
+    <div id="notice"></div>
+
+    <form class="row" id="archiveform" style="margin:14px 0">
+      <input class="txt" id="archiveq" style="flex:1 1 260px"
+        placeholder="Search part, customer, supplier or work order" autocomplete="off">
+    </form>
+
+    <div class="tablewrap">
+      <table class="grid">
+        <thead><tr>
+          ${ARCHIVE_COLUMNS.map(([key, label]) =>
+            `<th data-sort="${key}"><button type="button">${label}<span></span></button></th>`).join('')}
+          <th></th>
+        </tr></thead>
+        <tbody id="archivebody"></tbody>
+      </table>
+    </div>`;
+
+  $('archiveform').onsubmit = (event) => event.preventDefault();
+  $('archiveq').oninput = (event) => { search = event.target.value; draw(); };
+  view.querySelectorAll('[data-sort]').forEach((th) => {
+    th.querySelector('button').onclick = () => {
+      const key = th.dataset.sort;
+      // Same column again flips the direction; a new one starts A→Z, except
+      // the date, where the useful first answer is the most recent.
+      if (key === sortKey) ascending = !ascending;
+      else { sortKey = key; ascending = key !== 'archivedAt'; }
+      draw();
+    };
+  });
+  draw();
 }
 
 /* -------------------------------------------------------------- props --- */
@@ -1371,6 +1556,7 @@ async function route() {
     if (which === 'intake') return renderIntake();
     if (which === 'parts') return await renderParts();
     if (which === 'props') return await renderProps();
+    if (which === 'archive') return await renderArchive();
     if (which === 'mechanics') return await renderMechanics();
     if (which === 'setup') return await renderSetup();
     if (params.get('setup')) return await renderSetup();

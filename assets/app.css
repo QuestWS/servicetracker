@@ -868,3 +868,46 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
   letter-spacing: .05em;
   padding: 4px;
 }
+
+
+/* ------------------------------------------------------- archive table --- */
+/* The one real table in the app. Everything else here is a list of cards,
+   because everything else is read one item at a time — but the archive is
+   read by scanning down a column looking for a supplier or a name, which is
+   what a table is for. */
+.tablewrap {
+  overflow-x: auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+table.grid { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+table.grid th, table.grid td {
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ice);
+  vertical-align: top;
+}
+table.grid thead th { border-bottom: 1.5px solid var(--line); padding: 0; white-space: nowrap; }
+/* The header is a button, not a th with a click handler: sorting a column is
+   an action, and it should be reachable by keyboard like every other one. */
+table.grid thead th button {
+  width: 100%;
+  text-align: left;
+  padding: 11px 14px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font-family: var(--disp);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--frost);
+}
+table.grid thead th button:hover { color: var(--navy); background: var(--ice); }
+table.grid thead th.on button { color: var(--navy); }
+table.grid tbody tr:last-child td { border-bottom: 0; }
+table.grid tbody tr:hover { background: #f8fbfd; }
+table.grid td.mono { font-family: var(--mono); font-size: 13.5px; }
+table.grid .sub { font-size: 12.5px; color: var(--muted); }

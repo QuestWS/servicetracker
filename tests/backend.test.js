@@ -309,6 +309,117 @@ describe('the job alert', () => {
   });
 });
 
+describe('filing a completed order away', () => {
+  /**
+   * A job, two parts wanted against it, ordered together and all received —
+   * one carrying a job and a customer, one a bare stock request, because the
+   * archive has to hold both shapes.
+   *
+   * seedJob's part entry does not ask for anything to be ordered, so the
+   * order line is created here with orderQty, the way the mechanic app does.
+   */
+  function completedOrder(id = '01-8886', orderNumber = 'PO-1') {
+    const seeded = seedJob(id);
+    backend.fn('addEntry', seeded.mech, seeded.token, {
+      entryType: 'part', partIdentifier: '6BH-44352-00-00', quantity: 2, orderQty: 2,
+      text: 'Impeller kit',
+    });
+    backend.fn('requestPart', adminToken, { partIdentifier: 'IMP-100', description: 'Shelf spare' });
+
+    const ids = backend.fn('listPartsOrders', adminToken).needed.map((p) => p.id);
+    backend.fn('markPartsOrdered', adminToken, ids, 'Mercury Marine', orderNumber);
+    ids.forEach((partId) => backend.fn('markPartReceived', adminToken, partId, true));
+    return { ...seeded, ids };
+  }
+
+  it('drops off the working list and turns up in the archive', () => {
+    const { ids } = completedOrder();
+    expect(backend.fn('listPartsOrders', adminToken).completed).toHaveLength(1);
+
+    const after = backend.fn('setPartsArchived', adminToken, ids, true);
+    expect(after.completed).toHaveLength(0);
+    const archived = backend.fn('listArchivedParts', adminToken).parts;
+    expect(archived).toHaveLength(ids.length);
+    expect(archived[0].archivedAt).toBeTruthy();
+  });
+
+  it('keeps everything the writer might look it up by', () => {
+    const { ids } = completedOrder();
+    backend.fn('setPartsArchived', adminToken, ids, true);
+    const filed = backend.fn('listArchivedParts', adminToken).parts
+      .find((p) => p.partIdentifier === '6BH-44352-00-00');
+    // Part, customer, supplier and work order are the four things the page
+    // searches on, so all four have to survive being filed.
+    expect(filed.partIdentifier).toBe('6BH-44352-00-00');
+    expect(filed.customerName).toBe('Jane Rivers');
+    expect(filed.vendor).toBe('Mercury Marine');
+    expect(filed.jobId).toBe('01-8886');
+  });
+
+  it('comes back out again', () => {
+    const { ids } = completedOrder();
+    backend.fn('setPartsArchived', adminToken, ids, true);
+    const after = backend.fn('setPartsArchived', adminToken, ids, false);
+    expect(after.completed).toHaveLength(1);
+    expect(backend.fn('listArchivedParts', adminToken).parts).toHaveLength(0);
+  });
+
+  it('will not file a part that has not arrived', () => {
+    const seeded = seedJob();
+    backend.fn('addEntry', seeded.mech, seeded.token, {
+      entryType: 'part', partIdentifier: 'ORD-1', quantity: 1, orderQty: 1, text: 'Still coming',
+    });
+    const needed = backend.fn('listPartsOrders', adminToken).needed;
+    backend.fn('setPartsArchived', adminToken, needed.map((p) => p.id), true);
+    // Still on the list to order — filing is for things that are done.
+    expect(backend.fn('listPartsOrders', adminToken).needed).toHaveLength(needed.length);
+    expect(backend.fn('listArchivedParts', adminToken).parts).toHaveLength(0);
+  });
+
+  it('deletes a whole order without taking the wrong rows with it', () => {
+    // The row-index trap: deleting row 4 shifts row 5 up into its place, so
+    // deleting ascending removes the wrong rows from the second one onward.
+    // Two orders, so a mistake here eats lines that belong to the other.
+    const first = completedOrder('01-8886', 'PO-1');
+    const second = completedOrder('01-8887', 'PO-2');
+    expect(first.ids.length).toBeGreaterThan(1);
+
+    const before = backend.fn('listArchivedParts', adminToken);
+    expect(before.parts).toHaveLength(0);
+
+    backend.fn('deletePartsOrders', adminToken, first.ids);
+    const left = backend.fn('listPartsOrders', adminToken);
+    const survivors = left.completed.reduce((all, group) => all.concat(group.parts), []);
+    // Every line of the second order is untouched, and none of the first is left.
+    expect(survivors.map((p) => p.id).sort()).toEqual(second.ids.slice().sort());
+  });
+
+  it('refuses to delete an order somebody has actually placed', () => {
+    const seeded = seedJob();
+    backend.fn('addEntry', seeded.mech, seeded.token, {
+      entryType: 'part', partIdentifier: 'ORD-1', quantity: 1, orderQty: 1, text: 'On its way',
+    });
+    const needed = backend.fn('listPartsOrders', adminToken).needed;
+    const ids = needed.map((p) => p.id);
+    backend.fn('markPartsOrdered', adminToken, ids, 'Mercury Marine', 'PO-9');
+    backend.fn('deletePartsOrders', adminToken, ids);
+    expect(backend.fn('listPartsOrders', adminToken).ordered).toHaveLength(ids.length);
+  });
+
+  it('belongs to the writer alone', () => {
+    const { ids, mech } = completedOrder();
+    expect(mech).toBeTruthy();
+    expect(() => backend.fn('setPartsArchived', mech, ids, true)).toThrow();
+    expect(() => backend.fn('deletePartsOrders', mech, ids)).toThrow();
+    expect(() => backend.fn('listArchivedParts', mech)).toThrow();
+  });
+
+  it('says so rather than quietly doing nothing when nothing is picked', () => {
+    expect(() => backend.fn('setPartsArchived', adminToken, [], true)).toThrow(/nothing picked/i);
+    expect(() => backend.fn('deletePartsOrders', adminToken, [], true)).toThrow(/nothing picked/i);
+  });
+});
+
 describe('a prop out for repair', () => {
   const TAG = { thumb: 'dGh1bWI=', full: 'ZnVsbA==' };
 

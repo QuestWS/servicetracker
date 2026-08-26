@@ -230,6 +230,25 @@ fs.writeFileSync(TAG_PNG, encodePng({
   data: Buffer.from(Array.from({ length: 48 * 48 * 4 }, (_, i) => (i % 4 === 3 ? 255 : (i * 7) % 256))),
 }));
 
+// A prop is a tab alongside Hours, Parts and Notes — not a card below the
+// log, where it sat under everything a mechanic scrolls past.
+check('the prop form is a tab, not a card',
+  await mech.locator('.segmented button[data-tab="prop"]').count() === 1);
+await mech.click('.segmented button[data-tab="prop"]');
+await mech.waitForSelector('#propdesc', { timeout: 20000 });
+// Nothing on this tab writes a log entry, so none of the log entry's controls
+// should be sitting there offering to.
+const propTabHas = await mech.evaluate(() => ({
+  text: Boolean(document.getElementById('text')),
+  recorder: Boolean(document.querySelector('#recorder button')),
+  logPhotos: Boolean(document.getElementById('takephoto')),
+  save: (document.getElementById('save') || {}).textContent,
+}));
+check('and carries none of a log entry\u2019s fields',
+  !propTabHas.text && !propTabHas.recorder && !propTabHas.logPhotos, JSON.stringify(propTabHas));
+check('and the one save button says what it does here',
+  /ready for pick-up/i.test(propTabHas.save || ''), propTabHas.save);
+
 const tagInputs = await mech.evaluate(() => {
   const read = (sel) => {
     const el = document.querySelector(sel);
@@ -245,13 +264,17 @@ await mech.setInputFiles('#tagcamera', TAG_PNG);
 await mech.waitForSelector('#tagthumb figure img', { timeout: 20000 });
 check('the tag photo previews before it is sent', await mech.locator('#tagthumb img').count() === 1);
 await mech.fill('#propdesc', 'Stainless 3-blade, port side');
-await mech.click('#saveprop');
+await mech.click('#save');
 await mech.waitForSelector('.proprow', { timeout: 20000 });
 check('the prop lands on the job, ready for pick-up',
   /ready for pick-up/i.test(await mech.textContent('.proprow')),
   await mech.textContent('.proprow'));
 check('and the tag photo comes back with it', await mech.locator('.proprow img').count() === 1);
 await mech.screenshot({ path: `${SHOTS}/55-prop-mechanic.png`, fullPage: true });
+
+// Back to Hours, which is where the rest of this run expects to be.
+await mech.click('.segmented button[data-tab="labor"]');
+await mech.waitForSelector('#hours', { timeout: 20000 });
 
 // A logged voice note links out to Drive rather than embedding a player.
 // An embedded one pointed at the retired `uc?export=download` endpoint and
@@ -349,6 +372,75 @@ check('and archives once every line is in',
   afterText.includes('PO-9912') && afterText.includes('Mercury Marine'),
   afterText.slice(afterText.indexOf('Completed'), afterText.indexOf('Completed') + 160));
 await admin.screenshot({ path: `${SHOTS}/50-parts-done.png`, fullPage: true });
+
+/* ------------------------------------------------------- filing it away */
+console.log('\n== the parts archive ==');
+await admin.locator('details summary').first().click();
+await admin.waitForSelector('[data-archive]', { timeout: 20000 });
+const filedLines = (await admin.locator('[data-archive]').first().getAttribute('data-archive')).split(',').length;
+await admin.locator('[data-archive]').first().click();
+await admin.waitForFunction(() => document.querySelectorAll('[data-archive]').length === 0,
+  null, { timeout: 20000 });
+check('a completed order can be filed away', await admin.locator('[data-archive]').count() === 0);
+check('and the working list is left with what still needs doing',
+  !(await admin.evaluate(() => document.body.innerText)).includes('PO-9912'));
+
+await admin.click('a[href="?view=archive"]');
+await admin.waitForSelector('#archivebody tr', { timeout: 20000 });
+const archiveRows = () => admin.locator('#archivebody tr').count();
+check('the archive page is reachable by the link on the parts page',
+  (await admin.textContent('.page-title')).includes('Archived'));
+check('and holds every line of the filed order', await archiveRows() === filedLines);
+check('with the supplier kept', /Mercury Marine/.test(await admin.evaluate(() => document.body.innerText)));
+await admin.screenshot({ path: `${SHOTS}/58-archive.png`, fullPage: true });
+
+// Searching. Each of the four fields the shop asked to look things up by.
+for (const [what, needle] of [['part', '6BH-44352'], ['customer', 'JOHN SMITH'],
+                              ['supplier', 'Mercury'], ['work order', invoiceNumber]]) {
+  await admin.fill('#archiveq', needle);
+  await admin.waitForFunction((n) => document.querySelectorAll('#archivebody tr').length <= n,
+    filedLines, { timeout: 20000 });
+  const rows = await archiveRows();
+  const text = await admin.textContent('#archivebody');
+  check(`searching by ${what} finds it`, rows >= 1 && !/Nothing archived matches/.test(text),
+    `${needle} -> ${rows} row(s)`);
+}
+await admin.fill('#archiveq', 'zzz-no-such-thing');
+await admin.waitForFunction(() => /Nothing archived matches/.test(document.body.innerText),
+  null, { timeout: 20000 });
+check('and a search that matches nothing says so', true);
+await admin.fill('#archiveq', '');
+await admin.waitForFunction((n) => document.querySelectorAll('#archivebody tr').length === n,
+  filedLines, { timeout: 20000 });
+
+// Sorting. Clicking a header sorts by it; clicking again turns it round.
+const supplierColumn = () => admin.evaluate(() =>
+  [...document.querySelectorAll('#archivebody tr')].map((tr) => tr.children[2]?.textContent.trim()));
+await admin.click('th[data-sort="vendor"] button');
+const upwards = await supplierColumn();
+await admin.click('th[data-sort="vendor"] button');
+const downwards = await supplierColumn();
+check('a column header sorts by that column',
+  JSON.stringify(upwards) === JSON.stringify(downwards.slice().reverse()),
+  JSON.stringify({ upwards, downwards }));
+check('and says which way it is pointing',
+  /[▲▼]/.test(await admin.textContent('th[data-sort="vendor"]')));
+
+// Restore puts it back on the working list.
+await admin.locator('[data-unarchive]').first().click();
+await admin.waitForFunction((n) => document.querySelectorAll('#archivebody tr').length < n,
+  filedLines, { timeout: 20000 });
+check('a filed line can be restored', await archiveRows() === filedLines - 1);
+
+// Delete is the irreversible one, so it asks first.
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.locator('[data-archdelete]').first().click();
+await admin.waitForFunction((n) => document.querySelectorAll('#archivebody tr').length < n,
+  filedLines - 1, { timeout: 20000 });
+check('and deleting asks before it does it, then does it',
+  await archiveRows() === Math.max(1, filedLines - 2));
+await admin.goto(`${BASE}/admin/?view=parts`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.partlist, .empty', { timeout: 20000 });
 
 /* ----------------------------------------------------- the office writes in */
 console.log('\n== notes from the office ==');
