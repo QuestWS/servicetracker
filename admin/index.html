@@ -193,7 +193,7 @@ async function renderJobs() {
           <div class="who">${esc(job.customerName || '(no name on file)')}</div>
           <div class="sub">${esc(job.boatInfo || '(no boat details)')}</div>
         </div>
-        <div class="row tight" style="justify-content:flex-end">
+        <div class="row tight jobmeta">
           ${job.needsReview.length ? `<span class="pill red">${job.needsReview.length} to fill in</span>` : ''}
           ${job.hours ? `<span class="pill frost">${formatHours(job.hours)}</span>` : ''}
           <span class="pill grey">${job.entryCount} log</span>

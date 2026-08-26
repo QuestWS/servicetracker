@@ -113,6 +113,23 @@ await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { wa
 check('the job page opens', (await admin.textContent('.page-title')).includes(invoiceNumber));
 check('the stamped work order is linked', await admin.locator('text=Open stamped work order').count() > 0);
 
+// The jobs list is read on a phone as often as a desk. The name column used to
+// be handed whatever the pills left over — which at 390px was nothing — and
+// then clipped, so the row showed an invoice number and no customer at all.
+for (const width of [1280, 390]) {
+  await admin.setViewportSize({ width, height: 900 });
+  await admin.goto(`${BASE}/admin/`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('.jobrow', { timeout: 20000 });
+  const row = admin.locator(`.jobrow:has-text("${invoiceNumber}")`).first();
+  const name = row.locator('.who');
+  const box = await name.boundingBox();
+  check(`the jobs list shows the customer at ${width}px`,
+    Boolean(box) && box.width > 40 && (await name.textContent()).trim() === parsed.customerName,
+    JSON.stringify({ box, text: await name.textContent() }));
+}
+await admin.screenshot({ path: `${SHOTS}/42-jobs-narrow.png`, fullPage: true });
+await admin.setViewportSize({ width: 1280, height: 1000 });
+
 /* ----------------------------------------------------------------- mechanic */
 console.log('\n== mechanic ==');
 const shop = await browser.newContext({ viewport: { width: 390, height: 844 } });

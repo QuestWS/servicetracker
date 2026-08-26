@@ -278,6 +278,7 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
 .joblist { display: flex; flex-direction: column; gap: 10px; }
 .jobrow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   background: #fff;
@@ -291,8 +292,13 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
 .jobrow .num { font-family: var(--mono); font-weight: 600; color: var(--navy); font-size: 15px; }
 .jobrow .who { font-weight: 600; }
 .jobrow .sub { font-size: 13px; color: var(--muted); }
-.jobrow .grow { flex: 1; min-width: 0; }
+/* A basis, not 0: with `flex: 1` the name column was handed whatever the id
+   block and the pills left over, which on a phone is nothing at all — and
+   `overflow: hidden` then erased the customer's name entirely. A real basis
+   makes the row wrap the pills onto their own line instead. */
+.jobrow .grow { flex: 1 1 190px; min-width: 0; }
 .jobrow .grow > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jobrow .jobmeta { flex: 0 1 auto; margin-left: auto; justify-content: flex-end; }
 
 .kv { display: flex; justify-content: space-between; gap: 14px; padding: 7px 0; font-size: 14.5px; border-bottom: 1px dashed var(--ice); }
 .kv:last-child { border: 0; }
