@@ -1727,10 +1727,22 @@ function magicSignIn(nonce) {
   return { token: seal_({ role: 'admin', exp: Date.now() + 12 * 3600000 }) };
 }
 
+/**
+ * The portal password, compared without case and without surrounding space.
+ *
+ * The shop types this on a phone and a counter iPad, where the keyboard
+ * capitalises the first letter on its own and a trailing space is easy to
+ * pick up. A writer who typed the right word should not be turned away by
+ * their own keyboard, and a password this short is not being protected by
+ * its capitalisation anyway.
+ */
 function adminSignIn(password) {
   const expected = props_().getProperty('ADMIN_PASSWORD');
   if (!expected) throw new Error('No portal password is set on this deployment yet.');
-  if (String(password || '') !== expected) throw new Error('That password was not recognised.');
+  const typed = String(password || '').trim().toLowerCase();
+  if (!typed || typed !== String(expected).trim().toLowerCase()) {
+    throw new Error('That password was not recognised.');
+  }
   return { token: seal_({ role: 'admin', exp: Date.now() + 12 * 3600000 }) };
 }
 
@@ -2705,9 +2717,15 @@ function setup() {
   return notes;
 }
 
-/** Convenience for the editor: set the portal password without leaving it in code. */
+/**
+ * Convenience for the editor: set the portal password without leaving it in
+ * code. Five characters is the floor the shop asked for — short enough to say
+ * across a counter, and deliberately not something this function pretends is
+ * strong. See the note in CLAUDE.md about what actually guards this door.
+ */
 function setAdminPassword(password) {
-  if (!password || String(password).length < 8) throw new Error('Use at least 8 characters.');
-  props_().setProperty('ADMIN_PASSWORD', String(password));
+  const value = String(password || '').trim();
+  if (value.length < 5) throw new Error('Use at least 5 characters.');
+  props_().setProperty('ADMIN_PASSWORD', value);
   return 'Portal password set.';
 }

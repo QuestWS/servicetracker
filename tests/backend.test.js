@@ -586,6 +586,27 @@ describe('who may call what', () => {
     expect(() => backend.fn('adminSignIn', 'wrong-password')).toThrow(/not recognised/);
   });
 
+  it('takes the portal password however the keyboard capitalised it', () => {
+    const back = loadBackend({ properties: { ADMIN_PASSWORD: 'quest' } });
+    // A counter iPad capitalises the first letter on its own, and a trailing
+    // space is easy to pick up. None of that should turn the writer away.
+    for (const typed of ['quest', 'Quest', 'QUEST', '  quest  ', 'qUeSt']) {
+      expect(back.fn('adminSignIn', typed).token).toBeTruthy();
+    }
+    expect(() => back.fn('adminSignIn', 'quests')).toThrow(/not recognised/);
+    // An empty box is not a match against an empty-ish stored value either.
+    expect(() => back.fn('adminSignIn', '')).toThrow(/not recognised/);
+    expect(() => back.fn('adminSignIn', '   ')).toThrow(/not recognised/);
+  });
+
+  it('lets the shop set a five-character password, but no shorter', () => {
+    const back = loadBackend({ properties: { ADMIN_PASSWORD: 'x' } });
+    expect(back.fn('setAdminPassword', 'quest')).toMatch(/set/i);
+    expect(back.fn('adminSignIn', 'QUEST').token).toBeTruthy();
+    expect(() => back.fn('setAdminPassword', 'ques')).toThrow(/at least 5/i);
+    expect(() => back.fn('setAdminPassword', '  q  ')).toThrow(/at least 5/i);
+  });
+
   it('will not take a token somebody edited', () => {
     const forged = adminToken.slice(0, -4) + 'AAAA';
     expect(() => backend.fn('listJobs', forged, {})).toThrow(/Sign in/);

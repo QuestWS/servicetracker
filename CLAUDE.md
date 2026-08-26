@@ -272,7 +272,16 @@ middle — and differs in the two ways that matter.
 
 Two ways, both landing on the same 12-hour sealed token:
 
-- `ADMIN_PASSWORD`, a script property.
+- `ADMIN_PASSWORD`, a script property. Compared **case-insensitively and
+  trimmed**: the shop types it on a phone and a counter iPad, where the
+  keyboard capitalises the first letter on its own. `setAdminPassword` accepts
+  five characters and up, at the shop's request.
+
+  That is a deliberately weak door, and worth being honest about: five
+  lower-cased characters is guessable, `adminSignIn` has no throttle, and
+  behind it are customer names, phone numbers and addresses. What actually
+  keeps people out is that the `/exec` URL is not published anywhere. If that
+  ever stops being true, add a throttle before anything else.
 - A one-time link mailed to `SERVICE_EMAIL` by `requestMagicLink`.
 
 That second one is an **unauthenticated endpoint that sends mail**, so three
