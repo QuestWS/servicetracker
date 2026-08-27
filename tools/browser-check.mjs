@@ -824,6 +824,44 @@ const opened = await picker.evaluate(() => document.body.innerText);
 check('opens the job straight from the list', opened.includes(FLOOR_INVOICE));
 check('and carries what needs doing with it', /winterise and replace the impeller/i.test(opened),
   opened.slice(0, 200));
+
+/* ----------------------------------------------------------- getting out */
+// Back means "where I came from", which is a different place depending on how
+// the job was opened, and Home always means the scan screen. Both live in the
+// chrome, so neither depends on the screen you are trying to leave.
+check('a job opened from the list offers a way back', await picker.isVisible('#navback'));
+await picker.click('#navback');
+await picker.waitForSelector('.joblist', { timeout: 20000 });
+check('and Back from it lands on the list, not the scanner',
+  await picker.locator('.joblist').count() > 0);
+check('the list offers Back too', await picker.isVisible('#navback'));
+await picker.click('#navback');
+await picker.waitForSelector('#manual', { timeout: 20000 });
+check('which reaches the scan screen', await picker.isVisible('#manual'));
+check('where Back is no longer offered, there being nowhere behind it',
+  !(await picker.isVisible('#navback')));
+
+// The same job reached the other way has a different thing behind it.
+await picker.click('#manual');
+await picker.fill('#code', FLOOR_INVOICE);
+await picker.click('button[type=submit]');
+await picker.waitForSelector('.segmented', { timeout: 20000 });
+await picker.click('#navback');
+await picker.waitForSelector('#manual', { timeout: 20000 });
+check('a job opened by number goes Back to the scan screen instead',
+  await picker.isVisible('#manual'));
+
+// Home is the one that is always there and always means the same thing.
+await picker.click('#openjobs');
+await picker.waitForSelector('.joblist', { timeout: 20000 });
+await picker.locator('.joblist').first().click();
+await picker.waitForSelector('.segmented', { timeout: 20000 });
+await picker.click('#navhome');
+await picker.waitForSelector('#manual', { timeout: 20000 });
+check('and Home leaves a job whatever the route in', await picker.isVisible('#manual'));
+check('Home is offered everywhere, including home itself',
+  await picker.isVisible('#navhome'));
+
 await picker.close();
 
 /* ------------------------------------------------------------- magic link */

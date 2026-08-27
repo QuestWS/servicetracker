@@ -469,6 +469,33 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
   font-size: 20px;
 }
 .mech .mech-top .who { font-size: 12px; color: #9fc3dc; }
+/* The wordmark takes the slack, which puts Home hard against the right edge
+   and leaves Back at the left whether or not it is showing. */
+.mech .mech-top .topname { flex: 1; min-width: 0; }
+.mech .mech-top .navbtn {
+  flex: none;
+  background: none;
+  border: 1.5px solid #3d6285;
+  border-radius: 9px;
+  color: #fff;
+  font-family: var(--body);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 12px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.mech .mech-top .navbtn:active { background: #22405f; }
+.mech .mech-top .navbtn[hidden] { display: none; }
+/* At the narrow end the wordmark is the first thing to go: a mechanic knows
+   which app they are holding, and the two ways out matter more. */
+@media (max-width: 400px) {
+  .mech .mech-top .t { font-size: 17px; }
+  .mech .mech-top { gap: 8px; padding: 12px; }
+}
+@media (max-width: 340px) {
+  .mech .mech-top .topname { display: none; }
+}
 .mech main { flex: 1; padding: 16px; max-width: 680px; width: 100%; margin: 0 auto; }
 .mech .card { background: #fff; color: var(--ink); }
 .mech a { color: #9fc3dc; }

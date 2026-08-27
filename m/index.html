@@ -26,9 +26,14 @@
 </head>
 <body class="mech-body">
 <div class="mech">
+  <!-- Navigation lives out here with the footer, for the same reason: every
+       screen redraws #view, and the way out must not depend on the screen you
+       are trying to get out of having drawn correctly. -->
   <div class="mech-top">
+    <button type="button" id="navback" class="navbtn" hidden>&lsaquo; Back</button>
     <img src="../assets/quest-mark.png" alt="" style="height:30px;border-radius:6px">
-    <a href="./" style="text-decoration:none;color:#fff"><div class="t">Quest Shop</div></a>
+    <a href="./" class="topname" style="text-decoration:none;color:#fff"><div class="t">Quest Shop</div></a>
+    <button type="button" id="navhome" class="navbtn">Home</button>
   </div>
   <main id="view"><p class="loading" style="color:#9fc3dc">Starting up…</p></main>
   <!-- Sits outside #view on purpose: every screen redraws that, and the one
@@ -95,6 +100,9 @@ import { $, esc, toast, formatDateTime, fileToBase64, preparePhoto, driveImageUr
 // The module evaluated, so the watchdog above has nothing to recover from.
 window.__questBooted = true;
 
+$('navback').onclick = () => { if (state.back) state.back(); };
+$('navhome').onclick = () => { state.job = null; state.jobFrom = null; renderHome(); };
+
 $('updateapp').onclick = () => {
   const button = $('updateapp');
   button.disabled = true;
@@ -111,6 +119,17 @@ if ('serviceWorker' in navigator) {
 }
 
 const view = $('view');
+
+/**
+ * Says where Back goes from the screen about to be drawn, and shows or hides
+ * the button accordingly. Home is always available and always means the scan
+ * screen; Back is only offered when there is somewhere to go.
+ */
+function screen(backTo) {
+  state.back = backTo || null;
+  const button = $('navback');
+  if (button) button.hidden = !state.back;
+}
 const state = {
   who: storedWho(),
   roster: [],
@@ -122,6 +141,10 @@ const state = {
   props: [],
   tagPhoto: null,
   scanning: null,
+  // What Back does from here, and where the job screen should send you —
+  // the list if you picked it off one, the scan screen if you scanned it.
+  back: null,
+  jobFrom: null,
 };
 
 /* ------------------------------------------------------------ scanner --- */
@@ -259,6 +282,7 @@ addEventListener('beforeinstallprompt', (event) => {
 
 function renderHome(message) {
   stopScanning();
+  screen(null);
   view.innerHTML = `
     ${installBanner()}
     ${state.who ? `<p style="color:#9fc3dc;font-size:14px;margin-top:0">
@@ -305,6 +329,7 @@ function renderHome(message) {
  */
 async function renderOpenJobs() {
   stopScanning();
+  screen(renderHome);
   if (!state.who) return signInThen(renderOpenJobs);
 
   view.innerHTML = `<p class="loading" style="color:#9fc3dc">Loading open jobs…</p>`;
@@ -321,10 +346,7 @@ async function renderOpenJobs() {
   }
 
   view.innerHTML = `
-    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
-      <h2 style="margin:0;color:#fff">Open jobs (${jobs.length})</h2>
-      <button class="btn ghost sm" type="button" id="back">Back</button>
-    </div>
+    <h2 style="margin:0 0 10px;color:#fff">Open jobs (${jobs.length})</h2>
     ${jobs.length ? `<div class="stack">
       ${jobs.map((job, index) => `
         <button class="btn ghost block joblist${job.alert ? ' flagged' : ''}" type="button" data-pick="${index}"
@@ -338,12 +360,12 @@ async function renderOpenJobs() {
         </button>`).join('')}
     </div>` : `<p style="color:#9fc3dc">Nothing open right now.</p>`}`;
 
-  $('back').onclick = () => renderHome();
   view.querySelectorAll('[data-pick]').forEach((button) => {
     button.onclick = () => {
       const job = jobs[Number(button.dataset.pick)];
       // Picking off the list is not scanning the paper, so it does not start
       // the job — opening it does what a scan would have done next.
+      state.jobFrom = renderOpenJobs;
       state.job = { id: job.id, token: job.token, boatInfo: job.boatInfo,
                     customerName: job.customerName, workRequested: job.workRequested,
                     alert: job.alert, status: job.status, statusLabel: job.statusLabel };
@@ -361,6 +383,7 @@ async function renderOpenJobs() {
  */
 function renderPartRequest() {
   stopScanning();
+  screen(renderHome);
   view.innerHTML = `<form class="card" id="form">
     <h2>Request a part for stock</h2>
     <div id="notice"></div>
@@ -449,6 +472,7 @@ function renderScanning() {
 
 function renderManual() {
   stopScanning();
+  screen(renderHome);
   view.innerHTML = `<form class="card" id="form">
     <h2>Invoice number</h2>
     <input class="txt mono" id="code" inputmode="text" autofocus placeholder="01-8886">
@@ -467,6 +491,7 @@ function renderManual() {
 }
 
 async function openJob(code, source) {
+  state.jobFrom = renderHome;
   view.innerHTML = `<p class="loading" style="color:#9fc3dc">Looking that job up…</p>`;
   try {
     const { job } = await api('lookupJob', [code, source]);
@@ -633,6 +658,7 @@ function entryHtml(entry) {
 
 function renderJob() {
   stopScanning();
+  screen(state.jobFrom || renderHome);
   const job = state.job;
   const finished = job.status === 'work_finished' || job.status === 'done';
   view.innerHTML = `
