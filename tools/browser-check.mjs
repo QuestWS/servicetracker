@@ -218,6 +218,30 @@ await mech.click('.hourchips button[data-m="45"]');
 check('and a later chip replaces the figure rather than adding to it',
   (await mech.inputValue('#hours')) === '0' && (await mech.inputValue('#minutes')) === '45',
   `${await mech.inputValue('#hours')}h ${await mech.inputValue('#minutes')}m`);
+// The steppers work on the pair as one duration. Five more minutes at 55
+// has to read 1h 00m, not 60m, and five fewer at 1h 00m has to come back to
+// 55m rather than stopping dead at zero minutes.
+const shown = async () => `${await mech.inputValue('#hours')}h ${await mech.inputValue('#minutes')}m`;
+const plusMinutes = '.stepper button[data-by="5"]';
+const minusMinutes = '.stepper button[data-by="-5"]';
+
+await mech.click('.hourchips button[data-m="45"]');
+for (let i = 0; i < 2; i++) await mech.click(plusMinutes);
+check('the minutes stepper carries into hours', (await shown()) === '0h 55m', await shown());
+await mech.click(plusMinutes);
+check('and 55 plus five is an hour, not sixty minutes', (await shown()) === '1h 0m', await shown());
+await mech.click(minusMinutes);
+check('and it borrows back down again', (await shown()) === '0h 55m', await shown());
+
+await mech.click('.hourchips button[data-m="15"]');
+for (let i = 0; i < 5; i++) await mech.click(minusMinutes);
+check('and it never goes below nothing', (await shown()) === '0h 0m', await shown());
+
+await mech.click('.stepper button[data-by="60"]');
+check('the hours stepper adds an hour', (await shown()) === '1h 0m', await shown());
+await mech.click('.stepper button[data-by="-60"]');
+check('and takes one back', (await shown()) === '0h 0m', await shown());
+
 // Typed by hand, which is the other half of the entry path.
 await mech.fill('#hours', '1');
 await mech.fill('#minutes', '30');
@@ -460,7 +484,8 @@ await admin.locator('[data-archdelete]').first().click();
 await admin.waitForFunction((n) => document.querySelectorAll('#archivebody tr').length < n,
   filedLines - 1, { timeout: 20000 });
 check('and deleting asks before it does it, then does it',
-  await archiveRows() === Math.max(1, filedLines - 2));
+  await archiveRows() === filedLines - 2,
+  `filed ${filedLines}, now ${await archiveRows()} row(s)`);
 await admin.goto(`${BASE}/admin/?view=parts`, { waitUntil: 'networkidle' });
 await admin.waitForSelector('.partlist, .empty', { timeout: 20000 });
 

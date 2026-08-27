@@ -729,16 +729,46 @@ function renderJob() {
   }
 }
 
+/** The two boxes as one figure in whole minutes. */
+function timeTotal() {
+  const hours = Number(($('hours') || {}).value || 0) || 0;
+  const minutes = Number(($('minutes') || {}).value || 0) || 0;
+  return hours * 60 + minutes;
+}
+
+/** And back again, carrying into hours. Never below zero. */
+function setTimeTotal(total) {
+  const whole = Math.max(0, Math.round(total));
+  state.hoursValue = String(Math.floor(whole / 60));
+  state.minutesValue = String(whole % 60);
+  if ($('hours')) $('hours').value = state.hoursValue;
+  if ($('minutes')) $('minutes').value = state.minutesValue;
+}
+
 function drawFields() {
   const box = $('fields');
   if (state.tab === 'labor') {
     box.innerHTML = `
       <label class="fld">Time on this job</label>
       <div class="hm">
-        <div><input class="txt mono" id="hours" inputmode="numeric" placeholder="0"
-          value="${esc(state.hoursValue || '')}"><span>hours</span></div>
-        <div><input class="txt mono" id="minutes" inputmode="numeric" placeholder="0"
-          value="${esc(state.minutesValue || '')}"><span>minutes</span></div>
+        <div>
+          <div class="stepper">
+            <button type="button" data-by="-60" aria-label="An hour less">&minus;</button>
+            <input class="txt mono" id="hours" inputmode="numeric" placeholder="0"
+              value="${esc(state.hoursValue || '')}" aria-label="Hours">
+            <button type="button" data-by="60" aria-label="An hour more">+</button>
+          </div>
+          <span>hours</span>
+        </div>
+        <div>
+          <div class="stepper">
+            <button type="button" data-by="-5" aria-label="Five minutes less">&minus;</button>
+            <input class="txt mono" id="minutes" inputmode="numeric" placeholder="0"
+              value="${esc(state.minutesValue || '')}" aria-label="Minutes">
+            <button type="button" data-by="5" aria-label="Five minutes more">+</button>
+          </div>
+          <span>minutes</span>
+        </div>
       </div>
       <div class="hourchips">${TIME_STEPS.map((m) => `<button type="button" data-m="${m}">${formatMinutes(m)}</button>`).join('')}</div>
       <p class="hint">Log the time as you finish a stint. Several entries in a day is normal — they add up on the job.</p>`;
@@ -747,13 +777,13 @@ function drawFields() {
     // hours. Every chip fills both boxes so what is about to be saved is
     // always the two numbers on screen.
     box.querySelectorAll('.hourchips button').forEach((button) => {
-      button.onclick = () => {
-        const total = Number(button.dataset.m);
-        state.hoursValue = String(Math.floor(total / 60));
-        state.minutesValue = String(total % 60);
-        $('hours').value = state.hoursValue;
-        $('minutes').value = state.minutesValue;
-      };
+      button.onclick = () => setTimeTotal(Number(button.dataset.m));
+    });
+    // The steppers work on the pair as one duration, not on one box each, so
+    // five more minutes at 55 reads 1h 00m rather than 60m — and five fewer
+    // at 1h 00m goes back to 55m instead of stopping dead at zero minutes.
+    box.querySelectorAll('.stepper button').forEach((button) => {
+      button.onclick = () => setTimeTotal(timeTotal() + Number(button.dataset.by));
     });
     const digits = (event) => event.target.value.replace(/[^0-9]/g, '').slice(0, 4);
     $('hours').oninput = (event) => { state.hoursValue = digits(event); event.target.value = state.hoursValue; };
@@ -995,13 +1025,9 @@ async function saveEntry() {
   const text = $('text').value.trim();
   const payload = { entryType: state.tab, text };
 
-  if (state.tab === 'labor') {
-    // One figure goes over the wire. 1h 90m is 150 minutes, which is a
-    // reasonable thing to have typed and not an error to hand back.
-    const h = Number(($('hours') || {}).value || 0) || 0;
-    const m = Number(($('minutes') || {}).value || 0) || 0;
-    payload.minutes = String(h * 60 + m);
-  }
+  // One figure goes over the wire. 1h 90m is 150 minutes, which is a
+  // reasonable thing to have typed and not an error to hand back.
+  if (state.tab === 'labor') payload.minutes = String(timeTotal());
   if (state.tab === 'part') {
     payload.partIdentifier = ($('part') || {}).value || '';
     payload.quantity = ($('qty') || {}).value || '';
