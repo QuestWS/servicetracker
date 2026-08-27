@@ -492,6 +492,7 @@ function doPost(e) {
     /* parts */
     listParts:        function (a) { return listPartsOrders(data.token); },
     requestPart:      function (a) { return requestPart(data.token, a[0]); },
+    addJobPart:       function (a) { return addJobPart(data.token, a[0], a[1]); },
     partsOrdered:     function (a) { return markPartsOrdered(data.token, a[0], a[1], a[2]); },
     partReceived:     function (a) { return markPartReceived(data.token, a[0], a[1]); },
     partNote:         function (a) { return setPartNote(data.token, a[0], a[1]); },
@@ -739,6 +740,7 @@ function getJob(token, id) {
     entries: entries,
     hours: laborTotals_(entries),
     props: propsForJob_(id),
+    parts: partsForJob_(id),
     timeline: rows_('StatusEvents').filter(function (event) { return event.job_id === id; }),
     emails: rows_('EmailLog').filter(function (mail) { return mail.job_id === id; }).reverse()
   };
@@ -1170,6 +1172,57 @@ function requestPart(token, payload) {
     });
     return { part: partView_(part) };
   });
+}
+
+/**
+ * A part the office puts on a job's ticket — the customer rings up wanting
+ * something ordered, and the writer has the work order open in front of them.
+ *
+ * The same row a mechanic's part entry creates, so it lands on the one parts
+ * list and takes a vendor, an order number and a received tick like any other.
+ * What differs is only where it came from: there is no log entry behind it,
+ * because nobody touched the boat — so source_entry stays empty and the part
+ * is credited to the writer rather than to a mechanic.
+ *
+ * The part number is asked for and not insisted on, the same as a stock
+ * request: a customer on the phone describing what they want is exactly the
+ * case where nobody has a number yet.
+ */
+function addJobPart(token, id, payload) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such job.');
+
+  const identifier = String((payload && payload.partIdentifier) || '').trim();
+  const description = String((payload && payload.description) || '').trim();
+  if (!identifier && !description) {
+    throw new Error('Say which part — a number, a description, or both.');
+  }
+  const quantity = payload && payload.quantity ? Number(payload.quantity) : null;
+  if (quantity !== null && (!isFinite(quantity) || quantity <= 0)) {
+    throw new Error('How many? It needs to be a number greater than zero.');
+  }
+
+  return withLock_(function () {
+    const part = addPartOrder_({
+      jobId: job.id,
+      partIdentifier: identifier,
+      description: description,
+      quantity: quantity,
+      reason: 'job',
+      notes: String((payload && payload.notes) || '').trim(),
+      requestedBy: SHOP_WRITER_NAME
+    });
+    return { part: partView_(part), parts: partsForJob_(job.id) };
+  });
+}
+
+/** Every part on one job's ticket, oldest first, whatever stage it is at. */
+function partsForJob_(jobId) {
+  return rows_('PartsOrders')
+    .filter(function (part) { return part.job_id === jobId; })
+    .map(partView_)
+    .sort(function (a, b) { return String(a.createdAt).localeCompare(String(b.createdAt)); });
 }
 
 /** Needed, on order, and the completed orders behind them. */

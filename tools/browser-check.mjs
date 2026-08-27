@@ -493,17 +493,22 @@ check('a column header sorts by that column',
 check('and says which way it is pointing',
   /[▲▼]/.test(await admin.textContent('th[data-sort="vendor"]')));
 
+// Both of these re-render the whole page, and renderArchive blanks the table
+// before it refills it — so "fewer rows than before" is briefly true at zero,
+// on the loading state. Wait for the settled count, not for a decrease.
+const settledAt = (n) => admin.waitForFunction(
+  (want) => document.querySelectorAll('#archivebody tr').length === want, n, { timeout: 20000 });
+
 // Restore puts it back on the working list.
 await admin.locator('[data-unarchive]').first().click();
-await admin.waitForFunction((n) => document.querySelectorAll('#archivebody tr').length < n,
-  filedLines, { timeout: 20000 });
-check('a filed line can be restored', await archiveRows() === filedLines - 1);
+await settledAt(filedLines - 1);
+check('a filed line can be restored', await archiveRows() === filedLines - 1,
+  `filed ${filedLines}, now ${await archiveRows()}`);
 
 // Delete is the irreversible one, so it asks first.
 admin.once('dialog', (dialog) => dialog.accept());
 await admin.locator('[data-archdelete]').first().click();
-await admin.waitForFunction((n) => document.querySelectorAll('#archivebody tr').length < n,
-  filedLines - 1, { timeout: 20000 });
+await settledAt(filedLines - 2);
 check('and deleting asks before it does it, then does it',
   await archiveRows() === filedLines - 2,
   `filed ${filedLines}, now ${await archiveRows()} row(s)`);
@@ -558,6 +563,50 @@ await admin.waitForFunction(() => document.querySelectorAll('[data-fixed]').leng
   null, { timeout: 20000 });
 check('and comes back fixed', /Returned — fixed/.test(await propsText()), (await propsText()).slice(0, 200));
 await admin.screenshot({ path: `${SHOTS}/57-props-back.png`, fullPage: true });
+
+/* -------------------------------------------------- a part ordered by phone */
+console.log('\n== the writer putting a part on a job ==');
+// Somebody rings up wanting a part. The writer has the work order open and
+// never touches the mechanic app, but it has to reach the same list.
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
+await admin.fill('#jobpartnum', 'PHONE-9000');
+await admin.fill('#jobpartdesc', 'Impeller kit, 3.0L');
+await admin.fill('#jobpartqty', '2');
+await admin.fill('#jobpartnote', 'Customer called Tuesday');
+await admin.click('#addjobpart');
+await admin.waitForSelector('.ticketparts', { timeout: 20000 });
+const ticket = await admin.evaluate(() => document.querySelector('.ticketparts').innerText);
+check('the part lands on the job ticket', /PHONE-9000/.test(ticket), ticket.slice(0, 160));
+check('and reads as still to order', /to order/i.test(ticket), ticket.slice(0, 160));
+
+await admin.goto(`${BASE}/admin/?view=parts`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.partlist', { timeout: 20000 });
+check('and on the writer\u2019s ordering list',
+  /PHONE-9000/.test(await admin.evaluate(() => document.body.innerText)));
+
+// It has to take an order number and an arrival like any other part.
+const phoneRow = admin.locator('.partrow:has-text("PHONE-9000")');
+await phoneRow.locator('.partpick').check();
+await admin.fill('#vendor', 'Mercury Marine');
+await admin.fill('#ordernumber', 'PO-3311');
+await admin.click('#markordered');
+await admin.waitForSelector('.partrow:has-text("PHONE-9000") [data-receive]', { timeout: 20000 });
+check('it takes a supplier and an order number',
+  /PO-3311/.test(await admin.evaluate(() => document.body.innerText)));
+await admin.locator('.partrow:has-text("PHONE-9000") [data-receive]').click();
+await admin.waitForFunction(
+  () => !document.querySelector('.partrow:has([data-receive])')
+    || ![...document.querySelectorAll('.partrow')].some((row) =>
+      row.innerText.includes('PHONE-9000') && row.querySelector('[data-receive]')),
+  null, { timeout: 20000 });
+check('and gets ticked off when it arrives',
+  await admin.locator('.partrow:has-text("PHONE-9000") [data-receive]').count() === 0);
+
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.ticketparts', { timeout: 20000 });
+check('and the job ticket says it arrived',
+  /arrived/i.test(await admin.evaluate(() => document.querySelector('.ticketparts').innerText)));
+await admin.screenshot({ path: `${SHOTS}/59-phone-part.png`, fullPage: true });
 
 /* ------------------------------------------------------------- the alert */
 console.log('\n== the red alert ==');

@@ -250,7 +250,7 @@ async function renderJob(id) {
   view.innerHTML = `<p class="loading">Loading job ${esc(id)}…</p>`;
   const data = await api('getJob', [id]);
   showTestBanner(data.testMode);
-  const { job, entries, hours, props, timeline, emails } = data;
+  const { job, entries, hours, props, parts, timeline, emails } = data;
   // A mechanic can add to a job after the writer has written the rest up, so
   // the split is per entry rather than a flag on the job.
   const pending = entries.filter((entry) => !entry.loggedAt);
@@ -345,6 +345,42 @@ async function renderJob(id) {
           <textarea class="txt" id="writernote" rows="2"
             placeholder="Owner wants a call before you pull the lower unit…"></textarea>
           <button class="btn ghost block" type="button" id="addnote" style="margin-top:10px">Add the note</button>
+        </section>
+
+        <section class="card">
+          <h2>Parts for this job</h2>
+          <p class="hint" style="margin-top:0">For when somebody rings up wanting a part ordered.
+            It goes straight onto the <a href="?view=parts">parts list</a>, where it takes a supplier
+            and order number and gets ticked off when it arrives.</p>
+
+          ${parts && parts.length ? `<div class="ticketparts">${parts.map((part) => `
+            <div class="kv">
+              <span class="k">
+                ${part.quantity ? `${part.quantity}&times; ` : ''}<b style="font-family:var(--mono)">${esc(part.partIdentifier || '(no number)')}</b>
+                ${part.description ? `<span class="sub"> · ${esc(part.description)}</span>` : ''}
+              </span>
+              <b><span class="pill ${{ needed: 'red', ordered: 'gold', received: 'green' }[part.status]}">${
+                { needed: 'To order', ordered: 'On order', received: 'Arrived' }[part.status] || esc(part.status)
+              }</span></b>
+            </div>
+            ${part.vendor ? `<div class="sub" style="margin:-4px 0 8px">${esc(part.vendor)}${part.orderNumber ? ` · order ${esc(part.orderNumber)}` : ''}</div>` : ''}`).join('')}</div>`
+            : ''}
+
+          <label class="fld" for="jobpartnum">Part number</label>
+          <input class="txt mono" id="jobpartnum" placeholder="Optional — a description will do">
+          <label class="fld" for="jobpartdesc">What is it</label>
+          <input class="txt" id="jobpartdesc" placeholder="Impeller kit, 3.0L">
+          <div class="grid2">
+            <div>
+              <label class="fld" for="jobpartqty">How many</label>
+              <input class="txt mono" id="jobpartqty" inputmode="decimal" placeholder="1">
+            </div>
+            <div>
+              <label class="fld" for="jobpartnote">Note (optional)</label>
+              <input class="txt" id="jobpartnote" placeholder="Customer called Tuesday">
+            </div>
+          </div>
+          <button class="btn ghost block" type="button" id="addjobpart" style="margin-top:10px">Add to the parts list</button>
         </section>
 
         <section class="card">
@@ -610,6 +646,30 @@ async function renderJob(id) {
       toast('Invoice and payment link saved.');
     } catch (error) {
       button.disabled = false;
+      notice('warn', error.message);
+    }
+  };
+
+  const addjobpart = $('addjobpart');
+  if (addjobpart) addjobpart.onclick = async () => {
+    const partIdentifier = $('jobpartnum').value.trim();
+    const description = $('jobpartdesc').value.trim();
+    if (!partIdentifier && !description) {
+      return notice('warn', 'Say which part — a number, a description, or both.');
+    }
+    addjobpart.disabled = true;
+    addjobpart.textContent = 'Adding…';
+    try {
+      await api('addJobPart', [job.id, {
+        partIdentifier, description,
+        quantity: $('jobpartqty').value.trim(),
+        notes: $('jobpartnote').value.trim(),
+      }]);
+      renderJob(job.id);
+      toast('On the parts list.');
+    } catch (error) {
+      addjobpart.disabled = false;
+      addjobpart.textContent = 'Add to the parts list';
       notice('warn', error.message);
     }
   };

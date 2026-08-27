@@ -309,6 +309,89 @@ describe('the job alert', () => {
   });
 });
 
+describe('the writer putting a part on a job', () => {
+  it('lands on the same list a mechanic would have put it on', () => {
+    const { id } = seedJob();
+    backend.fn('addJobPart', adminToken, id, {
+      partIdentifier: 'IMP-100', description: 'Impeller kit', quantity: 2,
+    });
+    const needed = backend.fn('listPartsOrders', adminToken).needed;
+    const part = needed.find((p) => p.partIdentifier === 'IMP-100');
+    expect(part).toBeTruthy();
+    expect(part.jobId).toBe(id);
+    expect(part.quantity).toBe(2);
+    expect(part.reasonLabel).toBe('For this job');
+  });
+
+  it('is credited to the office, not to a mechanic who never touched it', () => {
+    const { id } = seedJob();
+    backend.fn('addJobPart', adminToken, id, { description: 'Impeller kit' });
+    const part = backend.fn('listPartsOrders', adminToken).needed
+      .find((p) => p.description === 'Impeller kit');
+    expect(part.requestedBy).toBe('Service writer');
+    // No log entry behind it: nobody worked on the boat to produce it.
+    expect(backend.fn('partRow_', part.id).source_entry).toBe('');
+  });
+
+  it('goes the whole way to arrived, like any other part', () => {
+    const { id } = seedJob();
+    backend.fn('addJobPart', adminToken, id, { partIdentifier: 'IMP-100' });
+    const part = backend.fn('listPartsOrders', adminToken).needed
+      .find((p) => p.partIdentifier === 'IMP-100');
+    backend.fn('markPartsOrdered', adminToken, [part.id], 'Mercury Marine', 'PO-55');
+    const onOrder = backend.fn('listPartsOrders', adminToken).ordered
+      .find((p) => p.id === part.id);
+    expect(onOrder.vendor).toBe('Mercury Marine');
+    expect(onOrder.orderNumber).toBe('PO-55');
+    backend.fn('markPartReceived', adminToken, part.id, true);
+    const arrived = backend.fn('listPartsOrders', adminToken).completed
+      .reduce((all, group) => all.concat(group.parts), [])
+      .find((p) => p.id === part.id);
+    expect(arrived.receivedAt).toBeTruthy();
+  });
+
+  it('takes a description when nobody has a number yet', () => {
+    const { id } = seedJob();
+    expect(() => backend.fn('addJobPart', adminToken, id, { description: 'The blue one' }))
+      .not.toThrow();
+    expect(() => backend.fn('addJobPart', adminToken, id, {})).toThrow(/say which part/i);
+  });
+
+  it('refuses a quantity that is not a quantity', () => {
+    const { id } = seedJob();
+    expect(() => backend.fn('addJobPart', adminToken, id, { partIdentifier: 'X', quantity: -1 }))
+      .toThrow(/greater than zero/i);
+    expect(() => backend.fn('addJobPart', adminToken, id, { partIdentifier: 'X', quantity: 'lots' }))
+      .toThrow(/greater than zero/i);
+    // Zero reads as "not given", the same as an empty box and the same as a
+    // stock request — which is what the stepper produces below one.
+    const saved = backend.fn('addJobPart', adminToken, id, { partIdentifier: 'X', quantity: 0 });
+    expect(saved.part.quantity).toBe(null);
+  });
+
+  it('shows up on the job page it was added from', () => {
+    const { id } = seedJob();
+    backend.fn('addJobPart', adminToken, id, { partIdentifier: 'IMP-100' });
+    const onTicket = backend.fn('getJob', adminToken, id).parts;
+    expect(onTicket.map((p) => p.partIdentifier)).toContain('IMP-100');
+  });
+
+  it('belongs to the writer, not the floor', () => {
+    const { id, mech } = seedJob();
+    expect(() => backend.fn('addJobPart', mech, id, { partIdentifier: 'X' })).toThrow();
+  });
+
+  it('never reaches the customer', () => {
+    const { id, token } = seedJob();
+    backend.fn('addJobPart', adminToken, id, { partIdentifier: 'IMP-100', description: 'Impeller kit' });
+    backend.fn('props_').setProperty('CUSTOMER_TRACKING', 'on');
+    backend.fn('props_').setProperty('TEST_MODE', 'false');
+    const seen = JSON.stringify(backend.fn('publicJob', token, ''));
+    expect(seen).not.toContain('IMP-100');
+    expect(seen).not.toContain('Impeller kit');
+  });
+});
+
 describe('filing a completed order away', () => {
   /**
    * A job, two parts wanted against it, ordered together and all received —
