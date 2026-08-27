@@ -360,6 +360,27 @@ await mech.fill('#part', '6BH-44352-00-00');
 await mech.fill('#qty', '2');
 // Ticking the box should ask how many, then put it on the parts list.
 await mech.check('#needorder');
+// The quantity steppers step one box on its own, unlike the time pair.
+const qtyPlus = (id) => `.stepper button[data-qty="${id}"][data-by="1"]`;
+const qtyMinus = (id) => `.stepper button[data-qty="${id}"][data-by="-1"]`;
+await mech.fill('#qty', '');
+await mech.click(qtyPlus('qty'));
+await mech.click(qtyPlus('qty'));
+check('a quantity steps up from empty by one', (await mech.inputValue('#qty')) === '2',
+  await mech.inputValue('#qty'));
+await mech.click(qtyMinus('qty'));
+check('and back down', (await mech.inputValue('#qty')) === '1', await mech.inputValue('#qty'));
+await mech.click(qtyMinus('qty'));
+check('and below one it empties rather than reading zero parts',
+  (await mech.inputValue('#qty')) === '', `"${await mech.inputValue('#qty')}"`);
+// A part can be a fraction of a unit — 1.5 quarts of oil — so stepping must
+// not round the typed figure away.
+await mech.fill('#qty', '1.5');
+await mech.click(qtyPlus('qty'));
+check('and it steps a fractional quantity without mangling it',
+  (await mech.inputValue('#qty')) === '2.5', await mech.inputValue('#qty'));
+await mech.fill('#qty', '2');
+
 check('ticking "needs ordering" asks how many', await mech.isVisible('#orderqty'));
 await mech.fill('#orderqty', '2');
 await mech.check('#needrestock');

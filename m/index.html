@@ -354,8 +354,7 @@ function renderPartRequest() {
     <div id="reqscanner"></div>
     <label class="fld" for="pdesc">What is it</label>
     <input class="txt" id="pdesc" placeholder="Impeller kit, 3.0L">
-    <label class="fld" for="pqty">How many</label>
-    <input class="txt mono" id="pqty" inputmode="decimal" placeholder="1">
+    ${qtyField('pqty', 'How many')}
     <label class="fld" for="pnote">Note (optional)</label>
     <input class="txt" id="pnote" placeholder="Down to the last one">
     <div class="row" style="margin-top:14px">
@@ -365,6 +364,7 @@ function renderPartRequest() {
   </form>`;
 
   $('back').onclick = () => renderHome();
+  bindQtySteppers(view);
   $('scanreq').onclick = () => {
     const holder = $('reqscanner');
     if (state.scanning) { stopScanning(); holder.innerHTML = ''; return; }
@@ -729,6 +729,38 @@ function renderJob() {
   }
 }
 
+/**
+ * A quantity box with minus and plus either side, stepping by one.
+ *
+ * Separate from the time steppers on purpose: those move a pair of boxes as
+ * one duration and carry between them, these move one box on its own. The
+ * markup is shared, the behaviour is not, so the buttons carry data-qty and
+ * the time ones do not.
+ */
+function qtyField(id, label) {
+  return `
+    <label class="fld" for="${id}">${label}</label>
+    <div class="stepper">
+      <button type="button" data-qty="${id}" data-by="-1" aria-label="One fewer">&minus;</button>
+      <input class="txt mono" id="${id}" inputmode="decimal" placeholder="1">
+      <button type="button" data-qty="${id}" data-by="1" aria-label="One more">+</button>
+    </div>`;
+}
+
+function bindQtySteppers(root) {
+  root.querySelectorAll('.stepper button[data-qty]').forEach((button) => {
+    button.onclick = () => {
+      const field = $(button.dataset.qty);
+      if (!field) return;
+      const next = (Number(field.value) || 0) + Number(button.dataset.by);
+      // Below one is not a quantity, it is "no number given" — which the
+      // optional box is entitled to be, and which the save reads as one.
+      // Rounded because a mechanic may well have typed 1.5 quarts.
+      field.value = next < 1 ? '' : String(Math.round(next * 100) / 100);
+    };
+  });
+}
+
 /** The two boxes as one figure in whole minutes. */
 function timeTotal() {
   const hours = Number(($('hours') || {}).value || 0) || 0;
@@ -782,7 +814,7 @@ function drawFields() {
     // The steppers work on the pair as one duration, not on one box each, so
     // five more minutes at 55 reads 1h 00m rather than 60m — and five fewer
     // at 1h 00m goes back to 55m instead of stopping dead at zero minutes.
-    box.querySelectorAll('.stepper button').forEach((button) => {
+    box.querySelectorAll('.stepper button:not([data-qty])').forEach((button) => {
       button.onclick = () => setTimeTotal(timeTotal() + Number(button.dataset.by));
     });
     const digits = (event) => event.target.value.replace(/[^0-9]/g, '').slice(0, 4);
@@ -832,8 +864,7 @@ function drawFields() {
         <button class="btn ghost sm" type="button" id="scanpart">Scan</button>
       </div>
       <div id="partscanner"></div>
-      <label class="fld" for="qty">Quantity used (optional)</label>
-      <input class="txt mono" id="qty" inputmode="decimal" placeholder="1">
+      ${qtyField('qty', 'Quantity used (optional)')}
 
       <label class="checkline">
         <input type="checkbox" id="needorder">
@@ -841,8 +872,7 @@ function drawFields() {
           <small>Goes on the parts list for the service writer.</small></span>
       </label>
       <div id="orderqtybox" class="hidden">
-        <label class="fld" for="orderqty">How many to order</label>
-        <input class="txt mono" id="orderqty" inputmode="decimal" placeholder="1">
+        ${qtyField('orderqty', 'How many to order')}
       </div>
 
       <label class="checkline">
@@ -851,12 +881,12 @@ function drawFields() {
           <small>Puts a replacement on the same list.</small></span>
       </label>
       <div id="restockqtybox" class="hidden">
-        <label class="fld" for="restockqty">How many to restock</label>
-        <input class="txt mono" id="restockqty" inputmode="decimal" placeholder="1">
+        ${qtyField('restockqty', 'How many to restock')}
       </div>`;
 
     // The quantity is asked for the moment the box is ticked, because a part
     // on the list with no number against it is a phone call later.
+    bindQtySteppers(box);
     [['needorder', 'orderqtybox', 'orderqty'], ['needrestock', 'restockqtybox', 'restockqty']]
       .forEach(([check, wrap, field]) => {
         $(check).onchange = () => {
