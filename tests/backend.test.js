@@ -309,6 +309,68 @@ describe('the job alert', () => {
   });
 });
 
+describe('the writer\'s working list', () => {
+  /** Walks a job all the way to done, optionally ticking paid. */
+  function finish(id, paid) {
+    backend.fn('setStatusByWriter', adminToken, id, 'work_finished');
+    backend.fn('markDone', adminToken, id);
+    if (paid) backend.fn('setJobFlag', adminToken, id, 'paid', true);
+  }
+
+  it('drops a job once it is done AND paid', () => {
+    const { id } = seedJob('01-8886');
+    seedJob('01-8887');
+    finish(id, true);
+    const open = backend.fn('listJobs', adminToken, { status: 'open' }).jobs;
+    expect(open.map((j) => j.id)).toEqual(['01-8887']);
+  });
+
+  it('keeps a job that is done but not paid', () => {
+    const { id } = seedJob();
+    finish(id, false);
+    // The work is over, so nothing else will bring this back to the writer's
+    // attention — which is exactly why it has to stay on the list.
+    const open = backend.fn('listJobs', adminToken, { status: 'open' }).jobs;
+    expect(open.map((j) => j.id)).toContain(id);
+  });
+
+  it('brings one back if the paid tick comes off again', () => {
+    const { id } = seedJob();
+    finish(id, true);
+    expect(backend.fn('listJobs', adminToken, { status: 'open' }).jobs).toHaveLength(0);
+    backend.fn('setJobFlag', adminToken, id, 'paid', false);
+    expect(backend.fn('listJobs', adminToken, { status: 'open' }).jobs
+      .map((j) => j.id)).toContain(id);
+  });
+
+  it('counts the open ones alongside the statuses', () => {
+    const a = seedJob('01-8886');
+    seedJob('01-8887');
+    finish(a.id, true);
+    const counts = backend.fn('listJobs', adminToken, { status: 'open' }).counts;
+    expect(counts.open).toBe(1);
+    expect(counts.done).toBe(1);
+  });
+
+  it('still shows everything when asked for all', () => {
+    const { id } = seedJob('01-8886');
+    seedJob('01-8887');
+    finish(id, true);
+    expect(backend.fn('listJobs', adminToken, { status: 'all' }).jobs).toHaveLength(2);
+    // And a named status is unaffected by any of this.
+    expect(backend.fn('listJobs', adminToken, { status: 'done' }).jobs
+      .map((j) => j.id)).toEqual([id]);
+  });
+
+  it('searches within the open list rather than around it', () => {
+    const { id } = seedJob('01-8886');
+    seedJob('01-8887');
+    finish(id, true);
+    const found = backend.fn('listJobs', adminToken, { status: 'open', search: 'Jane' }).jobs;
+    expect(found.map((j) => j.id)).toEqual(['01-8887']);
+  });
+});
+
 describe('what a job page costs to open', () => {
   it('leaves the timeline for when it is asked for', () => {
     const { id } = seedJob();

@@ -574,7 +574,13 @@ await admin.fill('#jobpartdesc', 'Impeller kit, 3.0L');
 await admin.fill('#jobpartqty', '2');
 await admin.fill('#jobpartnote', 'Customer called Tuesday');
 await admin.click('#addjobpart');
-await admin.waitForSelector('.ticketparts', { timeout: 20000 });
+// The ticket already had a part on it from the mechanic's entry, so waiting
+// for .ticketparts catches the render BEFORE this one lands and the node is
+// swapped out from under the read. Wait for the part itself.
+await admin.waitForFunction(() => {
+  const box = document.querySelector('.ticketparts');
+  return Boolean(box) && box.innerText.includes('PHONE-9000');
+}, null, { timeout: 20000 });
 const ticket = await admin.evaluate(() => document.querySelector('.ticketparts').innerText);
 check('the part lands on the job ticket', /PHONE-9000/.test(ticket), ticket.slice(0, 160));
 check('and reads as still to order', /to order/i.test(ticket), ticket.slice(0, 160));
@@ -603,7 +609,10 @@ check('and gets ticked off when it arrives',
   await admin.locator('.partrow:has-text("PHONE-9000") [data-receive]').count() === 0);
 
 await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
-await admin.waitForSelector('.ticketparts', { timeout: 20000 });
+await admin.waitForFunction(() => {
+  const box = document.querySelector('.ticketparts');
+  return Boolean(box) && box.innerText.includes('PHONE-9000');
+}, null, { timeout: 20000 });
 check('and the job ticket says it arrived',
   /arrived/i.test(await admin.evaluate(() => document.querySelector('.ticketparts').innerText)));
 await admin.screenshot({ path: `${SHOTS}/59-phone-part.png`, fullPage: true });
@@ -742,6 +751,27 @@ check('and the timeline still is not',
 check('and says test mode kept it in the building', /test mode, so that was the shop/i.test(afterSend),
   afterSend.slice(afterSend.search(/Invoice emailed/i), afterSend.search(/Invoice emailed/i) + 160));
 await admin.screenshot({ path: `${SHOTS}/45b-invoice-sent.png`, fullPage: true });
+
+/* ---------------------------------------------------- the writer's shortlist */
+console.log('\n== the jobs list defaults to what is open ==');
+await admin.goto(`${BASE}/admin/`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.chip', { timeout: 20000 });
+const chips = await admin.evaluate(() => [...document.querySelectorAll('.chip')].map((c) => c.textContent.trim()));
+check('Open jobs is the first filter and the one selected',
+  /^Open jobs/.test(chips[0]) && /^Open jobs/.test(await admin.evaluate(
+    () => document.querySelector('.chip.on').textContent.trim())), chips.join(' | '));
+check('and All sits just before Done',
+  chips[chips.length - 2] === 'All' && /^Done/.test(chips[chips.length - 1]), chips.join(' | '));
+
+// This job has been marked done and paid earlier in the run, so it is finished
+// with the writer and has no business on their working list.
+check('a job that is done and paid is off the list',
+  !(await admin.evaluate(() => document.body.innerText)).includes(invoiceNumber));
+await admin.goto(`${BASE}/admin/?status=all`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.jobrow', { timeout: 20000 });
+check('but All still finds it',
+  (await admin.evaluate(() => document.body.innerText)).includes(invoiceNumber));
+await admin.screenshot({ path: `${SHOTS}/60-open-jobs.png`, fullPage: true });
 
 /* ------------------------------------------------------ the QR on the paper */
 console.log('\n== what a customer scanning the work order gets ==');

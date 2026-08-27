@@ -240,6 +240,22 @@ middle — and differs in the two ways that matter.
 - A new tab needs `setup()` run once, same as a new column. `sheet_` already
   fails with "Run setup()." if the tab is missing, so this one guards itself.
 
+## The writer's jobs list
+
+Defaults to **Open jobs**, and open means *not (done AND paid)* — see
+`isOpenJob_`. Not simply "not done": a closed ticket the customer has not
+settled is still the writer's problem, and it is the one most easily lost,
+because the work is over and nothing else will bring it back to their
+attention. Ticking paid is what takes a job off the list; untick it and the
+job comes back.
+
+The chip order is Open jobs, the four statuses, **All**, Done. All sits next
+to Done at the far end on purpose: those two are what you go looking for,
+not what you should land on.
+
+Open carries no query parameter, being the default, so `?` is the working
+list and `?status=all` is everything.
+
 ## Parts, and the writer's checklist
 
 - A **part entry** can carry two extra asks: order one for this job, and put one

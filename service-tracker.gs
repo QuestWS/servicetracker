@@ -696,13 +696,29 @@ function attachWorkOrder(token, id, pdfBase64) {
   return { job: jobSummary_(jobRow_(id)) };
 }
 
+/**
+ * A job is finished with the writer when it is both done AND paid.
+ *
+ * Not simply done: a closed ticket the customer has not settled is still the
+ * writer's problem, and it is the one most easily forgotten — the work is
+ * over, so nothing else brings it back to their attention. So "open" means
+ * anything still wanting something from the office.
+ */
+function isOpenJob_(job) {
+  return !(job.status === 'done' && job.paid_at);
+}
+
 function listJobs(token, filter) {
   requireAdmin_(token);
   filter = filter || {};
   const search = String(filter.search || '').trim().toLowerCase();
   const jobs = rows_('Jobs')
     .filter(function (job) {
-      if (filter.status && filter.status !== 'all' && job.status !== filter.status) return false;
+      if (filter.status === 'open') {
+        if (!isOpenJob_(job)) return false;
+      } else if (filter.status && filter.status !== 'all' && job.status !== filter.status) {
+        return false;
+      }
       if (!search) return true;
       return [job.id, job.customer_name, job.boat_info, job.customer_phone]
         .join(' ').toLowerCase().indexOf(search) !== -1;
@@ -718,9 +734,10 @@ function listJobs(token, filter) {
     })
     .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
 
-  const byStatus = {};
+  const byStatus = { open: 0 };
   rows_('Jobs').forEach(function (job) {
     byStatus[job.status] = (byStatus[job.status] || 0) + 1;
+    if (isOpenJob_(job)) byStatus.open += 1;
   });
   return { jobs: jobs, counts: byStatus, testMode: testMode_() };
 }

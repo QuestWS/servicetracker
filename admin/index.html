@@ -155,8 +155,14 @@ async function consumeMagicLink(nonce) {
 
 /* --------------------------------------------------------------- jobs --- */
 
+// Open first, because that is the working list. "All" sits at the far end
+// next to Done — the two you go looking for rather than land on.
+const JOB_FILTERS = ['open', 'received', 'work_underway', 'work_finished', 'all', 'done'];
+const JOB_FILTER_LABEL = Object.assign({ open: 'Open jobs', all: 'All' }, STATUS_LABEL);
+
 async function renderJobs() {
-  const status = params.get('status') || 'all';
+  // Open is the default, so it is the one that carries no parameter.
+  const status = params.get('status') || 'open';
   const search = params.get('q') || '';
   view.innerHTML = `<p class="loading">Loading jobs…</p>`;
   const { jobs, counts, testMode: mode } = await api('listJobs', [{ status, search }]);
@@ -164,9 +170,10 @@ async function renderJobs() {
 
   const href = (value) => {
     const next = new URLSearchParams();
-    if (value !== 'all') next.set('status', value);
+    if (value !== 'open') next.set('status', value);
     if (search) next.set('q', search);
-    return `?${next.toString()}`;
+    const query = next.toString();
+    return query ? `?${query}` : '?';
   };
 
   view.innerHTML = `
@@ -183,12 +190,12 @@ async function renderJobs() {
     <form class="row" id="searchform" style="margin-bottom:14px">
       <input class="txt" id="q" placeholder="Invoice #, customer or boat" value="${esc(search)}" style="flex:1 1 240px">
       <button class="btn ghost" type="submit">Search</button>
-      ${search || status !== 'all' ? `<a class="btn ghost" href="?">Clear</a>` : ''}
+      ${search || status !== 'open' ? `<a class="btn ghost" href="?">Clear</a>` : ''}
     </form>
 
     <div class="row tight" style="margin-bottom:14px">
-      <a class="chip${status === 'all' ? ' on' : ''}" href="${href('all')}">All</a>
-      ${STATUSES.map((value) => `<a class="chip${status === value ? ' on' : ''}" href="${href(value)}">${STATUS_LABEL[value]}</a>`).join('')}
+      ${JOB_FILTERS.map((value) => `<a class="chip${status === value ? ' on' : ''}" href="${href(value)}">${
+        JOB_FILTER_LABEL[value]}${value === 'open' ? ` (${counts.open || 0})` : ''}</a>`).join('')}
     </div>
 
     ${jobs.length ? `<div class="joblist">${jobs.map((job) => `
@@ -209,7 +216,11 @@ async function renderJobs() {
           <span class="sub" style="min-width:78px;text-align:right">${relativeDays(job.updatedAt)}</span>
         </div>
       </a>`).join('')}</div>`
-    : `<div class="empty">${search || status !== 'all' ? 'No jobs match that filter.' : 'No jobs yet. Upload a BiT work order to create the first one.'}</div>`}`;
+    : `<div class="empty">${
+        search ? 'No jobs match that search.'
+        : status === 'open' ? 'Nothing open. Every job is done and paid.'
+        : status !== 'all' ? 'No jobs at that stage.'
+        : 'No jobs yet. Upload a BiT work order to create the first one.'}</div>`}`;
 
   $('searchform').onsubmit = (event) => {
     event.preventDefault();
