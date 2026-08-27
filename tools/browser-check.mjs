@@ -924,6 +924,20 @@ check('and it is the real module that loaded, not the planted one',
 check('a watchdog stands behind all of it',
   await phone.evaluate(() => typeof window.__questBooted === 'boolean'));
 check('and it knows the app got up', await phone.evaluate(() => window.__questBooted === true));
+
+// A stale stylesheet leaves a page that works but looks wrong, which the
+// watchdog cannot see — so the way out has to be reachable on purpose, and
+// from every screen, including one that failed to draw.
+check('and there is an always-present way to update the app',
+  await phone.locator('#updateapp').count() === 1);
+check('which lives outside the screen that redraws',
+  await phone.evaluate(() => {
+    const button = document.getElementById('updateapp');
+    const view = document.getElementById('view');
+    return Boolean(button && view && !view.contains(button));
+  }));
+check('and it can actually throw the caches away',
+  await phone.evaluate(() => typeof window.__questReset === 'function'));
 check('mechanic PWA console clean', pwaErrors.length === 0, pwaErrors.join(' | '));
 await pwa.close();
 

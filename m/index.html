@@ -31,6 +31,11 @@
     <a href="./" style="text-decoration:none;color:#fff"><div class="t">Quest Shop</div></a>
   </div>
   <main id="view"><p class="loading" style="color:#9fc3dc">Starting up…</p></main>
+  <!-- Sits outside #view on purpose: every screen redraws that, and the one
+       time this is needed most is the time a screen did not draw. A phone
+       running a half-updated copy of the app looks wrong rather than broken,
+       so nothing else on the page would offer a way out of it. -->
+  <p class="mech-foot"><button type="button" id="updateapp">Update the app</button></p>
 </div>
 
 <!-- A watchdog, deliberately NOT a module.
@@ -43,6 +48,30 @@
      cached, and load again. -->
 <script>
   window.__questBooted = false;
+
+  /**
+   * Throw away the service worker and everything it has cached, then load
+   * again. Lives out here rather than in the module because the watchdog
+   * below has to be able to call it when the module is exactly what failed.
+   */
+  window.__questReset = function () {
+    var steps = [];
+    if (window.caches && caches.keys) {
+      steps.push(caches.keys().then(function (keys) {
+        return Promise.all(keys.map(function (key) { return caches.delete(key); }));
+      }));
+    }
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+      steps.push(navigator.serviceWorker.getRegistrations().then(function (regs) {
+        return Promise.all(regs.map(function (reg) { return reg.unregister(); }));
+      }));
+    }
+    Promise.all(steps).catch(function () {}).then(function () {
+      // A cache-busting query, because what is being recovered from can be a
+      // stale copy of this very page.
+      location.replace(location.pathname + '?fresh=' + Date.now());
+    });
+  };
   setTimeout(function () {
     if (window.__questBooted) return;
     var view = document.getElementById('view');
@@ -53,27 +82,7 @@
       'stored and loading again fixes it. Nothing you have logged is on the phone, so nothing ' +
       'is lost.</p>' +
       '<button class="btn navy big block" type="button" id="resetapp">Clear and try again</button></div>';
-    document.getElementById('resetapp').onclick = function () {
-      var button = document.getElementById('resetapp');
-      button.disabled = true;
-      button.textContent = 'Clearing…';
-      var steps = [];
-      if (window.caches && caches.keys) {
-        steps.push(caches.keys().then(function (keys) {
-          return Promise.all(keys.map(function (key) { return caches.delete(key); }));
-        }));
-      }
-      if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
-        steps.push(navigator.serviceWorker.getRegistrations().then(function (regs) {
-          return Promise.all(regs.map(function (reg) { return reg.unregister(); }));
-        }));
-      }
-      Promise.all(steps).catch(function () {}).then(function () {
-        // A cache-busting query, because the failure being recovered from can
-        // itself be a stale copy of this very page.
-        location.replace(location.pathname + '?fresh=' + Date.now());
-      });
-    };
+    document.getElementById('resetapp').onclick = window.__questReset;
   }, 8000);
 </script>
 
@@ -85,6 +94,13 @@ import { $, esc, toast, formatDateTime, fileToBase64, preparePhoto, driveImageUr
 
 // The module evaluated, so the watchdog above has nothing to recover from.
 window.__questBooted = true;
+
+$('updateapp').onclick = () => {
+  const button = $('updateapp');
+  button.disabled = true;
+  button.textContent = 'Updating…';
+  window.__questReset();
+};
 
 if ('serviceWorker' in navigator) {
   // updateViaCache: 'none' — the worker script itself must never come from the
