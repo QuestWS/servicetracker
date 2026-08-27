@@ -798,6 +798,12 @@ console.log('\n== going live ==');
 await admin.goto(`${BASE}/admin/?view=setup`, { waitUntil: 'networkidle' });
 await admin.waitForSelector('#golive');
 const setupText = await admin.evaluate(() => document.body.innerText);
+// The page says whether the sheet has caught up with the code, so nobody has
+// to hold "did setup() get run after that deploy?" in their head.
+check('App setup reports the sheet is up to date',
+  await admin.locator('.banner.ok:has-text("up to date")').count() === 1,
+  (await admin.evaluate(() => document.body.innerText)).slice(0, 200));
+
 check('the setup page offers no customer page to switch on',
   !/tracking|customer page/i.test(setupText), setupText.slice(0, 200));
 await admin.screenshot({ path: `${SHOTS}/47-golive.png`, fullPage: true });

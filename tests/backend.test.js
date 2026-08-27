@@ -309,6 +309,82 @@ describe('the job alert', () => {
   });
 });
 
+describe('whether the sheet has caught up with the code', () => {
+  it('says so when it has', () => {
+    seedJob();
+    const status = backend.fn('sheetStatus', adminToken);
+    expect(status.ready).toBe(true);
+    expect(status.missing).toHaveLength(0);
+    expect(status.drifted).toBe(0);
+  });
+
+  it('names the columns a deploy added and setup() has not written yet', () => {
+    seedJob();
+    const jobs = backend.sheet('Jobs');
+    // Exactly the state a deploy leaves behind: new code, old header.
+    jobs.rows[0] = jobs.rows[0].filter((column) => column !== 'alert' && column !== 'alert_at');
+    const status = backend.fn('sheetStatus', adminToken);
+    expect(status.ready).toBe(false);
+    const gap = status.missing.find((m) => m.tab === 'Jobs');
+    expect(gap.columns).toEqual(['alert', 'alert_at']);
+  });
+
+  it('names a tab that does not exist yet', () => {
+    seedJob();
+    backend.fn('ss_').deleteSheet(backend.sheet('PropRepairs'));
+    const status = backend.fn('sheetStatus', adminToken);
+    expect(status.ready).toBe(false);
+    expect(status.missing.find((m) => m.tab === 'PropRepairs').absent).toBe(true);
+  });
+
+  it('counts jobs whose totals have drifted from the log', () => {
+    const { id } = seedJob();
+    const job = backend.fn('jobRow_', id);
+    backend.fn('updateRow_', 'Jobs', job._row, { entry_count: 99, minutes_total: 9999 });
+    const status = backend.fn('sheetStatus', adminToken);
+    expect(status.ready).toBe(false);
+    expect(status.drifted).toBe(1);
+    expect(status.driftedIds).toContain(id);
+    // And it is read-only: asking twice does not quietly fix anything.
+    expect(backend.fn('sheetStatus', adminToken).drifted).toBe(1);
+    expect(Number(backend.fn('jobRow_', id).entry_count)).toBe(99);
+  });
+
+  it('goes quiet once setup has been run', () => {
+    const { id } = seedJob();
+    const job = backend.fn('jobRow_', id);
+    backend.fn('updateRow_', 'Jobs', job._row, { entry_count: 99 });
+    expect(backend.fn('sheetStatus', adminToken).ready).toBe(false);
+    backend.fn('recountJobTotals_');
+    expect(backend.fn('sheetStatus', adminToken).ready).toBe(true);
+  });
+
+  it('is the writer\'s to ask', () => {
+    const { mech } = seedJob();
+    expect(() => backend.fn('sheetStatus', mech)).toThrow();
+  });
+
+  it('stays clean through everything that writes a log entry', () => {
+    // The bug this check was built to find: addWriterNote and setJobAlert
+    // appended a row straight to the tab and never touched the running
+    // totals, so a job with an office note on it under-reported itself on
+    // the writer's list. Every path that adds an entry belongs here.
+    const { id, token, mech } = seedJob();
+    backend.fn('addEntry', mech, token, { entryType: 'labor', minutes: 20, text: 'Stint.' });
+    backend.fn('addWriterNote', adminToken, id, 'Ring the owner before you start.');
+    backend.fn('setJobAlert', adminToken, id, 'Do not start.');
+    backend.fn('addJobPart', adminToken, id, { partIdentifier: 'IMP-1' });
+
+    const status = backend.fn('sheetStatus', adminToken);
+    expect(status.drifted).toBe(0);
+    expect(status.ready).toBe(true);
+    // And the count on the list is the count in the log.
+    const listed = backend.fn('listJobs', adminToken, { status: 'open' }).jobs
+      .find((j) => j.id === id);
+    expect(listed.entryCount).toBe(backend.fn('getJob', adminToken, id).entries.length);
+  });
+});
+
 describe('the writer\'s working list', () => {
   /** Walks a job all the way to done, optionally ticking paid. */
   function finish(id, paid) {

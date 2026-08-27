@@ -1490,7 +1490,29 @@ async function renderSetup() {
   const appUrl = `${SITE_URL}/m/`;
   const settings = await api('config', []);
   showTestBanner(settings.testMode);
+  // Asked for separately so a failure here cannot take the whole page down —
+  // the sheet being behind is exactly when you most need this page to load.
+  let sheet = null;
+  try { sheet = await api('sheetStatus', []); } catch { sheet = null; }
   view.innerHTML = `
+    ${sheet ? (sheet.ready
+      ? `<div class="banner ok" style="margin-bottom:16px"><b>The sheet is up to date.</b>
+          Every tab and column the current code expects is there, and every job's totals agree
+          with the log.</div>`
+      : `<div class="banner warn" style="margin-bottom:16px">
+          <b>The sheet is behind the code — run <code>setup()</code>.</b>
+          <div style="margin-top:6px">Open the Apps Script project, pick <b>setup</b> from the
+            function list and run it once. It only ever adds what is missing.</div>
+          ${sheet.missing.length ? `<ul style="margin:8px 0 0 18px">${sheet.missing.map((gap) =>
+            `<li>${gap.absent
+              ? `The <b>${esc(gap.tab)}</b> tab does not exist yet`
+              : `<b>${esc(gap.tab)}</b> is missing: ${gap.columns.map((c) => `<code>${esc(c)}</code>`).join(', ')}`}</li>`).join('')}</ul>` : ''}
+          ${sheet.drifted ? `<div style="margin-top:8px">${sheet.drifted} job${sheet.drifted === 1 ? '' : 's'}
+            have entry or time totals that disagree with the log${sheet.driftedIds.length
+              ? ` (${sheet.driftedIds.map((id) => esc(id)).join(', ')}${sheet.drifted > sheet.driftedIds.length ? ', …' : ''})` : ''}.
+            Running setup() recounts them.</div>` : ''}
+        </div>`) : ''}
+
     <h1 class="page-title">Put the app on a phone</h1>
     <p class="lead">
       Do this once per phone or iPad. After it is on the home screen, the daily routine is: tap the

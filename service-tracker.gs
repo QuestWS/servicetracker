@@ -489,6 +489,7 @@ function doPost(e) {
     setJobAlert:      function (a) { return setJobAlert(data.token, a[0], a[1]); },
     jobHistory:       function (a) { return jobHistory(data.token, a[0]); },
     setJobFlag:       function (a) { return setJobFlag(data.token, a[0], a[1], a[2]); },
+    sheetStatus:      function (a) { return sheetStatus(data.token); },
     listMechanics:    function (a) { return listMechanicsAdmin(data.token); },
     addMechanic:      function (a) { return addMechanic(data.token, a[0]); },
     renameMechanic:   function (a) { return renameMechanic(data.token, a[0], a[1]); },
@@ -1089,21 +1090,7 @@ function addEntry(token, jobToken, payload) {
       }
     }
 
-    // The job row was read before the lock was taken, so another save may have
-    // landed in between. Re-read inside the lock before incrementing, or two
-    // mechanics saving at once both write the same number and one is lost.
-    forget_('Jobs');
-    const current = jobRow_(job.id);
-    const totals = {
-      entry_count: Number(current.entry_count || 0) + 1,
-      minutes_total: Number(current.minutes_total || 0) +
-        (type === 'labor' ? minutesFromHours_(hours) : 0)
-    };
-    updateRow_('Jobs', current._row, {
-      entry_count: totals.entry_count,
-      minutes_total: totals.minutes_total,
-      updated_at: nowIso_()
-    });
+    const saved = bumpJobEntryTotals_(job.id, type === 'labor' ? minutesFromHours_(hours) : 0);
 
     // No entries in the answer. It used to hand back every entry on the job —
     // a full read of the LogEntries tab, which grows forever — to return a
@@ -1111,10 +1098,6 @@ function addEntry(token, jobToken, payload) {
     //
     // The job comes back too: logging the first entry moves the status, and
     // the phone should not go on showing "Received" after it has.
-    // Built from the row just read plus the two figures just written, rather
-    // than read a third time: updateRow_ drops the memo, so asking again would
-    // mean another full pass over the Jobs tab to learn what we already know.
-    const saved = Object.assign({}, current, totals);
     return {
       entry: entryView_(entry),
       job: jobSummary_(saved),
@@ -2341,6 +2324,7 @@ function setJobAlert(token, id, text) {
       notified_at: '',
       created_at: nowIso_()
     });
+    bumpJobEntryTotals_(job.id, 0);
   }
   return { job: jobSummary_(jobRow_(id)), entries: entriesForJob_(job.id) };
 }
@@ -2371,6 +2355,7 @@ function addWriterNote(token, id, text) {
     created_at: nowIso_()
   };
   appendRow_('LogEntries', entry);
+  bumpJobEntryTotals_(job.id, 0);
   return { entry: entryView_(entry), entries: entriesForJob_(job.id) };
 }
 
@@ -2761,7 +2746,36 @@ function ensureSheets_(spreadsheet) {
  * Reads both tabs once. Only writes the jobs whose figures were actually
  * wrong, so a healthy shop pays nothing for having it run.
  */
-function recountJobTotals_() {
+/**
+ * Adds one entry to a job's running totals.
+ *
+ * Every path that appends a LogEntries row has to come through here, and two
+ * of them did not: addWriterNote and setJobAlert wrote an entry straight to
+ * the tab, so a job carrying an office note or an alert under-reported itself
+ * on the writer's list. sheetStatus caught it the first time it was asked.
+ *
+ * Re-reads the row rather than trusting a copy taken earlier: the caller may
+ * have read it before the lock, and two writes landing together would both
+ * save the same number and lose one.
+ */
+function bumpJobEntryTotals_(jobId, addedMinutes) {
+  forget_('Jobs');
+  const job = jobRow_(jobId);
+  if (!job) return null;
+  const totals = {
+    entry_count: Number(job.entry_count || 0) + 1,
+    minutes_total: Number(job.minutes_total || 0) + (addedMinutes || 0)
+  };
+  updateRow_('Jobs', job._row, {
+    entry_count: totals.entry_count,
+    minutes_total: totals.minutes_total,
+    updated_at: nowIso_()
+  });
+  return Object.assign({}, job, totals);
+}
+
+/** Which jobs' stored totals disagree with the log. Reads only. */
+function jobTotalsDrift_() {
   const counts = {};
   const minutes = {};
   rows_('LogEntries').forEach(function (entry) {
@@ -2772,17 +2786,60 @@ function recountJobTotals_() {
     }
   });
 
-  const fixed = [];
+  const out = [];
   rows_('Jobs').forEach(function (job) {
     const id = String(job.id);
     const wantCount = counts[id] || 0;
     const wantMinutes = minutes[id] || 0;
     if (Number(job.entry_count || 0) === wantCount &&
         Number(job.minutes_total || 0) === wantMinutes) return;
-    updateRow_('Jobs', job._row, { entry_count: wantCount, minutes_total: wantMinutes });
-    fixed.push(id);
+    out.push({ id: id, row: job._row, entryCount: wantCount, minutesTotal: wantMinutes });
   });
-  return fixed;
+  return out;
+}
+
+function recountJobTotals_() {
+  return jobTotalsDrift_().map(function (job) {
+    updateRow_('Jobs', job.row, { entry_count: job.entryCount, minutes_total: job.minutesTotal });
+    return job.id;
+  });
+}
+
+/**
+ * Whether the sheet has caught up with the code — read only, changes nothing.
+ *
+ * A deploy ships code; setup() is what writes new tabs and columns into the
+ * sheet, and nothing forces the two to happen together. Until they do, a new
+ * feature either fails with "Run setup()." or, worse, saves into a column the
+ * header does not name and silently reads back empty.
+ *
+ * That gap used to live in somebody's memory. Now the App setup page asks.
+ */
+function sheetStatus(token) {
+  requireAdmin_(token);
+  const spreadsheet = ss_();
+  const missing = [];
+  Object.keys(SHEETS).forEach(function (name) {
+    const sheet = spreadsheet.getSheetByName(name);
+    if (!sheet) {
+      missing.push({ tab: name, columns: [], absent: true });
+      return;
+    }
+    const header = sheet.getRange(1, 1, 1, SHEETS[name].length).getValues()[0];
+    const gaps = SHEETS[name].filter(function (column) { return header.indexOf(column) === -1; });
+    if (gaps.length) missing.push({ tab: name, columns: gaps, absent: false });
+  });
+
+  // Only worth asking once the columns exist; before that every job "drifts".
+  const columnsReady = !missing.length;
+  const drift = columnsReady ? jobTotalsDrift_().map(function (job) { return job.id; }) : [];
+
+  return {
+    ready: columnsReady && !drift.length,
+    missing: missing,
+    drifted: drift.length,
+    driftedIds: drift.slice(0, 10)
+  };
 }
 
 function repairCoercedIds_() {
