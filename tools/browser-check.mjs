@@ -672,9 +672,11 @@ check('and says test mode kept it in the building', /test mode, so that was the 
   afterSend.slice(afterSend.search(/Invoice emailed/i), afterSend.search(/Invoice emailed/i) + 160));
 await admin.screenshot({ path: `${SHOTS}/45b-invoice-sent.png`, fullPage: true });
 
-/* ------------------------------------------------------- as an internal tool */
-console.log('\n== customer page switched off ==');
-// A real customer has no shop session, which is the whole point.
+/* ------------------------------------------------------ the QR on the paper */
+console.log('\n== what a customer scanning the work order gets ==');
+// The QR stamped on every work order points at /t/, and that paper cannot be
+// recalled, so the address has to keep answering. Customer tracking is
+// scrapped: what it answers is the shop's phone number and nothing else.
 const stranger = await shopContext({ viewport: { width: 430, height: 900 } });
 const outsider = await stranger.newPage();
 const outsiderErrors = [];
@@ -682,39 +684,21 @@ outsider.on('pageerror', (error) => outsiderErrors.push(String(error)));
 await outsider.goto(`${BASE}/t/?j=${token}`, { waitUntil: 'networkidle' });
 await outsider.waitForSelector('.card', { timeout: 15000 });
 const dark = await outsider.evaluate(() => document.body.innerText);
-check('a customer scanning the QR sees a holding message', /we have your boat/i.test(dark), dark.slice(0, 140));
-check('which promises no link that is never coming', !/we will email you a link/i.test(dark));
-check('and shows none of their job', !dark.includes('runs clean') && !dark.includes('1,632.47'));
-await outsider.screenshot({ path: `${SHOTS}/46-internal-only.png`, fullPage: true });
-
-console.log('\n== switching the customer page on ==');
-await admin.goto(`${BASE}/admin/?view=setup`, { waitUntil: 'networkidle' });
-await admin.waitForSelector('#trackon');
-await admin.screenshot({ path: `${SHOTS}/47-setup.png`, fullPage: true });
-admin.once('dialog', (dialog) => dialog.accept());
-await admin.click('#trackon');
-await admin.waitForSelector('#trackoff', { timeout: 20000 });
-check('the tracking page switches on', await admin.locator('#trackoff').count() > 0);
-
-await outsider.reload({ waitUntil: 'networkidle' });
-await outsider.waitForSelector('.card', { timeout: 15000 });
-const holding = await outsider.evaluate(() => document.body.innerText);
-check('but test mode still holds the customer back', /not quite ready/i.test(holding), holding.slice(0, 140));
-check('and still shows none of their job', !holding.includes('runs clean'));
-await outsider.screenshot({ path: `${SHOTS}/46-holding.png`, fullPage: true });
-
-// The same link in the service writer's browser, which IS signed in.
-const preview = await desk.newPage();
-await preview.goto(`${BASE}/t/?j=${token}`, { waitUntil: 'networkidle' });
-await preview.waitForSelector('.status-hero', { timeout: 15000 });
-const previewed = await preview.evaluate(() => document.body.innerText);
-check('while staff previewing it see the real page', previewed.includes('runs clean'));
-check('and are told it is a preview', previewed.includes('Test mode'));
-await preview.close();
+check('a customer scanning the QR gets the shop, not a job', /815-433-2200/.test(dark), dark.slice(0, 160));
+check('and none of their job', !dark.includes('runs clean') && !dark.includes('1,632.47'));
+check('and no mention of tracking anything', !/track/i.test(dark), dark.slice(0, 200));
+// A bad token has nothing to look up, so it cannot fail differently.
+await outsider.goto(`${BASE}/t/?j=ZZZZZZZZZZZZZZZZZZZZ`, { waitUntil: 'networkidle' });
+check('and a wrong code reaches the same place rather than an error',
+  /815-433-2200/.test(await outsider.evaluate(() => document.body.innerText)));
+await outsider.screenshot({ path: `${SHOTS}/46-qr-landing.png`, fullPage: true });
 
 console.log('\n== going live ==');
 await admin.goto(`${BASE}/admin/?view=setup`, { waitUntil: 'networkidle' });
 await admin.waitForSelector('#golive');
+const setupText = await admin.evaluate(() => document.body.innerText);
+check('the setup page offers no customer page to switch on',
+  !/tracking|customer page/i.test(setupText), setupText.slice(0, 200));
 await admin.screenshot({ path: `${SHOTS}/47-golive.png`, fullPage: true });
 admin.once('dialog', (dialog) => dialog.accept());
 await admin.click('#golive');
@@ -722,48 +706,57 @@ await admin.waitForSelector('#gotest', { timeout: 20000 });
 check('going live is one switch', await admin.locator('#gotest').count() > 0);
 check('and the warning banner goes', await admin.locator('#testbanner .banner').count() === 0);
 
-/* ----------------------------------------------------------------- customer */
-console.log('\n== customer, now live ==');
-const customer = outsider;
-const customerErrors = outsiderErrors;
-await customer.reload({ waitUntil: 'networkidle' });
-await customer.waitForSelector('.status-hero', { timeout: 15000 });
-// What the customer can actually READ. Checking page source would match the
-// page's own template strings and quietly pass on a real leak.
-const seen = await customer.evaluate(() => document.body.innerText);
-check('shows the customer note', seen.includes('runs clean'));
-check('hides the internal note', !seen.includes('winterised'));
-check("hides the office's note to the floor", !seen.includes('pull the lower unit'));
-check('hides the labor description', !seen.includes('impeller housing'));
-check('hides the hours figure', !seen.includes('1.5 h') && !seen.includes('1h 30m'));
-check('hides the part number', !seen.includes('6BH-44352'));
-check('hides the mechanic name', !seen.includes('Dale'));
-check('hides the red alert entirely', !seen.includes('disputing'));
-check('and says nothing about the prop that went out',
-  !seen.includes('3-blade') && !/prop/i.test(seen));
-check('offers the invoice now the job is done', seen.includes('View your invoice'));
-// The number that matters: what they owe after their deposit, not the total.
-check('shows the balance, not the grand total', seen.includes('$1,632.47'), seen.slice(0, 300));
-check('never shows the grand total', !seen.includes('16,917.79'));
-check('the pay button carries the figure', seen.includes('Pay $1,632.47'));
-check('no longer says it is a preview', !seen.includes('Test mode'));
-await customer.screenshot({ path: `${SHOTS}/44-customer.png`, fullPage: true });
-
-// And the wire itself, since a page can only render what it was sent.
-const wire = await customer.evaluate(async (base) => {
-  const token = new URLSearchParams(location.search).get('j');
-  const res = await fetch(`${base}/exec`, {
+/* ------------------------------------------------------ the boundary itself */
+console.log('\n== the customer boundary, on the wire ==');
+// No page renders this any more, but publicJob and customerView_ are still in
+// the backend and verify.sh still guards them — so the boundary has to keep
+// being tested. Switched on deliberately here, through the API rather than a
+// button, precisely because there is no button: this asks what the code would
+// disclose if the shop ever turned it back on.
+const wire = await admin.evaluate(async ({ base, jobToken }) => {
+  const shop = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const post = (fn, args, tok) => fetch(`${base}/exec`, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ fn: 'publicJob', args: [token] }),
-  });
-  return res.text();
-}, BASE);
-check('sends the customer nothing internal', !/6BH-44352|impeller housing|Dale|hours/.test(wire), wire.slice(0, 200));
-check('and nothing about the alert', !/disputing|alert/i.test(wire), wire.slice(0, 200));
+    body: JSON.stringify({ fn, token: tok, args }),
+  }).then((res) => res.text());
+  await post('setCustomerTracking', [true], shop);
+  const body = await post('publicJob', [jobToken]);
+  await post('setCustomerTracking', [false], shop);
+  return body;
+}, { base: BASE, jobToken: token });
+check('the customer note is what comes through', /runs clean/.test(wire), wire.slice(0, 160));
+check('and nothing internal does',
+  !/6BH-44352|impeller housing|winterised|pull the lower unit|Dale/.test(wire), wire.slice(0, 240));
+check('not the hours', !/"hours":\s*[0-9]/.test(wire));
+check('not the red alert', !/disputing|alert/i.test(wire));
+check('not the prop that went out', !/3-blade|prop/i.test(wire));
+// The balance after deposits, never the grand total.
+check('the balance is disclosed, the grand total is not',
+  wire.includes('1632.47') && !wire.includes('16917.79'), wire.slice(0, 240));
 
-await customer.goto(`${BASE}/t/?j=ZZZZZZZZZZZZZZZZZZZZ`, { waitUntil: 'networkidle' });
-check('a wrong token says so plainly', (await customer.content()).includes('Link not found'));
+/* ------------------------------------------------- nothing says "tracking" */
+// Wording is exactly the kind of thing that creeps back one hint at a time,
+// so this reads what is actually on the screen — innerText, not source, which
+// would match template strings the page never renders.
+for (const [where, url] of [
+  ['the jobs list', `${BASE}/admin/`],
+  ['a job page', `${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`],
+  ['intake', `${BASE}/admin/?view=intake`],
+  ['the parts list', `${BASE}/admin/?view=parts`],
+  ['app setup', `${BASE}/admin/?view=setup`],
+]) {
+  await admin.goto(url, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('.card, .jobrow, .page-title', { timeout: 20000 });
+  const words = await admin.evaluate(() => document.body.innerText);
+  check(`${where} says nothing about tracking or a customer page`,
+    !/tracking|customer page/i.test(words),
+    (words.match(/.{0,40}(tracking|customer page).{0,40}/i) || [''])[0]);
+}
+const floorWords = await mech.evaluate(() => document.body.innerText);
+check('and neither does the mechanic app',
+  !/tracking|customer page/i.test(floorWords),
+  (floorWords.match(/.{0,40}(tracking|customer page).{0,40}/i) || [''])[0]);
 
 /* --------------------------------------------------------- open jobs list */
 console.log('\n== picking a job off the list ==');
@@ -983,7 +976,7 @@ await pwa.close();
 console.log('\n== page errors ==');
 check('service writer console clean', adminErrors.length === 0, adminErrors.join(' | '));
 check('mechanic console clean', mechErrors.length === 0, mechErrors.join(' | '));
-check('customer console clean', customerErrors.length === 0, customerErrors.join(' | '));
+check('QR landing console clean', outsiderErrors.length === 0, outsiderErrors.join(' | '));
 check('sign-in console clean', visitorErrors.length === 0, visitorErrors.join(' | '));
 check('open-jobs console clean', pickerErrors.length === 0, pickerErrors.join(' | '));
 

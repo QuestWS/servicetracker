@@ -70,8 +70,8 @@ function showTestBanner(on) {
   }
   banner.innerHTML = `<div class="wrap" style="padding-top:14px;padding-bottom:0">
     <div class="banner warn">
-      <b>Test mode.</b> Customers are emailed nothing and see a holding message on their
-      tracking page. Everything else — scanning, logging, hours, the invoice — works for real.
+      <b>Test mode.</b> The invoice email goes to the shop instead of the customer.
+      Everything else — scanning, logging, hours, the invoice — works for real.
       <a href="?view=setup" style="margin-left:6px">Go live when you are ready →</a>
     </div>
   </div>`;
@@ -306,22 +306,13 @@ async function renderJob(id) {
             ${job.workOrderFile
               ? `<a class="btn ghost" href="${driveFileUrl(job.workOrderFile)}" target="_blank" rel="noreferrer">Open stamped work order (PDF)</a>`
               : `<div class="banner warn">No stamped work order on file. Re-run intake if the printed copy has no QR code.</div>`}
-            <label class="fld">${data.customerTracking ? 'Customer tracking link' : 'Job link (shop only)'}</label>
+            <label class="fld">Work order link (shop only)</label>
             <div class="row tight" style="flex-wrap:nowrap">
               <input class="txt mono" readonly value="${esc(job.trackingUrl)}" id="tracklink">
               <button class="btn ghost sm" type="button" id="copy">Copy</button>
             </div>
-            <a class="btn ghost" href="${esc(job.trackingUrl)}" target="_blank" rel="noreferrer">
-              ${data.customerTracking && !data.testMode ? 'Open the customer page' : 'Preview the customer page'}
-            </a>
-            ${!data.customerTracking
-              ? `<p class="hint">The customer page is switched off, so this link is yours, not theirs —
-                 a customer opening it gets a holding message. It is the same address the QR code on
-                 the work order carries, which is what mechanics scan.</p>`
-              : data.testMode
-                ? `<p class="hint">You can see it because you are signed in here. A customer
-                   opening the same link gets a holding message until you go live.</p>`
-                : ''}
+            <p class="hint">The address the QR code on the work order carries — what a mechanic's
+              phone opens when they scan it. Not for customers.</p>
           </div>
         </section>
 
@@ -438,8 +429,7 @@ async function renderJob(id) {
             <b style="font-family:var(--mono)">${formatMoney(job.grandTotal)}</b></div>` : ''}
           ${job.deposits ? `<div class="kv"><span class="k">Deposits already paid</span>
             <b style="font-family:var(--mono)">${formatMoney(job.deposits)}</b></div>` : ''}
-          <p class="hint">Shown in the invoice email next to the payment link${data.customerTracking
-            ? ', and on their tracking page' : ''}.</p>
+          <p class="hint">Shown in the invoice email next to the payment link.</p>
         </section>` : ''}
 
         <section class="card">
@@ -545,7 +535,7 @@ async function renderJob(id) {
   $('copy').onclick = async () => {
     try {
       await navigator.clipboard.writeText(job.trackingUrl);
-      toast('Tracking link copied.');
+      toast('Work order link copied.');
     } catch {
       $('tracklink').select();
     }
@@ -878,7 +868,7 @@ function renderCreated(job, stampedBytes, warning) {
     </div>
     <div class="stack">
       <a class="btn navy" href="${url}" target="_blank" rel="noreferrer">Open print-ready work order</a>
-      <label class="fld">Customer tracking link</label>
+      <label class="fld">Work order link (shop only)</label>
       <div class="row tight" style="flex-wrap:nowrap">
         <input class="txt mono" readonly value="${esc(trackingUrl(SITE_URL, job.token))}" id="newlink">
         <button class="btn ghost sm" type="button" id="copynew">Copy</button>
@@ -891,7 +881,7 @@ function renderCreated(job, stampedBytes, warning) {
   showStage('done');
   $('again').onclick = () => { intake = null; renderIntake(); };
   $('copynew').onclick = async () => {
-    try { await navigator.clipboard.writeText($('newlink').value); toast('Tracking link copied.'); }
+    try { await navigator.clipboard.writeText($('newlink').value); toast('Work order link copied.'); }
     catch { $('newlink').select(); }
   };
 }
@@ -1110,7 +1100,7 @@ async function renderParts() {
     button.onclick = () => {
       const lines = button.dataset.delete.split(',').length;
       // Deleting is the one thing here that cannot be undone, so it asks —
-      // the same way going live and switching tracking on do.
+      // the same way going live does.
       if (!confirm(`Delete ${button.dataset.what} — ${lines} line${lines === 1 ? '' : 's'}? `
         + 'This cannot be undone. Archive it instead if you only want it off this list.')) return;
       api('deleteParts', [button.dataset.delete.split(',')])
@@ -1461,10 +1451,9 @@ async function renderSetup() {
       ${settings.testMode ? `
         <p style="font-size:15px;line-height:1.55;margin-bottom:12px">
           <b>On.</b> Run as many real work orders through as you like. Scanning, logging, hours,
-          photos and the invoice all behave exactly as they will in production — the only
-          differences are that the customer's finished-job email goes to
-          <b>${esc(settings.testEmail)}</b> instead of the customer, and their tracking page shows a
-          holding message to anyone who is not signed in here.
+          photos and the invoice all behave exactly as they will in production — the one
+          difference is that the customer's finished-job email goes to
+          <b>${esc(settings.testEmail)}</b> instead of to them.
         </p>
         <p class="hint" style="margin-bottom:14px">
           Turn this off when you are happy. From that moment, pressing <b>Email the invoice</b> on a
@@ -1477,28 +1466,6 @@ async function renderSetup() {
           goes to the customer.
         </p>
         <button class="btn ghost block" type="button" id="gotest">Go back to test mode</button>
-      `}
-    </section>
-
-    <section class="card" style="margin-top:16px">
-      <h2>Customer tracking page</h2>
-      ${settings.customerTracking ? `
-        <p style="font-size:15px;line-height:1.55;margin-bottom:12px">
-          <b>On.</b> A customer who scans the QR code on their work order sees the job's status and
-          any customer notes the mechanics wrote, and the invoice email carries a link to it.
-        </p>
-        <button class="btn ghost block" type="button" id="trackoff">Switch the customer page off</button>
-      ` : `
-        <p style="font-size:15px;line-height:1.55;margin-bottom:12px">
-          <b>Off.</b> This is an internal tool. Customers see nothing — scanning the QR code gets a
-          short holding message — and the only thing they ever receive is the invoice email you send
-          by hand from a finished job.
-        </p>
-        <p class="hint" style="margin-bottom:14px">
-          The page and everything behind it are still here, so this is reversible at any time.
-          The QR code stays on the work order regardless: it is what mechanics scan.
-        </p>
-        <button class="btn ghost block" type="button" id="trackon">Switch the customer page on</button>
       `}
     </section>
 
@@ -1524,19 +1491,6 @@ async function renderSetup() {
     toast('Live. The invoice email now reaches customers when you send it.');
   };
 
-  const trackon = $('trackon');
-  if (trackon) trackon.onclick = async () => {
-    if (!confirm('Switch the customer tracking page on? Customers scanning their work order will start seeing job status and customer notes.')) return;
-    await api('setCustomerTracking', [true]);
-    renderSetup();
-    toast('Customer page on.');
-  };
-  const trackoff = $('trackoff');
-  if (trackoff) trackoff.onclick = async () => {
-    await api('setCustomerTracking', [false]);
-    renderSetup();
-    toast('Customer page off. Customers see a holding message.');
-  };
   const gotest = $('gotest');
   if (gotest) gotest.onclick = async () => {
     await api('setTestMode', [true]);

@@ -12,14 +12,20 @@ short list of things that are easy to get wrong.
 2. **Never "New deployment."** It mints a new `/exec` URL, orphaning all four
    pages and every QR code already printed on paper. Update the existing
    deployment — the Actions workflow is built so you cannot do otherwise.
-3. **This is an internal tool.** The customer tracking page is off
-   (`CUSTOMER_TRACKING`, default `off`) and the only thing a customer ever
-   receives is the invoice email a writer sends by hand from a finished job.
-   `markDone` closes the ticket and sends nothing; `sendInvoiceEmail` is a
-   separate call behind a separate button. Do not put those back together, and
-   do not add a send to a status change or a trigger. The tracking code is
-   kept whole on purpose — the shop may want it back — so gate it, never
-   delete it.
+3. **This is an internal tool, and customer tracking is scrapped.** The only
+   thing a customer ever receives is the invoice email a writer sends by hand
+   from a finished job. `markDone` closes the ticket and sends nothing;
+   `sendInvoiceEmail` is a separate call behind a separate button. Do not put
+   those back together, and do not add a send to a status change or a trigger.
+
+   **Nothing any user sees may mention a customer tracking page.** Not the
+   portal, not the mechanic app, not the landing page, not `/t/`, not an
+   email. `publicJob`, `customerView_` and `setCustomerTracking` are still in
+   the backend and still guarded — they are dead but benign, and the boundary
+   is still tested on the wire so it cannot rot. Nothing calls them from a
+   page. `/t/` itself still has to answer, because the QR code on every
+   printed work order points at it and that paper cannot be recalled; it
+   answers with the shop's phone number.
 4. **The customer sees customer notes and nothing else.** Internal notes,
    labor hours, part numbers, quantities, mechanic names and the shop's own
    figures never reach `/t/`, at any status. The filter is `customerView_`, it
@@ -350,13 +356,13 @@ as what would have been sent, and (when tracking is on) holds `/t/` back from
 anyone not signed in on the shop side. Everything else behaves as it will in
 production — it is a rehearsal, not a mock.
 
-`CUSTOMER_TRACKING` defaults to **off**, which is the shop's settled plan.
-While off, `publicJob` answers a holding notice to non-staff and the invoice
-email carries no tracking link. `publicJob` returns a `reason` of `test` or
-`off` so `/t/` can say the right thing: a rehearsal ends and promises a link
-later, an internal-only shop does not.
+`CUSTOMER_TRACKING` defaults to **off** and there is no longer any way to
+turn it on from a page — the App setup card that did is gone. It survives as a
+script property the backend still reads, which is what keeps `publicJob`
+honest and testable. While off, the invoice email carries no link at all.
 
-The QR code goes on the work order either way — it is what a mechanic scans.
+The QR code goes on the work order regardless — it is what a mechanic scans,
+and `/t/` answers anyone else with the shop's phone number.
 
 Note that `scripts/serve.mjs` rewrites `API_URL` and `SITE_URL` as it serves
 `config.js`, so the local preview and `browser-check.mjs` can never reach the

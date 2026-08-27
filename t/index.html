@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Your service job — Quest Watersports</title>
+<title>Quest Watersports</title>
 <meta name="robots" content="noindex, nofollow">
 <link rel="icon" type="image/png" href="../assets/quest-mark.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -19,155 +19,47 @@
 <link rel="stylesheet" href="../assets/app.css">
 </head>
 <body>
+<!--
+  The QR code stamped on every work order points here, and thousands of those
+  are printed on paper that cannot be recalled. So this address has to keep
+  answering forever, and answer something sensible to whoever opens it.
+
+  A mechanic scanning it does not land here: the mechanic app reads the token
+  out of the QR and opens the job in /m/. The only person who reaches this page
+  is someone pointing a plain camera at a work order — which, in practice, is a
+  customer. They get the shop's phone number, which is what they actually
+  wanted, and nothing else.
+
+  The backend that once served a job to this page is still there and still
+  guarded by customerView_ and publicJob, so the boundary tests still mean
+  something. Nothing calls it from here any more.
+-->
 <header class="tracker-head">
   <div class="inner">
     <img src="../assets/quest-mark.png" alt="">
     <div>
       <div class="co">Quest Watersports</div>
-      <div class="sub">Service tracking</div>
+      <div class="sub">Ottawa, IL</div>
     </div>
   </div>
 </header>
 
-<main class="wrap narrow" id="main">
-  <p class="loading" id="loading">Looking up your job…</p>
+<main class="wrap narrow">
+  <section class="card" style="margin-top:22px;text-align:center">
+    <h2>This code is for the shop</h2>
+    <p class="lead" style="margin:10px auto 0">
+      It is how our technicians pull your boat's work order up on their phones.
+    </p>
+    <p class="lead" style="margin:14px auto 0">
+      Wondering how your boat is getting on? Give us a call and we will tell you.
+    </p>
+    <p style="margin:18px 0 4px">
+      <a class="btn navy big" href="tel:+18154332200">815-433-2200</a>
+    </p>
+    <p class="hint" style="margin-top:14px">
+      <a href="mailto:service@questwatersports.com">service@questwatersports.com</a>
+    </p>
+  </section>
 </main>
-
-<script type="module">
-import { api } from '../assets/lib/api.js';
-import { STATUSES, STATUS_CUSTOMER } from '../assets/lib/entry-types.js';
-import { $, esc, formatDate, formatDateTime, driveImageUrl } from '../assets/lib/ui.js';
-import { formatMoney } from '../assets/lib/parse-invoice.js';
-
-const STEP_LABELS = {
-  received: 'Received',
-  work_underway: 'In the shop',
-  work_finished: 'Work done',
-  done: 'Ready',
-};
-
-function stepsHtml(status) {
-  const here = STATUSES.indexOf(status);
-  return `<div class="steps">${STATUSES.map((value, index) => `
-    <div class="step${index < here ? ' on' : ''}${index === here ? ' here' : ''}">
-      <div class="bar"></div>
-      <div class="lab">${STEP_LABELS[value]}</div>
-    </div>`).join('')}</div>`;
-}
-
-function feedHtml(entries) {
-  if (!entries.length) {
-    return `<div class="empty">No updates posted yet. Anything the shop wants you to see will show up here.</div>`;
-  }
-  return `<div class="feed">${entries.map((entry) => `
-    <article class="entry customer_note">
-      <div class="meta"><time datetime="${esc(entry.createdAt)}">${formatDateTime(entry.createdAt)}</time></div>
-      ${entry.text ? `<div class="body">${esc(entry.text)}</div>` : ''}
-      ${entry.photos.length ? `<div class="photos">${entry.photos.map((photo) => `
-        <a href="${driveImageUrl(photo.full, 1600)}" target="_blank" rel="noreferrer">
-          <img src="${driveImageUrl(photo.thumb, 400)}" alt="Job photo" loading="lazy">
-        </a>`).join('')}</div>` : ''}
-    </article>`).join('')}</div>`;
-}
-
-/**
- * Test mode, seen by somebody who is not shop staff. The job is real and the
- * link is right — the shop simply is not showing this yet.
- */
-/**
- * Two reasons this page is dark, and the customer is owed a different
- * sentence by each. `test` is a rehearsal that ends; `off` is the shop
- * running the tracker internally, where no link is ever coming — so it does
- * not promise one.
- */
-function holding(shop, reason) {
-  const line = reason === 'off'
-    ? `Your job is with us and being worked on. We will be in touch as soon as it is finished,
-       and your invoice comes by email when the work is complete.`
-    : `Your job is with us and being worked on — this page just is not switched on yet.
-       We will email you a link the moment it is.`;
-  $('main').innerHTML = `
-    <div class="card" style="text-align:center;margin-top:24px">
-      <h1 class="page-title">${reason === 'off' ? 'We have your boat' : 'Not quite ready'}</h1>
-      <p class="lead" style="margin:12px auto 0">${line}</p>
-      <p class="hint" style="margin-top:16px">
-        Anything you need in the meantime, call ${esc(shop.name)}${shop.phone ? ` at ${esc(shop.phone)}` : ''}.
-      </p>
-    </div>`;
-}
-
-function render(data) {
-  if (data.notLive) return holding(data.shop, data.reason);
-  const { job, entries, shop } = data;
-  const state = STATUS_CUSTOMER[job.status];
-  const invoiceUrl = job.invoiceFile ? `https://drive.google.com/file/d/${encodeURIComponent(job.invoiceFile)}/view` : null;
-
-  $('main').innerHTML = `
-    ${data.testMode ? `<div class="banner warn" style="margin-bottom:16px">
-      <b>Test mode — you are seeing this because you are signed in on the shop side.</b>
-      A customer opening this link gets a holding message instead, and no email has been sent.
-    </div>` : ''}
-    <div class="card" style="margin-bottom:16px">
-      <div class="kv"><span class="k">Your boat</span><b>${esc(job.boatInfo || 'Your unit')}</b></div>
-      <div class="kv"><span class="k">Job number</span><b style="font-family:var(--mono)">${esc(job.id)}</b></div>
-      <div class="kv"><span class="k">Checked in</span><b>${formatDate(job.createdAt)}</b></div>
-    </div>
-
-    <div class="status-hero">
-      <div class="h">${esc(state.headline)}</div>
-      <div class="d">${esc(state.detail)}</div>
-    </div>
-
-    ${stepsHtml(job.status)}
-
-    ${job.status === 'done' ? `
-      <section class="card gold" style="margin-top:18px">
-        <h2 style="color:#8a6516">Invoice &amp; payment</h2>
-        ${job.amountDue !== null && job.amountDue !== undefined ? `
-          <div class="kv" style="border:0;padding-top:0">
-            <span class="k" style="font-size:16px">Amount due</span>
-            <b style="font-family:var(--mono);font-size:26px">${formatMoney(job.amountDue)}</b>
-          </div>` : ''}
-        <div class="stack">
-          ${invoiceUrl ? `<a class="btn navy" href="${invoiceUrl}" target="_blank" rel="noreferrer">View your invoice (PDF)</a>` : ''}
-          ${job.paymentLink ? `<a class="btn gold" href="${esc(job.paymentLink)}" target="_blank" rel="noreferrer">
-            ${job.amountDue !== null && job.amountDue !== undefined ? `Pay ${formatMoney(job.amountDue)}` : 'Pay online'}</a>` : ''}
-          ${!invoiceUrl && !job.paymentLink ? `<p class="hint">Your invoice is on its way — give the shop a call if you need it right now.</p>` : ''}
-        </div>
-      </section>` : ''}
-
-    <section style="margin-top:22px">
-      <h2 style="font-family:var(--disp);font-size:24px;text-transform:uppercase;letter-spacing:.04em;color:var(--navy);margin-bottom:10px">
-        Updates from the shop
-      </h2>
-      ${feedHtml(entries)}
-    </section>
-
-    <p class="hint" style="margin-top:26px;text-align:center">
-      Questions? Call ${esc(shop.name)}${shop.phone ? ` at ${esc(shop.phone)}` : ''} and quote job ${esc(job.id)}.
-    </p>`;
-}
-
-function notFound(message) {
-  $('main').innerHTML = `
-    <div class="card" style="text-align:center">
-      <h1 class="page-title">Link not found</h1>
-      <p class="lead" style="margin:10px auto 0">${esc(message)}</p>
-    </div>`;
-}
-
-const token = new URLSearchParams(location.search).get('j');
-if (!token) {
-  notFound('That tracking link is missing its job code. Check that you copied the whole link from your email.');
-} else {
-  api('publicJob', [token])
-    .then(render)
-    .catch((error) => notFound(
-      /does not match/.test(error.message)
-        ? 'That tracking link does not match a job. Check that you copied the whole link from your email, or call the shop and we will send it again.'
-        : error.message,
-    ));
-}
-</script>
 </body>
 </html>
