@@ -309,6 +309,75 @@ describe('the job alert', () => {
   });
 });
 
+describe('what a job page costs to open', () => {
+  it('leaves the timeline for when it is asked for', () => {
+    const { id } = seedJob();
+    const page = backend.fn('getJob', adminToken, id);
+    // A whole-tab read that was happening on every open for a panel nobody
+    // looks at most visits. If it comes back, this says so.
+    expect(page.timeline).toBeUndefined();
+    // Everything the page actually draws is still there.
+    expect(page.job.id).toBe(id);
+    expect(page.entries.length).toBeGreaterThan(0);
+    expect(page.hours.totalMinutes).toBeGreaterThan(0);
+  });
+
+  it('but keeps the mail log, which is not just a panel', () => {
+    const { id } = seedJob();
+    // The page reads this to know whether the invoice has already gone, which
+    // is what the send button hangs off. Deferring it would leave that button
+    // lying until somebody clicked Show.
+    expect(Array.isArray(backend.fn('getJob', adminToken, id).emails)).toBe(true);
+  });
+
+  it('and hands the timeline over when it is asked for', () => {
+    const { id } = seedJob();
+    const history = backend.fn('jobHistory', adminToken, id);
+    expect(Array.isArray(history.timeline)).toBe(true);
+    expect(history.timeline.length).toBeGreaterThan(0);
+  });
+
+  it('which is the writer\'s to ask for', () => {
+    const { id, mech } = seedJob();
+    expect(() => backend.fn('jobHistory', mech, id)).toThrow();
+  });
+});
+
+describe('a job\'s running totals', () => {
+  it('count what the log holds, without reading it', () => {
+    const { id, token, mech } = seedJob();
+    backend.fn('addEntry', mech, token, { entryType: 'labor', minutes: 45, text: 'More.' });
+    const row = backend.fn('jobRow_', id);
+    const entries = backend.fn('getJob', adminToken, id).entries;
+    expect(Number(row.entry_count)).toBe(entries.length);
+    // seedJob logs 1.5h, plus the 45 above.
+    expect(Number(row.minutes_total)).toBe(90 + 45);
+  });
+
+  it('are what the jobs list reports', () => {
+    const { id, token, mech } = seedJob();
+    backend.fn('addEntry', mech, token, { entryType: 'labor', minutes: 30, text: 'More.' });
+    const listed = backend.fn('listJobs', adminToken, {}).jobs.find((j) => j.id === id);
+    expect(listed.minutes).toBe(120);
+    expect(listed.entryCount).toBe(backend.fn('getJob', adminToken, id).entries.length);
+  });
+
+  it('are put right by setup when they drift', () => {
+    const { id } = seedJob();
+    // Whatever could desync them — a hand edit, a row written outside
+    // addEntry — the recount is the answer, and it only touches what is wrong.
+    const job = backend.fn('jobRow_', id);
+    backend.fn('updateRow_', 'Jobs', job._row, { entry_count: 99, minutes_total: 9999 });
+    const fixed = backend.fn('recountJobTotals_');
+    expect(fixed).toContain(id);
+    const after = backend.fn('jobRow_', id);
+    expect(Number(after.entry_count)).toBe(backend.fn('getJob', adminToken, id).entries.length);
+    expect(Number(after.minutes_total)).toBe(90);
+    // A second pass has nothing left to do.
+    expect(backend.fn('recountJobTotals_')).toHaveLength(0);
+  });
+});
+
 describe('the writer putting a part on a job', () => {
   it('lands on the same list a mechanic would have put it on', () => {
     const { id } = seedJob();

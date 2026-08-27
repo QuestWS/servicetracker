@@ -314,8 +314,20 @@ Script for now. `tools/bench-reads.mjs` reproduces the numbers — run it before
 and after any change that claims to make things faster.
 
 The short version: a Sheet has no index, `rows_` reads the whole tab, and
-`_rowCache` is per-execution — so at 400 jobs one `addEntry` reads 64,000
-cells to append one row, and that figure grows linearly forever.
+`_rowCache` is per-execution. At 400 jobs one `addEntry` used to read 64,000
+cells to append one row, growing linearly forever.
+
+Steps 1–3 are done: `addEntry` is down 67% and `listJobs` 84%, and neither
+reads the log at all any more, so neither grows with the shop. Two rules came
+out of it and both matter:
+
+- **`entry_count` and `minutes_total` on Jobs are derived**, so `setup()` runs
+  `recountJobTotals_` to backfill and to put right anything that ever drifts.
+  A derived number nothing checks is a number that rots.
+- **`addEntry` re-reads the Jobs row inside the lock** before incrementing.
+  The row it already had was read before the lock was taken; without the
+  re-read two mechanics saving at once both write the same total and one is
+  lost.
 
 
 Apps Script charges for round trips, and a save used to make a lot of them.

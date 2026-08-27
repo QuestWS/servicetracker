@@ -42,16 +42,45 @@ They encode `SITE_URL` (the Pages site), not the `/exec` URL. Only `API_URL`
 in `assets/lib/config.js` changes — provided the migration preserves job
 tokens.
 
+## Where it got to (27 Aug 2026)
+
+Steps 1, 2 and most of 3 are done. Measured the same way, 400 jobs / 3,200
+entries:
+
+```
+                        before            after
+  addEntry              64,058 cells      20,852   -67%
+  listJobs              64,075 cells      10,426   -84%
+  getJob                70,534 cells      64,928   -8%   (6 reads -> 5)
+  jobForMechanic        64,086 cells      64,888   unchanged
+```
+
+`addEntry` and `listJobs` no longer read the log at all, so neither grows with
+the shop any more. What is left is step 4, and it is the only thing that will
+move `jobForMechanic` and `getJob`: both genuinely need every entry on the job
+to draw the feed, so the fix is having fewer entries in the live tab, not
+reading them more cleverly.
+
+Two things learned in the doing, both recorded below:
+
+- Deferring the **mail log** off `getJob` looked identical to deferring the
+  timeline and was not. The page reads it to know whether the invoice has
+  already gone, which is what the send button hangs off — defer it and the
+  button lies until somebody clicks Show. Only the timeline moved.
+- `addEntry` re-reads the Jobs row **inside** the lock before incrementing. The
+  row it had was read before the lock was taken, so two mechanics saving at
+  once would both write the same number and one would be lost.
+
 ## The work, in order
 
-### 0. Instrument first (small, do it first)
+### 0. Instrument first — STILL WORTH DOING
 
 Have `api()` in `assets/lib/api.js` time every call, and show the figure in the
 portal — a corner readout, or the App setup page. Twenty minutes, and it turns
 "feels slow" into a number, including the Apps Script overhead this plan could
 not measure. Everything below is judged against it.
 
-### 1. `addEntry` stops returning the whole log  — halves a save
+### 1. `addEntry` stops returning the whole log — DONE
 
 `addEntry` ends with `entries: entriesForJob_(job.id)`, purely to hand back a
 list the phone already has. That call is a full LogEntries read.
@@ -67,7 +96,7 @@ list the phone already has. That call is a full LogEntries read.
 Expect `addEntry` 2 reads → 1. Covered by the existing browser-check assertions
 that a saved entry appears in the feed.
 
-### 2. Running totals on Jobs — takes LogEntries out of the jobs list
+### 2. Running totals on Jobs — DONE
 
 `listJobs` reads all 3,200 entries only to count them per job and sum hours.
 
@@ -81,7 +110,7 @@ that a saved entry appears in the feed.
 
 Expect `listJobs` ~64,000 cells → ~10,000. Needs `setup()` run once.
 
-### 3. `getJob` stops fetching what nobody is looking at — 5 reads → 3
+### 3. `getJob` stops fetching what nobody is looking at — DONE (timeline only)
 
 `getJob` reads Jobs, LogEntries, PropRepairs, StatusEvents and EmailLog on
 every open. Timeline and Email log are the two nobody reads on most visits —

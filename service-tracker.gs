@@ -174,7 +174,11 @@ const SHEETS = {
          'status', 'needs_review', 'work_order_file', 'invoice_file', 'payment_link',
          'created_at', 'updated_at', 'work_started_at', 'work_finished_at', 'done_at',
          'grand_total', 'deposits', 'amount_due',
-         'parts_ordered_at', 'paid_at', 'work_requested', 'alert', 'alert_at'],
+         'parts_ordered_at', 'paid_at', 'work_requested', 'alert', 'alert_at',
+         // Running totals, so the jobs list and a save never have to read
+         // every log entry in the shop to count this job's. Repaired by
+         // recountJobTotals_ from setup(), which is also what backfills them.
+         'entry_count', 'minutes_total'],
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
                'transcript_id', 'transcript_error', 'notified_at', 'created_at',
@@ -483,6 +487,7 @@ function doPost(e) {
     markLogged:       function (a) { return markEntriesLogged(data.token, a[0]); },
     addWriterNote:    function (a) { return addWriterNote(data.token, a[0], a[1]); },
     setJobAlert:      function (a) { return setJobAlert(data.token, a[0], a[1]); },
+    jobHistory:       function (a) { return jobHistory(data.token, a[0]); },
     setJobFlag:       function (a) { return setJobFlag(data.token, a[0], a[1], a[2]); },
     listMechanics:    function (a) { return listMechanicsAdmin(data.token); },
     addMechanic:      function (a) { return addMechanic(data.token, a[0]); },
@@ -694,16 +699,6 @@ function attachWorkOrder(token, id, pdfBase64) {
 function listJobs(token, filter) {
   requireAdmin_(token);
   filter = filter || {};
-  const entries = rows_('LogEntries');
-  const counts = {};
-  const hours = {};
-  entries.forEach(function (entry) {
-    counts[entry.job_id] = (counts[entry.job_id] || 0) + 1;
-    if (entry.entry_type === 'labor' && entry.hours) {
-      hours[entry.job_id] = (hours[entry.job_id] || 0) + minutesFromHours_(entry.hours);
-    }
-  });
-
   const search = String(filter.search || '').trim().toLowerCase();
   const jobs = rows_('Jobs')
     .filter(function (job) {
@@ -714,8 +709,10 @@ function listJobs(token, filter) {
     })
     .map(function (job) {
       const summary = jobSummary_(job);
-      summary.entryCount = counts[job.id] || 0;
-      summary.minutes = hours[job.id] || 0;
+      // Off the job row. Counting these used to mean reading every log entry
+      // in the shop on every load of this page.
+      summary.entryCount = Number(job.entry_count || 0);
+      summary.minutes = Number(job.minutes_total || 0);
       summary.hours = hoursFromMinutes_(summary.minutes);
       return summary;
     })
@@ -741,8 +738,31 @@ function getJob(token, id) {
     hours: laborTotals_(entries),
     props: propsForJob_(id),
     parts: partsForJob_(id),
-    timeline: rows_('StatusEvents').filter(function (event) { return event.job_id === id; }),
+    // The mail log stays. It is not just a panel: the page reads it to know
+    // whether the invoice has already gone, which is what the send button
+    // hangs off. The status timeline is display only, so that one is fetched
+    // when asked for — see jobHistory.
     emails: rows_('EmailLog').filter(function (mail) { return mail.job_id === id; }).reverse()
+  };
+}
+
+/**
+ * The status timeline for one job, fetched only when the writer asks for it.
+ *
+ * It used to ride along with getJob, which meant another whole-tab read on
+ * every single open of a job page for a panel nobody looks at most visits.
+ *
+ * Only the timeline moved. The mail log looked like the same kind of thing and
+ * is not: the page reads it to decide whether the invoice has already been
+ * sent, so deferring it would have left the send button lying until somebody
+ * clicked Show.
+ */
+function jobHistory(token, id) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such job.');
+  return {
+    timeline: rows_('StatusEvents').filter(function (event) { return event.job_id === id; })
   };
 }
 
@@ -1052,14 +1072,39 @@ function addEntry(token, jobToken, payload) {
       }
     }
 
-    const entries = entriesForJob_(job.id);
+    // The job row was read before the lock was taken, so another save may have
+    // landed in between. Re-read inside the lock before incrementing, or two
+    // mechanics saving at once both write the same number and one is lost.
+    forget_('Jobs');
+    const current = jobRow_(job.id);
+    const totals = {
+      entry_count: Number(current.entry_count || 0) + 1,
+      minutes_total: Number(current.minutes_total || 0) +
+        (type === 'labor' ? minutesFromHours_(hours) : 0)
+    };
+    updateRow_('Jobs', current._row, {
+      entry_count: totals.entry_count,
+      minutes_total: totals.minutes_total,
+      updated_at: nowIso_()
+    });
+
+    // No entries in the answer. It used to hand back every entry on the job —
+    // a full read of the LogEntries tab, which grows forever — to return a
+    // list the phone already had. It appends the one new entry itself.
+    //
     // The job comes back too: logging the first entry moves the status, and
     // the phone should not go on showing "Received" after it has.
+    // Built from the row just read plus the two figures just written, rather
+    // than read a third time: updateRow_ drops the memo, so asking again would
+    // mean another full pass over the Jobs tab to learn what we already know.
+    const saved = Object.assign({}, current, totals);
     return {
       entry: entryView_(entry),
-      entries: entries,
-      job: jobSummary_(jobRow_(job.id)),
-      hours: laborTotals_(entries),
+      job: jobSummary_(saved),
+      hours: {
+        total: hoursFromMinutes_(Number(saved.minutes_total || 0)),
+        totalMinutes: Number(saved.minutes_total || 0)
+      },
       transcribe: entry.transcript_status === 'pending' ? { entryId: entry.id, audioFile: audioFile } : null
     };
   });
@@ -2687,6 +2732,42 @@ function ensureSheets_(spreadsheet) {
  *
  * Safe to re-run: a row already holding text is left alone.
  */
+/**
+ * Recounts every job's entry_count and minutes_total from the log itself.
+ *
+ * The running totals exist so the jobs list and every save can avoid reading
+ * the whole LogEntries tab. A derived number that nothing ever checks is a
+ * number that drifts, so this is the check: it is what backfills the columns
+ * the first time, and what puts them right if anything ever writes an entry
+ * without going through addEntry.
+ *
+ * Reads both tabs once. Only writes the jobs whose figures were actually
+ * wrong, so a healthy shop pays nothing for having it run.
+ */
+function recountJobTotals_() {
+  const counts = {};
+  const minutes = {};
+  rows_('LogEntries').forEach(function (entry) {
+    const id = String(entry.job_id);
+    counts[id] = (counts[id] || 0) + 1;
+    if (entry.entry_type === 'labor' && entry.hours) {
+      minutes[id] = (minutes[id] || 0) + minutesFromHours_(entry.hours);
+    }
+  });
+
+  const fixed = [];
+  rows_('Jobs').forEach(function (job) {
+    const id = String(job.id);
+    const wantCount = counts[id] || 0;
+    const wantMinutes = minutes[id] || 0;
+    if (Number(job.entry_count || 0) === wantCount &&
+        Number(job.minutes_total || 0) === wantMinutes) return;
+    updateRow_('Jobs', job._row, { entry_count: wantCount, minutes_total: wantMinutes });
+    fixed.push(id);
+  });
+  return fixed;
+}
+
 function repairCoercedIds_() {
   const fixed = [];
   const map = {};
@@ -2748,6 +2829,7 @@ function setup() {
   _ss = spreadsheet;
   ensureSheets_(spreadsheet);
   const repaired = repairCoercedIds_();
+  const recounted = recountJobTotals_();
   rootFolder_();
   secret_();
   installTriggers_();
@@ -2756,6 +2838,9 @@ function setup() {
     repaired.length
       ? 'Repaired ' + repaired.length + ' job id(s) Sheets had read as dates: ' + repaired.join(', ')
       : 'Job ids are stored as text. Nothing to repair.',
+    recounted.length
+      ? 'Recounted entries and time on ' + recounted.length + ' job(s).'
+      : 'Every job\'s entry and time totals already agreed with the log.',
     'Spreadsheet: ' + spreadsheet.getUrl(),
     'Drive folder: https://drive.google.com/drive/folders/' + props_().getProperty('DRIVE_FOLDER_ID'),
     '',

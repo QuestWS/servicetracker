@@ -1117,7 +1117,10 @@ async function saveEntry() {
   button.textContent = 'Saving…';
   try {
     const result = await api('addEntry', [state.job.token, payload]);
-    state.entries = result.entries;
+    // The save no longer hands back the whole log — reading it cost a full
+    // scan of every entry in the shop to return a list this page already has.
+    // The feed is oldest first, so the new one goes on the end.
+    state.entries = state.entries.concat([result.entry]);
     if (result.job) state.job = result.job;
     if (result.hours) state.hours = result.hours;
     state.audio = null;

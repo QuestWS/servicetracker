@@ -608,6 +608,18 @@ check('and the job ticket says it arrived',
   /arrived/i.test(await admin.evaluate(() => document.querySelector('.ticketparts').innerText)));
 await admin.screenshot({ path: `${SHOTS}/59-phone-part.png`, fullPage: true });
 
+/* --------------------------------------------------- history, when asked for */
+// The timeline and the mail log used to ride along with every job page open,
+// which was two whole-tab reads for two panels nobody looks at most visits.
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
+check('a job page does not draw the timeline until asked',
+  (await admin.evaluate(() => document.getElementById('history').innerText)).trim() === '');
+await admin.click('#showhistory');
+await admin.waitForSelector('#history .kv', { timeout: 20000 });
+const history = await admin.evaluate(() => document.getElementById('history').innerText);
+check('and hands it over when it is', /received|work underway/i.test(history), history.slice(0, 140));
+
+
 /* ------------------------------------------------------------- the alert */
 console.log('\n== the red alert ==');
 // The props list left the portal on another page.
@@ -717,6 +729,16 @@ admin.once('dialog', (dialog) => dialog.accept());
 await admin.click('#sendinvoice');
 await admin.waitForSelector('text=Invoice emailed', { timeout: 30000 });
 const afterSend = await admin.evaluate(() => document.body.innerText);
+// The mail log is NOT deferred, unlike the timeline: the page reads it to know
+// the invoice has gone, and that is what the send button hangs off. So it has
+// to be there on arrival, with nothing clicked.
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.card', { timeout: 20000 });
+check('the mail log is drawn on arrival, without asking',
+  /Email log/i.test(await admin.evaluate(() => document.body.innerText)));
+check('and the timeline still is not',
+  (await admin.evaluate(() => document.getElementById('history').innerText)).trim() === '');
+
 check('and says test mode kept it in the building', /test mode, so that was the shop/i.test(afterSend),
   afterSend.slice(afterSend.search(/Invoice emailed/i), afterSend.search(/Invoice emailed/i) + 160));
 await admin.screenshot({ path: `${SHOTS}/45b-invoice-sent.png`, fullPage: true });

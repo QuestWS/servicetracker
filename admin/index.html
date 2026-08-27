@@ -250,7 +250,7 @@ async function renderJob(id) {
   view.innerHTML = `<p class="loading">Loading job ${esc(id)}…</p>`;
   const data = await api('getJob', [id]);
   showTestBanner(data.testMode);
-  const { job, entries, hours, props, parts, timeline, emails } = data;
+  const { job, entries, hours, props, parts, emails } = data;
   // A mechanic can add to a job after the writer has written the rest up, so
   // the split is per entry rather than a flag on the job.
   const pending = entries.filter((entry) => !entry.loggedAt);
@@ -522,10 +522,11 @@ async function renderJob(id) {
 
         <section class="card">
           <h2>Timeline</h2>
-          ${timeline.map((event) => `<div class="kv">
-            <span class="k">${formatDateTime(event.created_at)}</span>
-            <b>${STATUS_LABEL[event.to_status]}<span style="color:var(--muted);font-weight:400"> · ${esc(String(event.actor_type).replace('_', ' '))}</span></b>
-          </div>`).join('')}
+          <p class="hint" style="margin-top:0">When this job changed hands and status. Fetched when
+            you ask — reading it on every open cost a pass over the whole sheet for a panel nobody
+            looks at most visits.</p>
+          <button class="btn ghost block" type="button" id="showhistory">Show the timeline</button>
+          <div id="history"></div>
         </section>
 
         ${emails.length ? `<section class="card">
@@ -646,6 +647,26 @@ async function renderJob(id) {
       toast('Invoice and payment link saved.');
     } catch (error) {
       button.disabled = false;
+      notice('warn', error.message);
+    }
+  };
+
+  const showhistory = $('showhistory');
+  if (showhistory) showhistory.onclick = async () => {
+    showhistory.disabled = true;
+    showhistory.textContent = 'Loading…';
+    try {
+      const { timeline } = await api('jobHistory', [job.id]);
+      showhistory.remove();
+      $('history').innerHTML = timeline.length
+        ? timeline.map((event) => `<div class="kv">
+            <span class="k">${formatDateTime(event.created_at)}</span>
+            <b>${STATUS_LABEL[event.to_status]}<span style="color:var(--muted);font-weight:400"> · ${esc(String(event.actor_type).replace('_', ' '))}</span></b>
+          </div>`).join('')
+        : `<p class="hint" style="margin:0">Nothing recorded yet.</p>`;
+    } catch (error) {
+      showhistory.disabled = false;
+      showhistory.textContent = 'Show the history';
       notice('warn', error.message);
     }
   };
