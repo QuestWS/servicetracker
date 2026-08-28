@@ -834,6 +834,16 @@ check('App setup reports the sheet is up to date',
 
 check('the setup page offers no customer page to switch on',
   !/tracking|customer page/i.test(setupText), setupText.slice(0, 200));
+
+// Where "it feels slow" turns into a figure somebody can quote back.
+check('the setup page lists what the backend is costing',
+  await admin.locator('#speedlist .kv').count() > 0);
+await admin.click('#timeagain');
+await admin.waitForFunction(
+  () => document.querySelector('#timeagain') &&
+        !document.querySelector('#timeagain').disabled, null, { timeout: 20000 });
+check('and can time it again on demand',
+  /in the sheet/.test(await admin.textContent('#speedlist')));
 await admin.screenshot({ path: `${SHOTS}/47-golive.png`, fullPage: true });
 admin.once('dialog', (dialog) => dialog.accept());
 await admin.click('#golive');
