@@ -118,6 +118,21 @@ a code path that writes to a sheet without going through `appendRow_` or
   job used to be two calls to Apps Script and the second one cost more in
   start-up than in reading. Never let the anonymous branch grow the log, the
   customer's phone or their email: a test asserts each of those is absent.
+- **A save does not make the mechanic wait.** The entry goes into the feed on
+  the tap, marked *Saving…*, the form clears for the next one, and the row
+  settles when the backend answers — only the feed and the running total are
+  redrawn then, never the form, because by that point somebody may be typing
+  into it. A save that fails says **Not saved** in red where the entry is,
+  with a button to send it again, and says it as a toast too in case the
+  mechanic has walked to another screen. Nothing is ever queued past the app
+  closing: a note the phone swallowed is worse than one the mechanic knows
+  did not send.
+
+  `whatIsMissing()` says what the backend would have refused — the part
+  number, the time, the empty note — without a round trip. The backend is
+  still the authority and still checks; this is the same short list said
+  instantly, and it is what keeps the optimistic entry honest.
+
 - **The mechanic app logs three things: Hours, Parts, Notes** — in that order.
   A fourth tab, **Prop**, sits beside them and is deliberately not one of them:
   it writes a PropRepairs row, not a log entry. It shares the strip because
@@ -381,6 +396,12 @@ Every answer carries `serverMs`, and `api()` times the whole round trip — the
 mechanic's footer shows both, and the App setup page lists recent calls. The
 gap between the two numbers is start-up and wifi, which no amount of tidying
 spreadsheet reads will touch.
+
+`ping` is the one function that does nothing, and it earns its place: the
+mechanic app calls it as it opens and again when the scanner comes up, so
+Google has a container running by the time somebody scans. Keep it free — no
+sheet, no property, no credential — and keep the app's `warm()` rate limit,
+or a phone in a pocket becomes a pinger.
 
 Apps Script charges for round trips, and a save used to make a lot of them.
 If a save gets sluggish again, look here first:

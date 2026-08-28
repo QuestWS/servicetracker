@@ -350,6 +350,30 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
 .entry.internal_note { border-left-color: var(--frost); }
 .entry.labor { border-left-color: var(--navy); background: #fafcfe; }
 .entry.part { border-left-color: var(--gold); background: #fffdf8; }
+/* An entry the phone has put in the feed but the backend has not confirmed.
+   Faded rather than hidden: the mechanic can carry on with the next one and
+   still see where this got to. */
+.entry.saving { opacity: .72; }
+.entry.failed { border-left-color: var(--alert); background: #fff6f5; opacity: 1; }
+.entry .savestate {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.entry .savestate.bad { color: var(--alert); }
+.entry .savestate button {
+  margin-left: 8px;
+  border: 1px solid var(--alert);
+  background: #fff;
+  color: var(--alert);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 3px 10px;
+  cursor: pointer;
+}
 .entry .meta {
   display: flex;
   gap: 8px;

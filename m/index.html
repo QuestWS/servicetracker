@@ -112,7 +112,9 @@ $('navhome').onclick = () => { state.job = null; state.jobFrom = null; renderHom
  */
 onApiTiming((call) => {
   const box = $('timing');
-  if (!box) return;
+  // The warm-up is not a call the mechanic made, and its time would sit in
+  // the footer describing nothing they did.
+  if (!box || call.fn === 'ping') return;
   const secs = (ms) => `${(ms / 1000).toFixed(1)}s`;
   box.textContent = call.serverMs === null
     ? secs(call.ms)
@@ -470,6 +472,7 @@ async function signInThen(next) {
 }
 
 function renderScanning() {
+  warm();
   stopScanning();
   view.innerHTML = `<div class="stack">
     ${scannerHtml('Line up the QR code on the work order')}
@@ -487,6 +490,7 @@ function renderScanning() {
 }
 
 function renderManual() {
+  warm();
   stopScanning();
   screen(renderHome);
   view.innerHTML = `<form class="card" id="form">
@@ -669,7 +673,10 @@ function entryHtml(entry) {
   else if (entry.transcriptStatus === 'failed') {
     body = `<div class="body pending">Voice note — transcription failed${entry.transcriptError ? ` (${esc(entry.transcriptError)})` : ''}. The recording is below.</div>`;
   }
-  return `<article class="entry ${entry.entryType}">
+  return `<article class="entry ${entry.entryType}${entry.saveState ? ` ${entry.saveState}` : ''}">
+    ${entry.saveState === 'saving' ? '<div class="savestate">Saving…</div>' : ''}
+    ${entry.saveState === 'failed' ? `<div class="savestate bad">Not saved${entry.saveError ? ` — ${esc(entry.saveError)}` : ''}
+      <button type="button" data-retry="${esc(entry.id)}">Try again</button></div>` : ''}
     <div class="meta">
       <span class="pill ${pill}">${esc(ENTRY_LABEL[entry.entryType])}</span>
       <span>${esc(entry.mechanicName || 'Unknown')}</span><span>·</span>
@@ -681,10 +688,51 @@ function entryHtml(entry) {
     ${entry.audioFile ? `<div class="audiorow">
       <a href="${driveFileUrl(entry.audioFile)}" target="_blank" rel="noreferrer">Open the recording in Drive</a>
     </div>` : ''}
+    ${entry.localPhotos && entry.localPhotos.length ? `<div class="photos">${entry.localPhotos.map((p) => `
+      <img src="data:image/jpeg;base64,${p.thumb}" alt="Job photo">`).join('')}</div>` : ''}
     ${entry.photos.length ? `<div class="photos">${entry.photos.map((p) => `
       <a href="${driveImageUrl(p.full, 1600)}" target="_blank" rel="noreferrer">
         <img src="${driveImageUrl(p.thumb, 400)}" alt="Job photo" loading="lazy"></a>`).join('')}</div>` : ''}
   </article>`;
+}
+
+/** The log itself, drawable on its own so a finished save need not redraw the form. */
+function feedHtml() {
+  return `<h2>Job log (${state.entries.length})</h2>
+    ${state.entries.length ? `<div class="feed">${state.entries.map(entryHtml).join('')}</div>`
+      : `<div class="empty">Nothing logged yet.</div>`}`;
+}
+
+function bindFeed() {
+  view.querySelectorAll('[data-recheck]').forEach((button) => {
+    button.onclick = () => {
+      button.textContent = 'Checking…';
+      // Attempt 0 waits two seconds, which reads as instant next to a button
+      // that has just changed its own label.
+      watchTranscript(button.dataset.recheck, 0);
+    };
+  });
+  view.querySelectorAll('[data-retry]').forEach((button) => {
+    button.onclick = () => {
+      const entry = state.entries.find((e) => e.id === button.dataset.retry);
+      if (entry) retryEntry(entry);
+    };
+  });
+}
+
+function drawFeed() {
+  const box = $('joblog');
+  if (!box) return;
+  box.innerHTML = feedHtml();
+  bindFeed();
+}
+
+/** The "logging as … · so far" line, which a finished save moves. */
+function drawHint() {
+  const hint = $('jobhint');
+  if (!hint || !state.who) return;
+  hint.innerHTML = `Logging as <b>${esc(state.who.name)}</b>${
+    state.hours && state.hours.total ? ` · ${formatHours(state.hours.total)} on this job so far` : ''}`;
 }
 
 /**
@@ -711,7 +759,7 @@ function jobHeadHtml(job, hint) {
         </div>
         ${job.statusLabel ? `<span class="pill frost">${esc(job.statusLabel)}</span>` : ''}
       </div>
-      <p class="hint" style="margin-top:8px">${hint}</p>
+      <p class="hint" id="jobhint" style="margin-top:8px">${hint}</p>
       ${job.workRequested ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--ice)">
         <div class="fld" style="margin:0 0 4px">What needs doing</div>
         <div style="font-size:15px;line-height:1.5;color:var(--navy)">${esc(job.workRequested)}</div>
@@ -767,11 +815,7 @@ function renderJob() {
         state.tab === 'prop' ? 'Ready for pick-up' : 'Save entry'}</button>
     </section>
 
-    <section class="card" style="margin-bottom:14px">
-      <h2>Job log (${state.entries.length})</h2>
-      ${state.entries.length ? `<div class="feed">${state.entries.map(entryHtml).join('')}</div>`
-        : `<div class="empty">Nothing logged yet.</div>`}
-    </section>
+    <section class="card" style="margin-bottom:14px" id="joblog">${feedHtml()}</section>
 
     ${finished ? `<div class="banner ok">Marked finished. You can still add notes if something else comes up.</div>`
       : `<section class="card">
@@ -786,14 +830,7 @@ function renderJob() {
   });
   $('another').onclick = (event) => { event.preventDefault(); state.job = null; renderHome(); };
 
-  view.querySelectorAll('[data-recheck]').forEach((button) => {
-    button.onclick = () => {
-      button.textContent = 'Checking…';
-      // Attempt 0 waits two seconds, which reads as instant next to a button
-      // that has just changed its own label.
-      watchTranscript(button.dataset.recheck, 0);
-    };
-  });
+  bindFeed();
   const finish = $('finish');
   if (finish) finish.onclick = confirmFinish;
   // A prop is not a log entry, so the one button at the bottom of the card
@@ -1137,8 +1174,50 @@ async function saveProp() {
 
 /* -------------------------------------------------------------- save ---- */
 
+/**
+ * What the backend would refuse, said here instead — instantly.
+ *
+ * The rules are the backend's and it stays the authority; this is the same
+ * short list said without a round trip, so a mechanic who forgot the part
+ * number hears it now rather than two seconds later. It also keeps the
+ * optimistic entry below honest: nothing goes into the feed that the shop
+ * server was always going to reject.
+ */
+function whatIsMissing(payload) {
+  const has = (value) => Boolean(String(value || '').trim());
+  if (payload.entryType === 'labor') {
+    if (!Number(payload.minutes)) return 'How long did this take?';
+    if (!has(payload.text) && !payload.audio) return 'Say what you did with that time.';
+    return null;
+  }
+  if (payload.entryType === 'part') {
+    return has(payload.partIdentifier) ? null : 'Scan or type the part number.';
+  }
+  if (!has(payload.text) && !payload.audio && !(payload.photos || []).length) {
+    return 'Add a note, a recording or a photo before saving.';
+  }
+  return null;
+}
+
+let pendingSeq = 0;
+
+/**
+ * The entry goes into the log the moment it is tapped, and the save happens
+ * behind it.
+ *
+ * A round trip to Apps Script is a second or three on shop wifi, and a
+ * mechanic holding a part in one hand and a phone in the other was made to
+ * stand and watch it. Now the entry appears straight away marked "Saving…",
+ * the form clears for the next one, and the row settles when the backend
+ * answers. Nothing is silently assumed: an entry that fails says so in the
+ * feed, in red, with a button to send it again, and it says it as a toast too
+ * in case the mechanic has already walked to another screen.
+ *
+ * A save is never queued past the app being closed. That was a deliberate
+ * line from the start — a note the phone swallowed is worse than one the
+ * mechanic knows did not send.
+ */
 async function saveEntry() {
-  const button = $('save');
   const text = $('text').value.trim();
   const payload = { entryType: state.tab, text };
 
@@ -1158,31 +1237,75 @@ async function saveEntry() {
   }
   payload.photos = state.photos;
 
-  button.disabled = true;
-  button.textContent = 'Saving…';
+  const missing = whatIsMissing(payload);
+  if (missing) {
+    $('notice').innerHTML = `<div class="banner warn" style="margin-bottom:12px">${esc(missing)}</div>`;
+    return;
+  }
+
+  pendingSeq += 1;
+  const pending = {
+    id: `pending-${pendingSeq}`,
+    saveState: 'saving',
+    payload: payload,
+    entryType: state.tab,
+    text: text,
+    hours: state.tab === 'labor' ? Number(payload.minutes) / 60 : null,
+    partIdentifier: payload.partIdentifier || '',
+    quantity: payload.quantity ? Number(payload.quantity) : null,
+    mechanicName: state.who.name,
+    createdAt: new Date().toISOString(),
+    audioFile: '',
+    transcriptStatus: '',
+    photos: [],
+    // Straight off the phone, so the shot appears in the feed before Drive
+    // has heard of it.
+    localPhotos: payload.photos || [],
+  };
+
+  // The feed is oldest first, so the new one goes on the end.
+  state.entries = state.entries.concat([pending]);
+  state.audio = null;
+  state.photos = [];
+  state.hoursValue = '';
+  state.minutesValue = '';
+  // A full redraw here is right: nothing is being typed at the instant the
+  // save button is tapped, and the form has to come back empty for the next
+  // entry. Everything after this touches only the feed.
+  renderJob();
+  sendEntry(pending);
+}
+
+async function sendEntry(pending) {
   try {
-    const result = await api('addEntry', [state.job.token, payload]);
-    // The save no longer hands back the whole log — reading it cost a full
-    // scan of every entry in the shop to return a list this page already has.
-    // The feed is oldest first, so the new one goes on the end.
-    state.entries = state.entries.concat([result.entry]);
+    const result = await api('addEntry', [state.job.token, pending.payload]);
+    const index = state.entries.findIndex((entry) => entry.id === pending.id);
+    // The save does not hand back the whole log — reading it cost a full scan
+    // of every entry in the shop to return a list this page already has.
+    if (index !== -1) state.entries[index] = result.entry;
     if (result.job) state.job = result.job;
     if (result.hours) state.hours = result.hours;
-    state.audio = null;
-    state.photos = [];
-    state.hoursValue = '';
-    state.minutesValue = '';
-    renderJob();
-    toast('Saved.');
+    // Only the feed and the running total, never the form: the mechanic may
+    // be halfway through typing the next entry by now.
+    drawFeed();
+    drawHint();
     // The words land a moment after the entry does, and the mechanic is
     // still standing there — so watch for them rather than making them
     // reload to find out whether the recording came out.
     if (result.entry.transcriptStatus === 'pending') watchTranscript(result.entry.id);
   } catch (error) {
-    button.disabled = false;
-    button.textContent = 'Save entry';
-    $('notice').innerHTML = `<div class="banner warn" style="margin-bottom:12px">${esc(error.message)}</div>`;
+    pending.saveState = 'failed';
+    pending.saveError = error.message;
+    drawFeed();
+    toast(error.message);
   }
+}
+
+function retryEntry(pending) {
+  pending.saveState = 'saving';
+  pending.saveError = '';
+  drawFeed();
+  sendEntry(pending);
 }
 
 /**
@@ -1265,6 +1388,27 @@ function confirmFinish() {
   };
 }
 
+/**
+ * Nudge Apps Script awake before the mechanic needs it.
+ *
+ * Google boots a container to answer a request and keeps it warm briefly
+ * afterwards, so the first call of the day pays for the start-up and the
+ * ones behind it do not. This spends that cost while the app is opening and
+ * while the camera is coming up — moments nobody is waiting through — so the
+ * lookup that follows lands on a container already running.
+ *
+ * Fire and forget, at most once every half minute, and a failure is not worth
+ * a word: whatever is wrong will say so properly on the call that matters.
+ */
+let lastWarm = 0;
+function warm() {
+  const now = Date.now();
+  if (now - lastWarm < 30000) return;
+  lastWarm = now;
+  api('ping', []).catch(() => {});
+}
+
+warm();
 renderHome();
 </script>
 </body>

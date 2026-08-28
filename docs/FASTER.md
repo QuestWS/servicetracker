@@ -86,6 +86,19 @@ and asserts the row write still happens inside.
 **Where the next append goes is remembered** for the length of a request, so a
 part that puts two lines on the parts list does not ask twice.
 
+**And the part that no amount of backend work reaches: the mechanic was made
+to stand and watch the round trip.** The save is optimistic now — the entry is
+in the feed on the tap, the form clears, and the row settles when the answer
+comes back. A failure says so in the feed with a retry, and as a toast, so
+nothing is silently swallowed. Alongside it, `whatIsMissing()` says what the
+backend would have refused without a call at all: forgetting the part number
+costs nothing now instead of a second and a half.
+
+**`ping`** does nothing, on purpose. The app calls it as it opens and again
+when the scanner comes up, so Apps Script has a warm container by the time the
+lookup arrives. It is also the cleanest reading of what an empty call costs —
+watch it on the App setup page.
+
 Measured at 400 jobs / 3,200 entries:
 
 ```

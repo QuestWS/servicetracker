@@ -498,6 +498,21 @@ function doPost(e) {
   }
 
   const FNS = {
+    /**
+     * Does nothing, on purpose.
+     *
+     * Apps Script boots a container to answer a request and keeps it warm for
+     * a short while afterwards. The mechanic app calls this the moment it
+     * opens and again when the scanner comes up, so the call that follows —
+     * the one somebody is standing there waiting for — lands on a container
+     * that is already running instead of paying for the start-up itself.
+     *
+     * It touches no sheet, no property and no credential, and answers the
+     * same to anyone. Its round trip, on the App setup page, is also the
+     * cleanest reading there is of what an empty call to Apps Script costs.
+     */
+    ping:             function () { return { ok: true }; },
+
     /* service writer */
     adminSignIn:      function (a) { return adminSignIn(a[0]); },
     requestMagicLink: function (a) { return requestMagicLink(); },

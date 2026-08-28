@@ -482,6 +482,15 @@ describe('what a job page costs to open', () => {
 });
 
 describe('how long the backend says it took', () => {
+  it('answers a warm-up call without touching anything', () => {
+    // The mechanic app calls this as it opens, so that Google has a container
+    // running by the time somebody scans. It must stay free: no sheet, no
+    // credential, nothing to leak, nothing to go wrong.
+    const pong = backend.post({}, { fn: 'ping', args: [] });
+    expect(pong.ok).toBe(true);
+    expect(Object.keys(pong).sort()).toEqual(['ok', 'serverMs']);
+  });
+
   it('reports its own time on every answer, good or bad', () => {
     // "It feels slow" cannot be fixed. This is what lets the app say how much
     // of a wait was Apps Script doing the work and how much was everything

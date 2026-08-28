@@ -161,7 +161,17 @@ const mechErrors = [];
 mech.on('pageerror', (error) => mechErrors.push(String(error)));
 mech.on('console', (message) => { if (message.type() === 'error' && !isEnvironmental(message.text())) mechErrors.push(message.text()); });
 
+// Apps Script boots a container to answer a request and keeps it warm for a
+// short while. The app spends that start-up while it is opening, so the call
+// the mechanic is actually waiting on lands on something already running.
+const bootCalls = [];
+mech.on('request', (request) => {
+  if (!request.url().endsWith('/exec')) return;
+  try { bootCalls.push(JSON.parse(request.postData() || '{}').fn); } catch { bootCalls.push('?'); }
+});
 await mech.goto(`${BASE}/m/`, { waitUntil: 'networkidle' });
+check('opening the app wakes the backend up', bootCalls.includes('ping'), bootCalls.join(', '));
+
 await mech.click('#manual');
 await mech.fill('#code', invoiceNumber);
 await mech.click('button[type=submit]');
@@ -270,12 +280,19 @@ check('the hours stepper adds an hour', (await shown()) === '1h 0m', await shown
 await mech.click('.stepper button[data-by="-60"]');
 check('and takes one back', (await shown()) === '0h 0m', await shown());
 
+// An entry now goes into the feed the moment it is tapped and settles when
+// the backend answers, so a check that reads the log has to wait for the
+// settled state rather than the optimistic one.
+const settled = () => mech.waitForFunction(
+  () => !document.querySelector('.entry.saving'), null, { timeout: 20000 });
+
 // Typed by hand, which is the other half of the entry path.
 await mech.fill('#hours', '1');
 await mech.fill('#minutes', '30');
 await mech.fill('#text', 'Pulled and reset the impeller housing.');
 await mech.click('#save');
 await mech.waitForSelector('.entry.labor', { timeout: 15000 });
+await settled();
 check('logs the time with a description', (await mech.textContent('.entry.labor')).includes('1h 30m'));
 check('and never shows it as a decimal',
   !(await mech.textContent('.entry.labor')).includes('1.5'));
@@ -289,10 +306,12 @@ for (let i = 0; i < 3; i++) {
   await mech.click('#save');
   await mech.waitForFunction((n) => document.querySelectorAll('.entry.labor').length === n,
     i + 2, { timeout: 15000 });
+  await settled();
 }
 check('three twenty-minute stints come to exactly an hour on top of the first',
   (await mech.evaluate(() => document.body.innerText)).includes('2h 30m on this job so far'),
   (await mech.evaluate(() => document.body.innerText)).slice(0, 200));
+
 
 /* ------------------------------------------------------------ a prop out */
 console.log('\n== a prop going out for repair ==');
@@ -367,6 +386,7 @@ await mech.click('.segmented button[data-tab="internal_note"]');
 await mech.fill('#text', 'Owner never winterised this — bill the extra hour.');
 await mech.click('#save');
 await mech.waitForSelector('.entry.internal_note', { timeout: 15000 });
+await settled();
 
 // The mechanic app no longer offers a customer note; the backend still knows
 // the type, so the customer page can be brought back without one. Posting it
@@ -415,7 +435,68 @@ await mech.check('#needrestock');
 await mech.fill('#restockqty', '1');
 await mech.click('#save');
 await mech.waitForSelector('.entry.part', { timeout: 15000 });
+await settled();
 check('logs a part', (await mech.textContent('.entry.part')).includes('6BH-44352-00-00'));
+
+/* ------------------------------------------------- saving without waiting */
+console.log('\n== a save that does not make anybody wait ==');
+
+// What the backend would refuse is said here instead, without a round trip.
+// A mechanic who forgot the part number should not stand through a call to
+// Google to be told so.
+await mech.click('.segmented button[data-tab="part"]');
+await mech.waitForSelector('#part', { timeout: 20000 });
+const refusedCalls = [];
+const countRefused = (request) => { if (request.url().endsWith('/exec')) refusedCalls.push(request.url()); };
+mech.on('request', countRefused);
+await mech.click('#save');
+await mech.waitForSelector('.banner.warn', { timeout: 5000 });
+check('a part with no number is refused on the phone',
+  (await mech.textContent('.banner.warn')).includes('part number'));
+check('and it never reaches the backend to be told so', refusedCalls.length === 0,
+  refusedCalls.join(', '));
+mech.off('request', countRefused);
+
+// The entry goes into the log on the tap and settles when the answer comes
+// back. Held here on purpose, because on a local backend the whole round trip
+// is faster than the eye and there would be nothing to see.
+await mech.route('**/exec', async (route) => {
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await route.continue();
+});
+await mech.fill('#part', 'SLOW-1');
+await mech.fill('#text', 'Saving while the wifi thinks about it.');
+await mech.click('#save');
+await mech.waitForSelector('.entry.saving', { timeout: 5000 });
+check('the entry is in the log before the backend has answered',
+  (await mech.textContent('.entry.saving')).includes('Saving'));
+check('and the form is already clear for the next one',
+  (await mech.inputValue('#text')) === '' && (await mech.inputValue('#part')) === '',
+  `${await mech.inputValue('#text')} / ${await mech.inputValue('#part')}`);
+await settled();
+check('and it settles into a real entry when the answer lands',
+  (await mech.textContent('.feed')).includes('SLOW-1')
+  && await mech.locator('.entry.failed').count() === 0);
+await mech.unroute('**/exec');
+
+// A save that fails says so in the feed, with a way to send it again — the
+// one thing this app must never do is swallow a note.
+await mech.route('**/exec', (route) => route.abort());
+await mech.fill('#part', 'DEAD-1');
+await mech.click('#save');
+await mech.waitForSelector('.entry.failed', { timeout: 10000 });
+check('a save that fails says so where the entry is',
+  (await mech.textContent('.entry.failed')).includes('Not saved'));
+check('and offers to send it again',
+  await mech.locator('.entry.failed [data-retry]').count() === 1);
+await mech.unroute('**/exec');
+await mech.click('.entry.failed [data-retry]');
+await settled();
+check('and the retry actually saves it',
+  await mech.locator('.entry.failed').count() === 0
+  && (await mech.textContent('.feed')).includes('DEAD-1'));
+await mech.click('.segmented button[data-tab="labor"]');
+await mech.waitForSelector('#hours', { timeout: 20000 });
 
 // And a stock request with no job behind it.
 await mech.click('a:has-text("Scan another work order")');
