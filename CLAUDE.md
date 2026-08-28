@@ -302,6 +302,29 @@ not what you should land on.
 Open carries no query parameter, being the default, so `?` is the working
 list and `?status=all` is everything.
 
+## Fixing a misfiled entry
+
+The office can move a log entry to another work order, or delete it. The
+floor cannot: `deleteEntry` and `moveEntry` are writer-only, because a
+mechanic unsaying something the shop has already read and acted on is a
+different thing from correcting a mistake.
+
+- **Both totals move.** `adjustJobEntryTotals_` is the one place that changes
+  `entry_count`/`minutes_total` in either direction — a move takes the entry
+  off one job and puts it on the other, a delete takes it off for good. That
+  is the whole reason this cannot be a hand edit in the Sheet.
+- **A parts-list line goes with the entry.** On a move it follows, or it sits
+  on the wrong customer's order. On a delete it goes too — but only while it
+  is still `needed`. An entry whose part has actually been ordered refuses to
+  delete and says to deal with the parts list first, the same rule
+  `cancelPartOrder` follows.
+- **Photos and recordings stay in the original job's Drive folder.** The links
+  keep working — the folder is link-shared and the entry carries the file ids
+  — and moving files is several slow Drive calls for a tidiness nobody sees.
+- The move target is given as the number off the paper, through
+  `jobByNumber_`, so `01-8886`, `018886` and `8886` all find it and an
+  ambiguous suffix finds nothing.
+
 ## Parts, and the writer's checklist
 
 - A **part entry** can carry two extra asks: order one for this job, and put one

@@ -425,6 +425,23 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
   border: 1px solid var(--line);
   background: var(--ice);
 }
+/* Move and delete on a log entry. The log is read many times a day and
+   corrected rarely, so these sit quiet until somebody looks for them. */
+.entryfix { margin-top: 10px; display: flex; gap: 14px; flex-wrap: wrap; }
+.entryfix > button {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.entryfix > button:hover { color: var(--navy); }
+.entryfix > button[data-del]:hover { color: var(--alert); }
+.entryfix .fld { margin-top: 0; }
+
 .entry audio { width: 100%; margin-top: 10px; }
 /* A voice note links out to Drive rather than embedding a player: the shop
    reads the transcript, and the recording is a fallback worth one click. */

@@ -258,6 +258,12 @@ function entryHtml(entry) {
     ${entry.photos.length ? `<div class="photos">${entry.photos.map((p) => `
       <a href="${driveImageUrl(p.full, 1600)}" target="_blank" rel="noreferrer">
         <img src="${driveImageUrl(p.thumb, 400)}" alt="Job photo" loading="lazy"></a>`).join('')}</div>` : ''}
+    <!-- Quiet on purpose. This log is read many times a day and corrected
+         rarely, so the two controls that change it sit small and last. -->
+    <div class="entryfix" data-fix="${esc(entry.id)}">
+      <button type="button" data-move="${esc(entry.id)}">Move to another work order</button>
+      <button type="button" data-del="${esc(entry.id)}">Delete</button>
+    </div>
   </article>`;
 }
 
@@ -556,6 +562,65 @@ async function renderJob(id) {
   const notice = (tone, message) => {
     $('notice').innerHTML = `<div class="banner ${tone}" style="margin:14px 0">${esc(message)}</div>`;
   };
+
+  /**
+   * Putting a misfiled entry right.
+   *
+   * A mechanic scans the wrong work order off a bench with three of them on
+   * it, and the note is right but on the wrong boat. Moving beats deleting
+   * and re-typing — the words, the photos and the hours all travel, and the
+   * time lands on the invoice it belongs to.
+   */
+  view.querySelectorAll('[data-move]').forEach((button) => {
+    button.onclick = () => {
+      const box = button.closest('.entryfix');
+      box.innerHTML = `
+        <label class="fld" for="moveto">Move to work order</label>
+        <div class="row tight" style="flex-wrap:nowrap">
+          <input class="txt mono" id="moveto" placeholder="01-8886" autocomplete="off">
+          <button class="btn ghost sm" type="button" id="movego">Move</button>
+          <button class="btn ghost sm" type="button" id="movestop">Cancel</button>
+        </div>
+        <p class="hint">Everything on the entry goes with it, and the hours come off this
+          job's total and land on that one.</p>`;
+      $('moveto').focus();
+      $('movestop').onclick = () => renderJob(job.id);
+      const go = async () => {
+        const to = $('moveto').value.trim();
+        if (!to) return;
+        $('movego').disabled = true;
+        $('movego').textContent = 'Moving…';
+        try {
+          const result = await api('moveEntry', [button.dataset.move, to]);
+          await renderJob(job.id);
+          toast(`Moved to ${result.to}.`);
+        } catch (error) {
+          $('movego').disabled = false;
+          $('movego').textContent = 'Move';
+          notice('warn', error.message);
+        }
+      };
+      $('movego').onclick = go;
+      $('moveto').onkeydown = (event) => { if (event.key === 'Enter') go(); };
+    };
+  });
+
+  view.querySelectorAll('[data-del]').forEach((button) => {
+    button.onclick = async () => {
+      if (!confirm('Delete this entry? This cannot be undone.')) return;
+      button.disabled = true;
+      try {
+        const result = await api('deleteEntry', [button.dataset.del]);
+        await renderJob(job.id);
+        toast(result.removedParts
+          ? `Entry deleted, and ${result.removedParts} part line with it.`
+          : 'Entry deleted.');
+      } catch (error) {
+        button.disabled = false;
+        notice('warn', error.message);
+      }
+    };
+  });
 
   const marklogged = $('marklogged');
   if (marklogged) marklogged.onclick = async () => {

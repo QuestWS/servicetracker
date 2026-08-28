@@ -953,6 +953,66 @@ check('and says test mode kept it in the building', /test mode, so that was the 
 await admin.screenshot({ path: `${SHOTS}/45b-invoice-sent.png`, fullPage: true });
 
 /* ---------------------------------------------------- the writer's shortlist */
+/* -------------------------------------------- moving and deleting entries */
+console.log('\n== putting a misfiled entry right ==');
+// Two scratch jobs of its own, so nothing here disturbs the counts the rest of
+// this run asserts on. A mechanic scanning the work order next to the one they
+// meant is the ordinary way an entry ends up on the wrong boat.
+const FIX_A = `01-${String(Math.floor(1000 + Math.random() * 8999))}`;
+const FIX_B = `01-${String(Math.floor(1000 + Math.random() * 8999))}`;
+await admin.evaluate(async ({ base, a, b }) => {
+  const shop = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const post = (fn, args, tok) => fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn, token: tok, args }),
+  }).then((res) => res.json());
+  await post('createJob', [{ invoiceNumber: a, customerName: 'Wrong Boat' }], shop);
+  await post('createJob', [{ invoiceNumber: b, customerName: 'Right Boat' }], shop);
+  const mech = (await post('signIn', ['Dale', true])).token;
+  const jobToken = (await post('lookupJob', [a, 'manual'])).job.token;
+  await post('addEntry', [jobToken, { entryType: 'labor', minutes: 60, text: 'Meant the boat next to it.' }], mech);
+  await post('addEntry', [jobToken, { entryType: 'internal_note', text: 'Typed this one twice.' }], mech);
+}, { base: BASE, a: FIX_A, b: FIX_B });
+
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(FIX_A)}`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.entry', { timeout: 20000 });
+check('an hour is on the job it was logged against',
+  (await admin.textContent('.hourstotal')).includes('1h'), await admin.textContent('.hourstotal'));
+
+await admin.locator('.entry:has-text("Meant the boat next to it.") [data-move]').click();
+await admin.waitForSelector('#moveto', { timeout: 20000 });
+await admin.fill('#moveto', FIX_B);
+await admin.click('#movego');
+await admin.waitForFunction(
+  (needle) => !document.body.innerText.includes(needle), 'Meant the boat next to it.',
+  { timeout: 20000 });
+check('the writer can move an entry to another work order',
+  !(await admin.evaluate(() => document.body.innerText)).includes('Meant the boat next to it.'));
+check('and the hours come off the job it was logged against',
+  (await admin.evaluate(() => document.body.innerText)).includes('No time logged yet'),
+  (await admin.evaluate(() => document.body.innerText)).slice(0, 200));
+
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(FIX_B)}`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.entry', { timeout: 20000 });
+check('it lands on the other work order',
+  (await admin.evaluate(() => document.body.innerText)).includes('Meant the boat next to it.'));
+check('with the time on that invoice instead',
+  (await admin.textContent('.hourstotal')).includes('1h'), await admin.textContent('.hourstotal'));
+
+// And the duplicate, which is what delete is for.
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(FIX_A)}`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.entry', { timeout: 20000 });
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.locator('.entry:has-text("Typed this one twice.") [data-del]').click();
+await admin.waitForFunction(
+  (needle) => !document.body.innerText.includes(needle), 'Typed this one twice.',
+  { timeout: 20000 });
+check('and delete takes the duplicate off the log',
+  (await admin.evaluate(() => document.body.innerText)).includes('Nothing logged yet'),
+  (await admin.evaluate(() => document.body.innerText)).slice(0, 200));
+await admin.screenshot({ path: `${SHOTS}/59-entry-fixed.png`, fullPage: true });
+
 console.log('\n== the jobs list defaults to what is open ==');
 await admin.goto(`${BASE}/admin/`, { waitUntil: 'networkidle' });
 await admin.waitForSelector('.chip', { timeout: 20000 });
@@ -1128,7 +1188,9 @@ check('lists the boat', /2021 Yamaha AR195/i.test(listed));
 check('leaves the closed-out job off it', !listed.includes(invoiceNumber));
 await picker.screenshot({ path: `${SHOTS}/43-open-jobs.png`, fullPage: true });
 
-await picker.click(`[data-pick="0"]`);
+// By its number, not by its position: the list holds every open job in the
+// shop, and which one is first depends on what else this run has created.
+await picker.locator(`[data-pick]:has-text("${FLOOR_INVOICE}")`).click();
 await picker.waitForSelector('.segmented', { timeout: 20000 });
 const opened = await picker.evaluate(() => document.body.innerText);
 check('opens the job straight from the list', opened.includes(FLOOR_INVOICE));

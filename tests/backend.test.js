@@ -1569,6 +1569,104 @@ describe('what the mechanic needs before touching the boat', () => {
   });
 });
 
+describe('putting a misfiled entry right', () => {
+  it('deletes an entry and takes it off the job\'s totals', () => {
+    const { id, token, mech } = seedJob();
+    const extra = backend.fn('addEntry', mech, token,
+      { entryType: 'labor', minutes: 45, text: 'Logged on the wrong boat.' }).entry;
+    expect(Number(backend.fn('jobRow_', id).minutes_total)).toBe(90 + 45);
+
+    backend.fn('deleteEntry', adminToken, extra.id);
+    const after = backend.fn('getJob', adminToken, id);
+    expect(after.entries.find((e) => e.id === extra.id)).toBeUndefined();
+    // The totals are derived and the writer's list reads them, so a delete
+    // that leaves them behind is a delete that lies.
+    expect(Number(backend.fn('jobRow_', id).minutes_total)).toBe(90);
+    expect(Number(backend.fn('jobRow_', id).entry_count)).toBe(after.entries.length);
+    expect(backend.fn('jobTotalsDrift_')).toHaveLength(0);
+  });
+
+  it('takes a part line that was only needed along with it', () => {
+    const { token, mech } = seedJob();
+    const entry = backend.fn('addEntry', mech, token,
+      { entryType: 'part', partIdentifier: 'DUP-1', quantity: 1, orderQty: 1 }).entry;
+    expect(backend.fn('listPartsOrders', adminToken).needed).toHaveLength(1);
+
+    const result = backend.fn('deleteEntry', adminToken, entry.id);
+    expect(result.removedParts).toBe(1);
+    expect(backend.fn('listPartsOrders', adminToken).needed).toHaveLength(0);
+  });
+
+  it('but refuses once that part has actually been ordered', () => {
+    const { token, mech } = seedJob();
+    const entry = backend.fn('addEntry', mech, token,
+      { entryType: 'part', partIdentifier: 'ORD-9', quantity: 1, orderQty: 1 }).entry;
+    const line = backend.fn('listPartsOrders', adminToken).needed[0];
+    backend.fn('markPartsOrdered', adminToken, [line.id], 'Mercury Marine', 'PO-1');
+
+    // Same rule as cancelPartOrder: an order somebody has placed is not ours
+    // to lose as a side effect of tidying the log.
+    expect(() => backend.fn('deleteEntry', adminToken, entry.id)).toThrow(/parts list/);
+    expect(backend.fn('listPartsOrders', adminToken).ordered).toHaveLength(1);
+  });
+
+  it('moves an entry to another work order, hours and all', () => {
+    const from = seedJob('01-8886');
+    const to = seedJob('01-8887', { seedLabor: false });
+    const entry = backend.fn('addEntry', from.mech, from.token,
+      { entryType: 'labor', minutes: 30, text: 'Wrong boat — scanned the paper next to it.' }).entry;
+
+    backend.fn('moveEntry', adminToken, entry.id, '01-8887');
+
+    const left = backend.fn('getJob', adminToken, '01-8886');
+    const landed = backend.fn('getJob', adminToken, '01-8887');
+    expect(left.entries.find((e) => e.id === entry.id)).toBeUndefined();
+    expect(landed.entries.find((e) => e.id === entry.id).text)
+      .toBe('Wrong boat — scanned the paper next to it.');
+    // The time comes off one invoice and lands on the other.
+    expect(Number(backend.fn('jobRow_', '01-8886').minutes_total)).toBe(90);
+    expect(Number(backend.fn('jobRow_', '01-8887').minutes_total)).toBe(30);
+    expect(backend.fn('jobTotalsDrift_')).toHaveLength(0);
+  });
+
+  it('takes the parts list line with it, so it lands on the right customer', () => {
+    const from = seedJob('01-8886');
+    seedJob('01-8887', { seedLabor: false });
+    const entry = backend.fn('addEntry', from.mech, from.token,
+      { entryType: 'part', partIdentifier: 'MOVE-1', quantity: 1, orderQty: 1 }).entry;
+
+    backend.fn('moveEntry', adminToken, entry.id, '01-8887');
+    expect(backend.fn('listPartsOrders', adminToken).needed[0].jobId).toBe('01-8887');
+  });
+
+  it('finds the target the way a work order is read', () => {
+    const from = seedJob('01-8886');
+    seedJob('01-8887', { seedLabor: false });
+    const entry = backend.fn('addEntry', from.mech, from.token,
+      { entryType: 'internal_note', text: 'Wrong boat.' }).entry;
+    // The number off the paper, however it gets typed.
+    expect(backend.fn('moveEntry', adminToken, entry.id, '8887').to).toBe('01-8887');
+  });
+
+  it('refuses a job that does not exist, and a move to where it already is', () => {
+    const { token, mech } = seedJob();
+    const entry = backend.fn('addEntry', mech, token,
+      { entryType: 'internal_note', text: 'Note.' }).entry;
+    expect(() => backend.fn('moveEntry', adminToken, entry.id, '01-9999')).toThrow(/No job found/);
+    expect(() => backend.fn('moveEntry', adminToken, entry.id, '01-8886')).toThrow(/already on/);
+  });
+
+  it('is the office\'s to do, not the floor\'s', () => {
+    const { token, mech } = seedJob();
+    const entry = backend.fn('addEntry', mech, token,
+      { entryType: 'internal_note', text: 'Note.' }).entry;
+    // A mechanic cannot unsay something the shop has read and acted on.
+    expect(() => backend.fn('deleteEntry', mech, entry.id)).toThrow(/Sign in/);
+    expect(() => backend.fn('moveEntry', mech, entry.id, '01-8886')).toThrow(/Sign in/);
+    expect(() => backend.fn('deleteEntry', adminToken, 'log-nope')).toThrow(/No such entry/);
+  });
+});
+
 describe('a note from the office to the floor', () => {
   it('lands in the shop log where the mechanic will see it', () => {
     const { id, token } = seedJob();

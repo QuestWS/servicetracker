@@ -547,6 +547,8 @@ function doPost(e) {
     setStatus:        function (a) { return setStatusByWriter(data.token, a[0], a[1]); },
     markLogged:       function (a) { return markEntriesLogged(data.token, a[0]); },
     addWriterNote:    function (a) { return addWriterNote(data.token, a[0], a[1]); },
+    deleteEntry:      function (a) { return deleteEntry(data.token, a[0]); },
+    moveEntry:        function (a) { return moveEntry(data.token, a[0], a[1]); },
     setJobAlert:      function (a) { return setJobAlert(data.token, a[0], a[1]); },
     jobHistory:       function (a) { return jobHistory(data.token, a[0]); },
     setJobFlag:       function (a) { return setJobFlag(data.token, a[0], a[1], a[2]); },
@@ -2505,6 +2507,121 @@ function setJobAlert(token, id, text) {
   return { job: jobSummary_(jobRow_(id)), entries: entriesForJob_(job.id) };
 }
 
+function entryRow_(id) {
+  const all = rows_('LogEntries');
+  for (let i = 0; i < all.length; i++) {
+    if (String(all[i].id) === String(id)) return all[i];
+  }
+  return null;
+}
+
+/** The parts list lines a log entry put there, if any. */
+function partsFromEntry_(entryId) {
+  return rows_('PartsOrders').filter(function (part) {
+    return String(part.source_entry) === String(entryId);
+  });
+}
+
+/**
+ * Take an entry off the job.
+ *
+ * A mechanic logs against the wrong boat, or the same note twice, and the
+ * office is the only place that can put it right. This is the writer's tool
+ * and nobody else's — a mechanic cannot unsay something the shop has since
+ * read and acted on.
+ *
+ * A part entry that already put a line on the parts list is the one case this
+ * refuses. Deleting the entry would leave that line behind with nothing
+ * explaining it, or take it away with an order already placed against it —
+ * which is exactly what `cancelPartOrder` exists to prevent. A line still
+ * only NEEDED goes with the entry, because nothing has happened to it yet;
+ * anything ordered or arrived has to be dealt with on the parts list first.
+ */
+function deleteEntry(token, entryId) {
+  requireAdmin_(token);
+
+  return withLock_(function () {
+    const entry = entryRow_(entryId);
+    if (!entry) throw new Error('No such entry.');
+
+    const lines = partsFromEntry_(entry.id);
+    const placed = lines.filter(function (part) { return part.status !== 'needed'; });
+    if (placed.length) {
+      throw new Error('That entry put a part on order (' +
+        placed.map(function (p) { return p.part_identifier || p.description || 'a part'; }).join(', ') +
+        '). Take it off the parts list first, then delete this.');
+    }
+
+    const jobId = entry.job_id;
+    const minutes = entry.entry_type === 'labor' && entry.hours ? minutesFromHours_(entry.hours) : 0;
+
+    // Highest row first, the same rule the parts delete follows: taking out
+    // row 4 shifts row 5 up into its place.
+    const partsSheet = sheet_('PartsOrders');
+    lines.map(function (part) { return part._row; })
+      .sort(function (a, b) { return b - a; })
+      .forEach(function (rowNumber) { partsSheet.deleteRow(rowNumber); });
+    if (lines.length) forget_('PartsOrders');
+
+    sheet_('LogEntries').deleteRow(entry._row);
+    // deleteRow goes round appendRow_/updateRow_, so it forgets the memoised
+    // rows itself or every read after this is a lie.
+    forget_('LogEntries');
+
+    adjustJobEntryTotals_(jobId, -1, -minutes, true);
+    return { jobId: jobId, removedParts: lines.length };
+  });
+}
+
+/**
+ * Put an entry on the job it belonged to.
+ *
+ * Scanning the wrong work order off a bench with three of them on it is the
+ * ordinary way this happens, and the note is usually right — it is just
+ * filed against the wrong boat. Moving beats deleting and re-typing:
+ * whatever the mechanic said, the photos they took and the time they logged
+ * all travel, and the hours land on the invoice they belong to.
+ *
+ * The target is given the way a work order is read: the number off the paper.
+ * `01-8886`, `018886` and `8886` all find it, and a suffix that matches two
+ * jobs finds neither.
+ *
+ * Both jobs' running totals move, which is the whole reason this cannot be a
+ * hand edit in the Sheet. Any parts-list line the entry created goes with it,
+ * or it would sit on the wrong customer's order.
+ *
+ * The photos and the recording stay in the original job's Drive folder. The
+ * links keep working — the folder is link-shared and the entry carries the
+ * file ids — and moving files between folders is several slow Drive calls for
+ * a tidiness nobody sees.
+ */
+function moveEntry(token, entryId, toJob) {
+  requireAdmin_(token);
+
+  return withLock_(function () {
+    const entry = entryRow_(entryId);
+    if (!entry) throw new Error('No such entry.');
+
+    const target = jobRow_(String(toJob || '').trim().toUpperCase()) || jobByNumber_(toJob);
+    if (!target) throw new Error('No job found for that number. Check it against the work order.');
+    if (String(target.id) === String(entry.job_id)) {
+      throw new Error('That entry is already on ' + target.id + '.');
+    }
+
+    const from = entry.job_id;
+    const minutes = entry.entry_type === 'labor' && entry.hours ? minutesFromHours_(entry.hours) : 0;
+
+    updateRow_('LogEntries', entry._row, { job_id: target.id });
+    partsFromEntry_(entry.id).forEach(function (part) {
+      updateRow_('PartsOrders', part._row, { job_id: target.id });
+    });
+
+    adjustJobEntryTotals_(from, -1, -minutes, true);
+    adjustJobEntryTotals_(target.id, 1, minutes, true);
+    return { from: from, to: target.id };
+  });
+}
+
 function addWriterNote(token, id, text) {
   requireAdmin_(token);
   const job = jobRow_(id);
@@ -2958,12 +3075,28 @@ function ensureSheets_(spreadsheet) {
  * read of the whole tab — addEntry does exactly that.
  */
 function bumpJobEntryTotals_(jobId, addedMinutes, insideLock) {
+  return adjustJobEntryTotals_(jobId, 1, addedMinutes || 0, insideLock);
+}
+
+/**
+ * The same bookkeeping in both directions, because entries also leave.
+ *
+ * A delete takes one off a job; a move takes one off the job it was logged
+ * against and puts it on the job it belonged to. Both totals are derived, so
+ * every path that changes what the log holds has to come through here — the
+ * writer's list reads these numbers and never counts the rows.
+ *
+ * Floored at zero. If a total has drifted below what the log actually holds,
+ * a negative count on the jobs list helps nobody; sheetStatus reports the
+ * drift and setup() recounts it.
+ */
+function adjustJobEntryTotals_(jobId, entryDelta, minutesDelta, insideLock) {
   if (!insideLock) forget_('Jobs');
   const job = jobRow_(jobId);
   if (!job) return null;
   const totals = {
-    entry_count: Number(job.entry_count || 0) + 1,
-    minutes_total: Number(job.minutes_total || 0) + (addedMinutes || 0)
+    entry_count: Math.max(Number(job.entry_count || 0) + entryDelta, 0),
+    minutes_total: Math.max(Number(job.minutes_total || 0) + minutesDelta, 0)
   };
   updateRow_('Jobs', job._row, {
     entry_count: totals.entry_count,
