@@ -8,8 +8,11 @@ each change so the claim is evidence rather than an opinion.
 
 A Sheet has no index. `rows_()` does `getDataRange().getValues()` — the entire
 tab — and `_rowCache` is per-execution, so **every web request starts cold**.
-Cell reads per request is therefore the number that decides how the app feels,
-and it grows every week the shop uses it.
+Cell reads per request is the number that grows every week the shop uses it.
+
+(Written believing that was also the number that decides how the app feels. It
+is not, at the size the shop is at today — see "the second pass" below, which
+is where the round trips got counted.)
 
 ```
 node tools/bench-reads.mjs 400 8      # 400 jobs, 3,200 log entries
@@ -42,6 +45,67 @@ They encode `SITE_URL` (the Pages site), not the `/exec` URL. Only `API_URL`
 in `assets/lib/config.js` changes — provided the migration preserves job
 tokens.
 
+## The second pass (27 Aug 2026) — round trips, not cells
+
+The shop came back with "still feels very slow opening a work order, and
+saving is slow too". That is the sentence that says the first pass optimised
+the wrong number for the size the shop is actually at.
+
+Cells read is the number that **grows**. It is not the number that **hurts**
+today. At forty jobs the whole Jobs tab is a thousand cells, and a thousand
+cells cross the wire in one gulp. What costs is the number of separate trips:
+
+- Every call to Apps Script pays start-up, an OAuth-less redirect (a POST to
+  `/exec` is answered with a 302 to `googleusercontent.com`, which the phone
+  then follows — two HTTP round trips for one call), and the shop's wifi.
+- Inside the script, every `getValues`, `getLastRow`, `setNumberFormat` and
+  `setValues` is its own round trip to Google's servers, and each costs about
+  the same whether the range is one cell or ten thousand.
+
+So `tools/bench-reads.mjs` now counts **ops** alongside cells, and the fixes
+below are about trips rather than volume.
+
+**Opening a job was two calls to Apps Script.** `lookupJob` answered with a
+summary, then the phone called `jobForMechanic` for the log. Two lots of
+start-up and redirect for one scan. `lookupJob` now takes the caller's token
+and, when it is a signed-in mechanic's, answers with the whole job screen —
+one call. An anonymous scan is unchanged, which matters: the roster is the gate
+on the log and on the customer's details.
+
+**A save read the Jobs tab twice.** Once before the lock to find the job, once
+inside it to increment the totals safely. The lookup now happens inside the
+lock, which is the same guarantee for one read instead of two.
+
+**A save held the whole floor behind its photo uploads.** One script lock
+serves every save in the shop, and a photo is two Drive writes — thumbnail and
+full. Uploading inside the lock meant one mechanic's two photos made everybody
+else's save wait on four Drive writes that had nothing to do with the
+spreadsheet. Files now go to Drive before the lock is taken. A test asserts it,
+and asserts the row write still happens inside.
+
+**Where the next append goes is remembered** for the length of a request, so a
+part that puts two lines on the parts list does not ask twice.
+
+Measured at 400 jobs / 3,200 entries:
+
+```
+                        ops   cells        was
+  addEntry (hours)        7   10,426       8 ops, 20,852 cells
+  addEntry (part+order)  10   10,426      11 ops, 20,869 cells
+  open a job (scanned)    3   64,888      two calls: 1 op + 3 ops
+```
+
+Not fixed, and the honest limit of this pass: **opening a job still reads
+every log entry in the shop.** Three whole-tab reads, one of them LogEntries.
+That is step 4 below and nothing else will move it.
+
+What is not guesswork any more is where the time goes. Step 0 landed with
+this pass: every answer carries `serverMs`, the pages time the whole round
+trip, the mechanic's footer shows both, and the App setup page lists the last
+dozen calls. If the round trip is four seconds and the sheet's share is half a
+second, the remaining work is not in this file — it is the decision about
+Apps Script.
+
 ## Where it got to (27 Aug 2026)
 
 Steps 1, 2 and most of 3 are done. Measured the same way, 400 jobs / 3,200
@@ -73,12 +137,17 @@ Two things learned in the doing, both recorded below:
 
 ## The work, in order
 
-### 0. Instrument first — STILL WORTH DOING
+### 0. Instrument first — DONE
 
-Have `api()` in `assets/lib/api.js` time every call, and show the figure in the
-portal — a corner readout, or the App setup page. Twenty minutes, and it turns
-"feels slow" into a number, including the Apps Script overhead this plan could
-not measure. Everything below is judged against it.
+`doPost` stamps `serverMs` on every answer, success or error. `api()` in
+`assets/lib/api.js` times the whole round trip and keeps the last dozen calls
+in `timings`, with `onApiTiming` for anything that wants to watch. The
+mechanic's footer shows the last call — `4.2s · 0.6s in the sheet` — and the
+App setup page lists the recent ones with a button to time it again.
+
+The gap between the two numbers is start-up, the redirect and the wifi. No
+amount of tidying spreadsheet reads touches it, which is exactly why the
+figure had to exist before any more tidying.
 
 ### 1. `addEntry` stops returning the whole log — DONE
 
@@ -123,6 +192,24 @@ the same columns, and a sweep that moves entries belonging to jobs that are
 done *and* paid *and* older than N months. `getJob` falls back to the archive
 when the job is in that state; `entriesForJob_` keeps reading only the live
 tab. Biggest change, least urgent, do it last.
+
+### 5. If the round trip is still the problem — the last thing inside Apps Script
+
+Only worth doing if the readout shows the sheet's share is the big half. In
+order of how much they buy:
+
+- **Batch the reads.** Enable the Sheets advanced service and use
+  `spreadsheets.values.batchGet` to fetch Jobs, LogEntries and PropRepairs in
+  ONE call instead of three. Needs `enabledAdvancedServices` in
+  `appsscript.json` and a stub for it in the tests.
+- **Drop `setNumberFormat` from the hot path** by formatting whole columns as
+  text once in `setup()`. Saves a trip per write. Prove the format survives a
+  row appended past the formatted range before trusting it — the whole reason
+  cells are text is that `01-8891` becomes a date otherwise.
+- **`CacheService` for a job's entries**, keyed by job id and dropped by every
+  path that writes one. Real cross-execution caching, unlike `_rowCache`. The
+  invalidation is the risk: a mechanic who sees a stale log will not trust the
+  app again.
 
 ## Constraints that still hold
 

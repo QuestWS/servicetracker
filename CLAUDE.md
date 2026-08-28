@@ -110,6 +110,14 @@ a code path that writes to a sheet without going through `appendRow_` or
   job up by its number means you are holding the work order. Listing every
   open job hands over every customer's name and boat at once — same
   information, very different disclosure, so the roster is the gate.
+
+  `lookupJob` **answers differently depending on who asked**, and that is the
+  gate rather than an optimisation: with a signed-in mechanic's token it
+  returns the whole job screen — the log, the hours, the props — and without
+  one it returns the summary and nothing else. It does that because opening a
+  job used to be two calls to Apps Script and the second one cost more in
+  start-up than in reading. Never let the anonymous branch grow the log, the
+  customer's phone or their email: a test asserts each of those is absent.
 - **The mechanic app logs three things: Hours, Parts, Notes** — in that order.
   A fourth tab, **Prop**, sits beside them and is deliberately not one of them:
   it writes a PropRepairs row, not a log entry. It shares the strip because
@@ -345,6 +353,34 @@ out of it and both matter:
   re-read two mechanics saving at once both write the same total and one is
   lost.
 
+
+**Round trips are the cost, not cells** — at the size the shop is actually at.
+Every call to `/exec` pays Apps Script's start-up and the redirect it answers a
+POST with, and inside the script every `getValues`, `getLastRow`,
+`setNumberFormat` and `setValues` is its own trip to Google. Each costs about
+the same whether the range is one cell or ten thousand. `tools/bench-reads.mjs`
+counts both numbers; **ops** is the one to watch first.
+
+Three rules came out of counting them, and all three are load-bearing:
+
+- **`addEntry` reads the Jobs tab once, inside the lock.** It used to read it
+  before the lock to find the job and again inside to increment safely. Reading
+  it once with the lock held is the same guarantee for half the reading — so
+  the job lookup lives inside `withLock_`, after the payload checks.
+- **Files go to Drive BEFORE the lock.** One script lock serves every save in
+  the shop and a photo is two Drive writes, so uploading inside it made one
+  mechanic's photos everybody else's wait. The lock is for the running totals.
+  A test asserts `saveFile_` runs outside it and `appendRow_` inside.
+- **`updateRow_` reads the span back before writing it, and that read stays.**
+  A patch of `updated_at` plus the two totals spans fourteen columns, the alert
+  among them, and the writer's saves do not take the lock. Building the span
+  from a row read earlier would quietly undo whatever the office saved in
+  between.
+
+Every answer carries `serverMs`, and `api()` times the whole round trip — the
+mechanic's footer shows both, and the App setup page lists recent calls. The
+gap between the two numbers is start-up and wifi, which no amount of tidying
+spreadsheet reads will touch.
 
 Apps Script charges for round trips, and a save used to make a lot of them.
 If a save gets sluggish again, look here first:

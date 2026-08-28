@@ -40,7 +40,7 @@
        time this is needed most is the time a screen did not draw. A phone
        running a half-updated copy of the app looks wrong rather than broken,
        so nothing else on the page would offer a way out of it. -->
-  <p class="mech-foot"><button type="button" id="updateapp">Update the app</button></p>
+  <p class="mech-foot"><button type="button" id="updateapp">Update the app</button><span id="timing"></span></p>
 </div>
 
 <!-- A watchdog, deliberately NOT a module.
@@ -92,7 +92,7 @@
 </script>
 
 <script type="module">
-import { api, ApiError, storeSession, storedWho, clearSession, storedToken } from '../assets/lib/api.js';
+import { api, ApiError, storeSession, storedWho, clearSession, storedToken, onApiTiming } from '../assets/lib/api.js';
 import { ENTRY_LABEL, formatHours, formatMinutes } from '../assets/lib/entry-types.js';
 import { tokenFromScan } from '../assets/lib/tracking.js';
 import { $, esc, toast, formatDateTime, fileToBase64, preparePhoto, driveImageUrl, driveFileUrl } from '../assets/lib/ui.js';
@@ -102,6 +102,22 @@ window.__questBooted = true;
 
 $('navback').onclick = () => { if (state.back) state.back(); };
 $('navhome').onclick = () => { state.job = null; state.jobFrom = null; renderHome(); };
+
+/**
+ * The last call's timing, in the footer where it is out of the way.
+ *
+ * A mechanic saying "it is slow" and a number saying 4.2s, 0.6s of it in the
+ * sheet, are different amounts of help. Only shown once a call has been made,
+ * and only the total unless the backend reported its own share.
+ */
+onApiTiming((call) => {
+  const box = $('timing');
+  if (!box) return;
+  const secs = (ms) => `${(ms / 1000).toFixed(1)}s`;
+  box.textContent = call.serverMs === null
+    ? secs(call.ms)
+    : `${secs(call.ms)} · ${secs(call.serverMs)} in the sheet`;
+});
 
 $('updateapp').onclick = () => {
   const button = $('updateapp');
@@ -494,8 +510,18 @@ async function openJob(code, source) {
   state.jobFrom = renderHome;
   view.innerHTML = `<p class="loading" style="color:#9fc3dc">Looking that job up…</p>`;
   try {
-    const { job } = await api('lookupJob', [code, source]);
-    state.job = job;
+    const data = await api('lookupJob', [code, source]);
+    state.job = data.job;
+    // Signed in already, so the log came back with the lookup rather than
+    // costing a second trip to the backend. That second call was most of the
+    // wait between scanning the paper and seeing the job.
+    if (data.entries) {
+      state.who = data.mechanic;
+      state.entries = data.entries;
+      state.hours = data.hours;
+      state.props = data.props;
+      return renderJob();
+    }
     if (state.who && storedToken()) return loadJob();
     renderSignIn();
   } catch (error) {
@@ -584,7 +610,12 @@ async function signIn(name, remember) {
 /* --------------------------------------------------------- job screen --- */
 
 async function loadJob() {
-  view.innerHTML = `<p class="loading" style="color:#9fc3dc">Opening job ${esc(state.job.id)}…</p>`;
+  stopScanning();
+  screen(state.jobFrom || renderHome);
+  view.innerHTML = state.job && state.job.id
+    ? `${jobHeadHtml(state.job, 'Opening the job…')}
+       <p class="loading" style="color:#9fc3dc">Loading the log…</p>`
+    : `<p class="loading" style="color:#9fc3dc">Opening the job…</p>`;
   try {
     const data = await api('jobForMechanic', [state.job.token]);
     state.who = data.mechanic;
@@ -656,12 +687,17 @@ function entryHtml(entry) {
   </article>`;
 }
 
-function renderJob() {
-  stopScanning();
-  screen(state.jobFrom || renderHome);
-  const job = state.job;
-  const finished = job.status === 'work_finished' || job.status === 'done';
-  view.innerHTML = `
+/**
+ * The top of the job screen: the alert first, then who and what the boat is.
+ *
+ * Split out so the screen can be drawn from what the open-jobs list already
+ * knows, the moment the mechanic taps a job, instead of a blank page and the
+ * word "Opening". The log arrives a beat later and the rest fills in — but
+ * the alert, which is the one thing that has to be read before work starts,
+ * is on screen straight away.
+ */
+function jobHeadHtml(job, hint) {
+  return `
     ${job.alert ? `<div class="alertbanner" role="alert" data-alert>
       <div class="tag">${ALERT_MARK} Read this first</div>
       <div class="msg">${esc(job.alert)}</div>
@@ -673,14 +709,23 @@ function renderJob() {
           <div style="font-family:var(--mono);font-size:18px;font-weight:600;color:var(--navy)">${esc(job.id)}</div>
           <div style="font-size:14px;color:var(--muted)">${esc(job.boatInfo || 'No boat details')}${job.customerName ? ` · ${esc(job.customerName)}` : ''}</div>
         </div>
-        <span class="pill frost">${esc(job.statusLabel)}</span>
+        ${job.statusLabel ? `<span class="pill frost">${esc(job.statusLabel)}</span>` : ''}
       </div>
-      <p class="hint" style="margin-top:8px">Logging as <b>${esc(state.who.name)}</b>${state.hours && state.hours.total ? ` · ${formatHours(state.hours.total)} on this job so far` : ''}</p>
+      <p class="hint" style="margin-top:8px">${hint}</p>
       ${job.workRequested ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--ice)">
         <div class="fld" style="margin:0 0 4px">What needs doing</div>
         <div style="font-size:15px;line-height:1.5;color:var(--navy)">${esc(job.workRequested)}</div>
       </div>` : ''}
-    </div>
+    </div>`;
+}
+
+function renderJob() {
+  stopScanning();
+  screen(state.jobFrom || renderHome);
+  const job = state.job;
+  const finished = job.status === 'work_finished' || job.status === 'done';
+  view.innerHTML = `
+    ${jobHeadHtml(job, `Logging as <b>${esc(state.who.name)}</b>${state.hours && state.hours.total ? ` · ${formatHours(state.hours.total)} on this job so far` : ''}`)}
 
     <div id="notice"></div>
 

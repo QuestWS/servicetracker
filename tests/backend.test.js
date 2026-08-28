@@ -481,6 +481,60 @@ describe('what a job page costs to open', () => {
   });
 });
 
+describe('how long the backend says it took', () => {
+  it('reports its own time on every answer, good or bad', () => {
+    // "It feels slow" cannot be fixed. This is what lets the app say how much
+    // of a wait was Apps Script doing the work and how much was everything
+    // else — start-up, the redirect, the shop's wifi — which is the half no
+    // amount of tidying spreadsheet reads will help.
+    const ok = backend.post({}, { fn: 'roster', args: [] });
+    expect(typeof ok.serverMs).toBe('number');
+    const bad = backend.post({}, { fn: 'listJobs', token: 'rubbish', args: [{}] });
+    expect(bad.error).toMatch(/Sign in/);
+    expect(typeof bad.serverMs).toBe('number');
+  });
+});
+
+describe('what opening a job costs', () => {
+  it('brings the log back with the lookup when a mechanic is signed in', () => {
+    const { id, token, mech } = seedJob();
+    // Scanning used to be two calls to Apps Script: the lookup, then the log.
+    // Each one pays Google's start-up and a redirect before it reads a cell,
+    // and that was most of the wait between the scanner beeping and the job
+    // appearing. One call now answers both.
+    const answer = backend.fn('lookupJob', token, 'scan', mech);
+    expect(answer.job.id).toBe(id);
+    expect(answer.mechanic.name).toBe('Dale');
+    expect(answer.entries.length).toBeGreaterThan(0);
+    expect(answer.hours.totalMinutes).toBe(90);
+    expect(Array.isArray(answer.props)).toBe(true);
+  });
+
+  it('still hands an unsigned scan nothing but the summary', () => {
+    const { token } = seedJob();
+    // The roster is the gate on the log, and on the customer's details with
+    // it. Holding the paper gets you the number and the boat; it does not get
+    // you what anyone has written down about the job.
+    const answer = backend.fn('lookupJob', token, 'scan');
+    expect(answer.job.boatInfo).toBe('2019 Yamaha 242X');
+    expect(answer.entries).toBeUndefined();
+    expect(answer.mechanic).toBeUndefined();
+    expect(answer.job.customerPhone).toBeUndefined();
+    expect(answer.job.customerEmail).toBeUndefined();
+  });
+
+  it('ignores a token that is not a mechanic\'s', () => {
+    const { token } = seedJob();
+    expect(backend.fn('lookupJob', token, 'scan', adminToken).entries).toBeUndefined();
+    expect(backend.fn('lookupJob', token, 'scan', 'rubbish').entries).toBeUndefined();
+  });
+
+  it('answers an unknown job the same either way', () => {
+    const { mech } = seedJob();
+    expect(() => backend.fn('lookupJob', 'nope', 'manual', mech)).toThrow(/No job found/);
+  });
+});
+
 describe('a job\'s running totals', () => {
   it('count what the log holds, without reading it', () => {
     const { id, token, mech } = seedJob();
@@ -900,6 +954,79 @@ describe('who may call what', () => {
   it('will not take a token somebody edited', () => {
     const forged = adminToken.slice(0, -4) + 'AAAA';
     expect(() => backend.fn('listJobs', forged, {})).toThrow(/Sign in/);
+  });
+});
+
+describe('saving an entry', () => {
+  it('still refuses a job token that is not a job', () => {
+    const { mech } = seedJob();
+    // The job is looked up inside the lock now, after the payload is checked,
+    // rather than before it. The answer to a bad token has to be the same.
+    expect(() => backend.fn('addEntry', mech, 'NOSUCH', { entryType: 'labor', minutes: 30, text: 'x' }))
+      .toThrow(/No such job/);
+  });
+
+  it('reads the job once, with the lock held, and still adds up', () => {
+    const { id, token, mech } = seedJob();
+    backend.fn('addEntry', mech, token, { entryType: 'labor', minutes: 20, text: 'One.' });
+    backend.fn('addEntry', mech, token, { entryType: 'labor', minutes: 20, text: 'Two.' });
+    backend.fn('addEntry', mech, token, { entryType: 'labor', minutes: 20, text: 'Three.' });
+    const row = backend.fn('jobRow_', id);
+    // 90 from the seed. Three twenty-minute stints are an hour, not 59
+    // minutes, and the totals must not have skipped a beat now that the row
+    // is read once instead of twice.
+    expect(Number(row.minutes_total)).toBe(150);
+    expect(Number(row.entry_count)).toBe(backend.fn('getJob', adminToken, id).entries.length);
+    expect(backend.fn('jobTotalsDrift_')).toHaveLength(0);
+  });
+
+  it('does not hold the whole floor behind a photo upload', () => {
+    const { token, mech } = seedJob();
+    // One script lock serves every save in the shop. Drive is slow and a
+    // photo is two writes to it, so uploading inside the lock made one
+    // mechanic's two photos everybody else's wait. The lock is for the
+    // running totals; the upload has no business inside it.
+    backend.call(`
+      __lockDepth = 0;
+      __uploadedUnderLock = false;
+      LockService = { getScriptLock: function () { return {
+        waitLock: function () { __lockDepth += 1; },
+        releaseLock: function () { __lockDepth -= 1; }
+      }; } };
+      __realSaveFile = saveFile_;
+      saveFile_ = function (a, b, c, d) {
+        if (__lockDepth > 0) __uploadedUnderLock = true;
+        return __realSaveFile(a, b, c, d);
+      };
+      // The same watch on the row write, so that a green result means the
+      // upload was outside the lock rather than that the watch never fired.
+      __appendedUnderLock = false;
+      __realAppendRow = appendRow_;
+      appendRow_ = function (a, b) {
+        if (__lockDepth > 0) __appendedUnderLock = true;
+        return __realAppendRow(a, b);
+      };
+    `);
+    const saved = backend.fn('addEntry', mech, token, {
+      entryType: 'internal_note',
+      text: 'Corrosion on the mount.',
+      photos: [{ thumb: 'dGh1bWI=', full: 'ZnVsbA==' }],
+    });
+    expect(saved.entry.photos).toHaveLength(1);
+    expect(backend.call('__uploadedUnderLock')).toBe(false);
+    expect(backend.call('__appendedUnderLock')).toBe(true);
+  });
+
+  it('puts two order lines on two different rows', () => {
+    const { token, mech } = seedJob();
+    // Where the next append goes is remembered for the length of one request
+    // now. Get that wrong and the second line lands on top of the first.
+    backend.fn('addEntry', mech, token, {
+      entryType: 'part', partIdentifier: 'TWO-LINE', text: 'Impeller', orderQty: 1, restockQty: 2,
+    });
+    const { needed } = backend.fn('listPartsOrders', adminToken);
+    expect(needed).toHaveLength(2);
+    expect(needed.map((p) => p.quantity).sort()).toEqual([1, 2]);
   });
 });
 

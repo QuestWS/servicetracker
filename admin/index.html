@@ -38,7 +38,7 @@
 <main class="wrap" id="view"><p class="loading">Loading…</p></main>
 
 <script type="module">
-import { api, storeSession, storedToken, clearSession } from '../assets/lib/api.js';
+import { api, storeSession, storedToken, clearSession, timings } from '../assets/lib/api.js';
 import { SITE_URL } from '../assets/lib/config.js';
 import { ENTRY_LABEL, STATUSES, STATUS_LABEL, STATUS_PILL, formatHours, decimalHours } from '../assets/lib/entry-types.js';
 import { extractPdf } from '../assets/lib/extract.js';
@@ -1583,6 +1583,18 @@ async function renderSetup() {
       `}
     </section>
 
+    <section class="card" style="margin-top:16px" id="speedcard">
+      <h2>How fast the backend is answering</h2>
+      <p style="font-size:15px;line-height:1.55">
+        Every call this browser has made, most recent first. <b>Round trip</b> is the wait somebody
+        actually sits through. <b>In the sheet</b> is the part Apps Script spent doing the work —
+        the rest is Google starting the script up and the shop's wifi, which is why a small job and
+        a big one take about the same time.
+      </p>
+      <div id="speedlist" style="margin-top:12px"></div>
+      <button class="btn ghost sm" type="button" id="timeagain" style="margin-top:12px">Time it again</button>
+    </section>
+
     <section class="card" style="margin-top:16px">
       <h2>Step 3 — check the camera works</h2>
       <p style="font-size:15px;line-height:1.55">
@@ -1595,6 +1607,30 @@ async function renderSetup() {
   $('copyurl').onclick = async () => {
     try { await navigator.clipboard.writeText(appUrl); toast('Address copied.'); }
     catch { $('appurl').select(); }
+  };
+
+  const drawSpeed = () => {
+    const box = $('speedlist');
+    if (!box) return;
+    const recent = timings.slice().reverse();
+    box.innerHTML = recent.length ? recent.map((call) => `
+      <div class="kv">
+        <span class="k" style="font-family:var(--mono)">${esc(call.fn)}</span>
+        <b>${(call.ms / 1000).toFixed(1)}s${call.serverMs === null ? ''
+          : ` <span class="sub">· ${(call.serverMs / 1000).toFixed(1)}s in the sheet</span>`}</b>
+      </div>`).join('') : '<p class="hint">Nothing timed yet.</p>';
+  };
+  drawSpeed();
+
+  $('timeagain').onclick = async () => {
+    const button = $('timeagain');
+    button.disabled = true;
+    button.textContent = 'Timing…';
+    try { await api('listJobs', [{ status: 'open' }]); } catch { /* the timing is the point */ }
+    try { await api('sheetStatus', []); } catch { /* same */ }
+    drawSpeed();
+    button.disabled = false;
+    button.textContent = 'Time it again';
   };
 
   const golive = $('golive');

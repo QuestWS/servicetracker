@@ -296,10 +296,22 @@ function rows_(name) {
   return out;
 }
 
+/**
+ * Where the next append goes. Memoised for the same reason `rows_` is: one
+ * getLastRow is a round trip to Google, and a save that logs a part and puts
+ * a line on the parts list appends twice.
+ */
+let _lastRow = {};
+
 /** Anything that writes must drop the cache, or the next read is a lie. */
 function forget_(name) {
-  if (name) delete _rowCache[name];
-  else _rowCache = {};
+  if (name) {
+    delete _rowCache[name];
+    delete _lastRow[name];
+  } else {
+    _rowCache = {};
+    _lastRow = {};
+  }
 }
 
 function appendRow_(name, obj) {
@@ -308,11 +320,13 @@ function appendRow_(name, obj) {
     return obj[key] === undefined || obj[key] === null ? '' : String(obj[key]);
   });
   const sheet = sheet_(name);
-  const at = Math.max(sheet.getLastRow() + 1, 2);
+  if (_lastRow[name] === undefined) _lastRow[name] = sheet.getLastRow();
+  const at = Math.max(_lastRow[name] + 1, 2);
   const range = sheet.getRange(at, 1, 1, columns.length);
   range.setNumberFormat('@');
   range.setValues([row]);
   forget_(name);
+  _lastRow[name] = at;
   return obj;
 }
 
@@ -334,6 +348,14 @@ function requireColumn_(name, column) {
   }
 }
 
+/**
+ * The span is read back before it is written, and that read is not waste to
+ * be optimised away. A patch of `updated_at` plus the two running totals
+ * spans fourteen columns, most of them nobody in this call touched — the
+ * alert among them. Writing those back from a copy read earlier would quietly
+ * undo whatever the service writer saved in between, and the writer's saves
+ * do not take the lock. One round trip is the price of not doing that.
+ */
 function updateRow_(name, rowNumber, patch) {
   const columns = SHEETS[name];
   const keys = Object.keys(patch).filter(function (key) { return columns.indexOf(key) !== -1; });
@@ -415,9 +437,14 @@ function requireAdmin_(token) {
   return payload;
 }
 
-function requireMechanic_(token) {
+function mechanicOrNull_(token) {
   const payload = unseal_(token);
-  if (!payload || payload.role !== 'mechanic') throw new Error('Sign in with your name first.');
+  return payload && payload.role === 'mechanic' ? payload : null;
+}
+
+function requireMechanic_(token) {
+  const payload = mechanicOrNull_(token);
+  if (!payload) throw new Error('Sign in with your name first.');
   return payload;
 }
 
@@ -517,7 +544,7 @@ function doPost(e) {
     /* mechanic app */
     roster:           function (a) { return roster(); },
     signIn:           function (a) { return mechanicSignIn(a[0], a[1]); },
-    lookupJob:        function (a) { return lookupJob(a[0], a[1]); },
+    lookupJob:        function (a) { return lookupJob(a[0], a[1], data.token); },
     jobForMechanic:   function (a) { return jobForMechanic(data.token, a[0]); },
     openJobs:         function (a) { return openJobs(data.token); },
     transcriptsFor:   function (a) { return transcriptsFor(data.token, a[0]); },
@@ -533,11 +560,22 @@ function doPost(e) {
   };
 
   if (!FNS[data.fn]) return json_({ error: 'Unknown function.' });
+  // How long this took on Google's side, in every answer. The pages measure
+  // the whole round trip; the difference between the two numbers is start-up
+  // and the wire, and knowing which of the two is the problem is the
+  // difference between fixing "it feels slow" and guessing at it.
+  const started = Date.now();
   try {
-    return json_(FNS[data.fn](data.args || []));
+    return json_(timed_(FNS[data.fn](data.args || []), started));
   } catch (err) {
-    return json_({ error: String(err && err.message ? err.message : err) });
+    return json_(timed_({ error: String(err && err.message ? err.message : err) }, started));
   }
+}
+
+function timed_(out, started) {
+  if (!out || typeof out !== 'object' || Array.isArray(out)) return out;
+  out.serverMs = Date.now() - started;
+  return out;
 }
 
 /**
@@ -961,17 +999,23 @@ function laborTotals_(entries) {
   };
 }
 
+/** Everything the mechanic's job screen draws itself from. */
+function mechanicPayload_(who, job) {
+  const entries = entriesForJob_(job.id);
+  return {
+    mechanic: { id: who.id, name: who.name },
+    job: jobSummary_(job),
+    entries: entries,
+    hours: laborTotals_(entries),
+    props: propsForJob_(job.id)
+  };
+}
+
 function jobForMechanic(token, jobToken) {
   const who = requireMechanic_(token);
   const job = jobByToken_(jobToken);
   if (!job) throw new Error('No such job.');
-  return {
-    mechanic: { id: who.id, name: who.name },
-    job: jobSummary_(job),
-    entries: entriesForJob_(job.id),
-    hours: laborTotals_(entriesForJob_(job.id)),
-    props: propsForJob_(job.id)
-  };
+  return mechanicPayload_(who, job);
 }
 
 /**
@@ -980,8 +1024,6 @@ function jobForMechanic(token, jobToken) {
  */
 function addEntry(token, jobToken, payload) {
   const who = requireMechanic_(token);
-  const job = jobByToken_(jobToken);
-  if (!job) throw new Error('No such job.');
 
   const type = payload.entryType;
   if (!ENTRY_LABEL[type]) throw new Error('Pick what kind of entry this is.');
@@ -1030,19 +1072,48 @@ function addEntry(token, jobToken, payload) {
     }
   });
 
-  const saved = withLock_(function () {
-    const stored = photos.slice(0, 8).map(function (photo, index) {
+  /**
+   * Files go to Drive BEFORE the lock is taken.
+   *
+   * Every save in the shop queues on one script lock. A photo is two Drive
+   * writes — thumbnail and full — and Drive is slow, so a mechanic saving two
+   * photos held every other mechanic's save behind four uploads that had
+   * nothing to do with the spreadsheet. The lock exists to keep two saves
+   * from reading the same running total; it was never there to protect a file
+   * upload.
+   *
+   * The price is one read of the Jobs tab before the lock, to know which
+   * folder the photos belong in — and the copy it leaves behind is dropped
+   * inside the lock, because it predates it. A save with no files pays
+   * nothing for this.
+   */
+  const hasFiles = Boolean(photos.length || hasAudio);
+  let stored = [];
+  let audioFile = '';
+  if (hasFiles) {
+    const unlocked = jobByToken_(jobToken);
+    if (!unlocked) throw new Error('No such job.');
+    stored = photos.slice(0, 8).map(function (photo, index) {
       return {
-        thumb: saveFile_(job.id, 'photo-' + Date.now() + '-' + index + '-thumb.jpg', 'image/jpeg', photo.thumb),
-        full: saveFile_(job.id, 'photo-' + Date.now() + '-' + index + '.jpg', 'image/jpeg', photo.full)
+        thumb: saveFile_(unlocked.id, 'photo-' + Date.now() + '-' + index + '-thumb.jpg', 'image/jpeg', photo.thumb),
+        full: saveFile_(unlocked.id, 'photo-' + Date.now() + '-' + index + '.jpg', 'image/jpeg', photo.full)
       };
     });
-
-    let audioFile = '';
     if (hasAudio) {
-      audioFile = saveFile_(job.id, 'voice-' + Date.now() + '.' + (payload.audioExt || 'webm'),
+      audioFile = saveFile_(unlocked.id, 'voice-' + Date.now() + '.' + (payload.audioExt || 'webm'),
         payload.audioMime || 'audio/webm', payload.audio);
     }
+  }
+
+  const saved = withLock_(function () {
+    // The job is read INSIDE the lock, and that is the whole point of doing
+    // it here rather than at the top. The running totals have to be read and
+    // incremented without another save landing in between, and reading the
+    // tab once with the lock held is the same guarantee the old re-read gave
+    // — for one fewer read of every job in the shop.
+    if (hasFiles) forget_('Jobs');
+    const job = jobByToken_(jobToken);
+    if (!job) throw new Error('No such job.');
 
     const entry = {
       id: newId_('log'),
@@ -1090,7 +1161,7 @@ function addEntry(token, jobToken, payload) {
       }
     }
 
-    const saved = bumpJobEntryTotals_(job.id, type === 'labor' ? minutesFromHours_(hours) : 0);
+    const saved = bumpJobEntryTotals_(job.id, type === 'labor' ? minutesFromHours_(hours) : 0, true);
 
     // No entries in the answer. It used to hand back every entry on the job —
     // a full read of the LogEntries tab, which grows forever — to return a
@@ -1854,7 +1925,7 @@ function adminSignIn(password) {
  * exactly as the paper-first workflow implies. Only a summary comes back; the
  * log itself needs a name against it.
  */
-function lookupJob(code, source) {
+function lookupJob(code, source, token) {
   const job = jobByToken_(String(code || '').trim().toUpperCase()) || jobByNumber_(code);
   if (!job) throw new Error('No job found for that code. Check the number on the work order.');
 
@@ -1862,6 +1933,16 @@ function lookupJob(code, source) {
     setStatus_(job, 'work_underway', 'system', '', 'First scan of the work order');
   }
   const fresh = jobRow_(job.id);
+
+  // A mechanic who is already signed in is going to ask for the log the
+  // instant this answers, and a second call to Apps Script costs far more in
+  // start-up and redirects than it does in reading — it was most of the wait
+  // between scanning a work order and seeing the job. So the log rides along
+  // when there is a name against the request. Without one the answer is
+  // unchanged: a summary, and a sign-in prompt.
+  const who = token ? mechanicOrNull_(token) : null;
+  if (who) return mechanicPayload_(who, fresh);
+
   return {
     job: {
       id: fresh.id,
@@ -2756,10 +2837,12 @@ function ensureSheets_(spreadsheet) {
  *
  * Re-reads the row rather than trusting a copy taken earlier: the caller may
  * have read it before the lock, and two writes landing together would both
- * save the same number and lose one.
+ * save the same number and lose one. `insideLock` says the caller already
+ * read the row with the lock held, which is the same guarantee for one fewer
+ * read of the whole tab — addEntry does exactly that.
  */
-function bumpJobEntryTotals_(jobId, addedMinutes) {
-  forget_('Jobs');
+function bumpJobEntryTotals_(jobId, addedMinutes, insideLock) {
+  if (!insideLock) forget_('Jobs');
   const job = jobRow_(jobId);
   if (!job) return null;
   const totals = {

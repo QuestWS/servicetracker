@@ -177,6 +177,34 @@ await mech.click('#nameform button[type=submit]');
 await mech.waitForSelector('.segmented', { timeout: 15000 });
 check('signs in by typing a name', (await mech.textContent('.card')).includes(invoiceNumber));
 
+// Opening a job used to be two calls to Apps Script: look the number up, then
+// fetch the log. Each one pays Google's start-up and a redirect before it
+// reads a cell, which was most of the wait between the beep and the job. For
+// a mechanic who is already signed in it is now one call.
+await mech.click('#navhome');
+await mech.waitForSelector('#manual', { timeout: 20000 });
+await mech.click('#manual');
+await mech.fill('#code', invoiceNumber);
+const openCalls = [];
+const countOpen = (request) => {
+  if (!request.url().endsWith('/exec')) return;
+  try { openCalls.push(JSON.parse(request.postData() || '{}').fn); } catch { openCalls.push('?'); }
+};
+mech.on('request', countOpen);
+await mech.click('button[type=submit]');
+await mech.waitForSelector('.segmented', { timeout: 20000 });
+mech.off('request', countOpen);
+check('a signed-in mechanic opens a job in one call to the backend',
+  openCalls.length === 1 && openCalls[0] === 'lookupJob', openCalls.join(', '));
+check('and lands on the job, not on a sign-in card',
+  (await mech.textContent('.card')).includes(invoiceNumber));
+
+// "It feels slow" cannot be acted on; a number can. The footer carries the
+// last call's round trip, and the share of it Apps Script spent working.
+const timing = (await mech.textContent('#timing')) || '';
+check('the footer says how long the last call took', /\d+\.\ds/.test(timing), timing);
+check('and how much of it was the sheet', timing.includes('in the sheet'), timing);
+
 // Whether a bare file input offers "camera or library" is the phone's
 // choice, and the shop's phone offered neither — first the camera only,
 // then the gallery only. So there are two inputs and two buttons, and the

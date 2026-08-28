@@ -3,8 +3,14 @@
  *
  * A Sheet has no index, so rows_() reads the WHOLE tab every time — and the
  * row cache is per-execution, so every web request starts cold. That makes
- * cell-reads-per-request the number that decides how slow the app feels, and
- * the number that grows every week the shop uses it.
+ * cell-reads-per-request the number that grows every week the shop uses it.
+ *
+ * `ops` is the other number, and at the shop's current size it is the one
+ * that decides how slow a save FEELS. Every getValues, getLastRow,
+ * setNumberFormat and setValues is a separate round trip from Apps Script to
+ * Google's servers, and each costs the same tens of milliseconds whether the
+ * range is one cell or ten thousand. Forty jobs' worth of cells crosses the
+ * wire faster than four needless calls.
  *
  * This runs the real service-tracker.gs against the test stub with the sheet
  * API instrumented, seeds a shop of a given size, and reports reads and writes
@@ -36,7 +42,7 @@ for (let j = 0; j < JOBS; j++) {
 }
 const token = backend.fn('jobRow_', '01-9000').token;
 
-const stats = { reads: 0, cells: 0, writes: 0 };
+const stats = { reads: 0, cells: 0, writes: 0, ops: 0 };
 for (const name of ['Jobs', 'LogEntries', 'PartsOrders', 'PropRepairs',
                     'StatusEvents', 'EmailLog', 'Mechanics']) {
   const sheet = backend.sheet(name);
@@ -48,15 +54,23 @@ for (const name of ['Jobs', 'LogEntries', 'PartsOrders', 'PropRepairs',
     return { ...range, getValues: () => {
       const v = values();
       stats.reads++;
+      stats.ops++;
       stats.cells += v.length * (v[0]?.length || 0);
       return v;
     } };
   };
+  const realLast = sheet.getLastRow.bind(sheet);
+  sheet.getLastRow = () => { stats.ops++; return realLast(); };
   const realRange = sheet.getRange.bind(sheet);
   sheet.getRange = (...args) => {
     const range = realRange(...args);
     const set = range.setValues.bind(range);
-    return { ...range, setValues: (v) => { stats.writes++; return set(v); } };
+    const get = range.getValues.bind(range);
+    const format = range.setNumberFormat.bind(range);
+    return { ...range,
+      getValues: () => { stats.ops++; return get(); },
+      setNumberFormat: (f) => { stats.ops++; return format(f); },
+      setValues: (v) => { stats.writes++; stats.ops++; return set(v); } };
   };
 }
 
@@ -65,9 +79,10 @@ console.log('  Each line is ONE fresh web request — the row cache starts empty
 
 function measure(label, fn) {
   backend.fn('forget_');                    // what a new execution begins with
-  stats.reads = 0; stats.cells = 0; stats.writes = 0;
+  stats.reads = 0; stats.cells = 0; stats.writes = 0; stats.ops = 0;
   fn();
-  console.log(`  ${label.padEnd(32)} reads ${String(stats.reads).padStart(2)}`
+  console.log(`  ${label.padEnd(32)} ops ${String(stats.ops).padStart(3)}`
+    + `   whole-tab reads ${String(stats.reads).padStart(2)}`
     + `   cells ${String(stats.cells).padStart(7)}   writes ${String(stats.writes).padStart(2)}`);
 }
 
@@ -75,6 +90,7 @@ measure('addEntry (hours)', () =>
   backend.fn('addEntry', mech, token, { entryType: 'labor', minutes: 30, text: 'Impeller.' }));
 measure('addEntry (part + order line)', () =>
   backend.fn('addEntry', mech, token, { entryType: 'part', partIdentifier: 'X-1', quantity: 1, orderQty: 1 }));
+measure('lookupJob (scan, signed in)', () => backend.fn('lookupJob', '01-9000', 'scan', mech));
 measure('jobForMechanic (open a job)', () => backend.fn('jobForMechanic', mech, token));
 measure('listJobs (writer jobs list)', () => backend.fn('listJobs', admin, {}));
 measure('getJob (writer job page)', () => backend.fn('getJob', admin, '01-9000'));

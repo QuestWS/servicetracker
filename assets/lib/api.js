@@ -57,10 +57,41 @@ export function clearSession() {
 
 export class ApiError extends Error {}
 
+/**
+ * How long each call actually took, because "it feels slow" cannot be fixed
+ * and a number can.
+ *
+ * `ms` is the whole round trip as the phone experienced it. `serverMs` is
+ * what Apps Script spent between receiving the request and answering it. The
+ * gap between the two is start-up, the redirect Apps Script answers a POST
+ * with, and the shop's wifi — none of which any amount of tidying the
+ * spreadsheet reads will help.
+ */
+export const timings = [];
+const TIMING_KEEP = 12;
+const listeners = [];
+
+export function onApiTiming(handler) {
+  listeners.push(handler);
+}
+
+function record(entry) {
+  timings.push(entry);
+  if (timings.length > TIMING_KEEP) timings.shift();
+  listeners.forEach((handler) => {
+    try {
+      handler(entry);
+    } catch {
+      /* A diagnostic must never break the call it was measuring. */
+    }
+  });
+}
+
 export async function api(fn, args) {
   if (!API_URL || API_URL.indexOf('PASTE') === 0) {
     throw new ApiError('This site is not connected to its backend yet — see assets/lib/config.js.');
   }
+  const started = Date.now();
   let res;
   try {
     res = await fetch(API_URL, {
@@ -69,16 +100,27 @@ export async function api(fn, args) {
       body: JSON.stringify({ fn, token: storedToken(), args: args || [] }),
     });
   } catch {
+    record({ fn, ms: Date.now() - started, serverMs: null, ok: false });
     throw new ApiError('No connection to the shop server. Nothing was saved.');
   }
-  if (!res.ok) throw new ApiError(`The shop server answered ${res.status}. Nothing was saved.`);
+  if (!res.ok) {
+    record({ fn, ms: Date.now() - started, serverMs: null, ok: false });
+    throw new ApiError(`The shop server answered ${res.status}. Nothing was saved.`);
+  }
 
   let body;
   try {
     body = await res.json();
   } catch {
+    record({ fn, ms: Date.now() - started, serverMs: null, ok: false });
     throw new ApiError('The shop server sent something unreadable. Nothing was saved.');
   }
+  record({
+    fn,
+    ms: Date.now() - started,
+    serverMs: body && typeof body.serverMs === 'number' ? body.serverMs : null,
+    ok: !(body && body.error),
+  });
   if (body && body.error) {
     if (String(body.error).indexOf('Sign in') === 0) clearSession();
     throw new ApiError(body.error);

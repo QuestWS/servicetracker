@@ -975,6 +975,9 @@ table.grid .sub { font-size: 12.5px; color: var(--muted); }
   padding: 8px 12px;
 }
 .mech-foot button:disabled { opacity: .6; text-decoration: none; }
+/* How long the last call took. Quiet enough to ignore, there when asked. */
+.mech-foot #timing { display: block; color: #52738c; font-size: 12px; margin-top: 2px; }
+.mech-foot #timing:empty { display: none; }
 
 /* What is already on a job's ticket, above the box that adds to it. */
 .ticketparts { margin-bottom: 14px; }
