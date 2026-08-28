@@ -558,6 +558,7 @@ function doPost(e) {
     jobHistory:       function (a) { return jobHistory(data.token, a[0]); },
     setJobFlag:       function (a) { return setJobFlag(data.token, a[0], a[1], a[2]); },
     sheetStatus:      function (a) { return sheetStatus(data.token); },
+    runSetup:         function (a) { return runSetup(data.token); },
     listMechanics:    function (a) { return listMechanicsAdmin(data.token); },
     addMechanic:      function (a) { return addMechanic(data.token, a[0]); },
     renameMechanic:   function (a) { return renameMechanic(data.token, a[0], a[1]); },
@@ -3249,6 +3250,37 @@ function sheetStatus(token) {
     drifted: drift.length,
     driftedIds: drift.slice(0, 10)
   };
+}
+
+/**
+ * setup(), from the portal instead of the Apps Script editor.
+ *
+ * Every deploy that adds a column or a trigger needs setup() run once, and
+ * until now that meant somebody opening script.google.com, finding the
+ * function in a dropdown and pressing run. The App setup page already says
+ * exactly what is missing; this is the button next to it.
+ *
+ * Behind the writer's password, which is the same door as everything else on
+ * that page, and it is safe to press twice: setup() adds what is missing and
+ * touches nothing else.
+ *
+ * Answers rather than throws when it fails part way. ensureSheets_ runs
+ * before installTriggers_, so a script that has never been authorised to
+ * create triggers from a web app still gets its columns — and the writer
+ * needs to be told which half happened, not handed a red banner that makes
+ * it look like nothing did.
+ */
+function runSetup(token) {
+  requireAdmin_(token);
+  try {
+    return { ok: true, notes: setup(), status: sheetStatus(token) };
+  } catch (err) {
+    return {
+      ok: false,
+      error: String(err && err.message ? err.message : err),
+      status: sheetStatus(token)
+    };
+  }
 }
 
 function repairCoercedIds_() {

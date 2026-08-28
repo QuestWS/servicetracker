@@ -484,6 +484,23 @@ Consumer Gmail, not Workspace, and the account is shared with the winter app:
   the parts list at 3pm, and `nightly` at 2am for the file filing — put
   housekeeping there, where slow costs nothing, rather than into the hourly.
 
+## Running setup() without opening Apps Script
+
+Every deploy that adds a column, a tab or a trigger needs `setup()` run once.
+The App setup page says whether the sheet is behind — `sheetStatus` — and now
+has the button next to it: `runSetup` is `setup()` behind the writer's
+password. It is safe to press twice, because setup() only ever adds what is
+missing.
+
+It **answers rather than throws** when it fails part way, and that is the
+point of the shape. `ensureSheets_` runs before `installTriggers_`, so a
+script that has never been authorised to create a trigger from a web app
+still gets its columns — the page says which half landed instead of showing a
+red banner that makes it look as though nothing did.
+
+Nobody should have to find a function in a dropdown on script.google.com to
+finish a deploy.
+
 ## The two switches
 
 Both are script properties, both default to the safe side, and both are flipped

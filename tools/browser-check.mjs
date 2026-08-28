@@ -1067,6 +1067,19 @@ check('App setup reports the sheet is up to date',
 check('the setup page offers no customer page to switch on',
   !/tracking|customer page/i.test(setupText), setupText.slice(0, 200));
 
+// setup() without opening Apps Script. Every deploy that adds a column or a
+// trigger needs it run once, and finding a function in a dropdown on
+// script.google.com is not a thing to ask of a shop.
+check('the setup page can bring the sheet up to date itself',
+  await admin.locator('#runsetup').count() === 1);
+await admin.click('#runsetup');
+await admin.waitForFunction(
+  () => { const b = document.getElementById('runsetup'); return b && !b.disabled; },
+  null, { timeout: 30000 });
+check('and says so when it has',
+  await admin.locator('.banner.ok:has-text("up to date")').count() === 1,
+  (await admin.evaluate(() => document.body.innerText)).slice(0, 300));
+
 // Where "it feels slow" turns into a figure somebody can quote back.
 check('the setup page lists what the backend is costing',
   await admin.locator('#speedlist .kv').count() > 0);

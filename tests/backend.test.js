@@ -1569,6 +1569,65 @@ describe('what the mechanic needs before touching the boat', () => {
   });
 });
 
+describe('running setup from the portal', () => {
+  it('brings a sheet that is behind up to date', () => {
+    const { id } = seedJob();
+    // A deploy that adds a column leaves the workbook behind until somebody
+    // runs setup(). Doing that used to mean opening the Apps Script editor.
+    const sheet = backend.sheet('LogEntries');
+    const at = sheet.rows[0].indexOf('transcript');
+    sheet.rows[0][at] = '';
+    backend.call('forget_(); _headers = {};');
+    expect(backend.fn('sheetStatus', adminToken).ready).toBe(false);
+
+    const result = backend.fn('runSetup', adminToken);
+    expect(result.ok).toBe(true);
+    expect(result.status.ready).toBe(true);
+    expect(backend.fn('sheetStatus', adminToken).ready).toBe(true);
+    // And it left the job alone.
+    expect(backend.fn('jobRow_', id)).toBeTruthy();
+  });
+
+  it('recounts totals that have drifted, and says so', () => {
+    const { id } = seedJob();
+    const job = backend.fn('jobRow_', id);
+    backend.fn('updateRow_', 'Jobs', job._row, { entry_count: 99, minutes_total: 9999 });
+    expect(backend.fn('sheetStatus', adminToken).drifted).toBe(1);
+
+    const result = backend.fn('runSetup', adminToken);
+    expect(result.ok).toBe(true);
+    expect(result.notes).toMatch(/Recounted/);
+    expect(backend.fn('sheetStatus', adminToken).drifted).toBe(0);
+  });
+
+  it('is safe to press twice', () => {
+    seedJob();
+    backend.fn('runSetup', adminToken);
+    const again = backend.fn('runSetup', adminToken);
+    expect(again.ok).toBe(true);
+    expect(again.status.ready).toBe(true);
+  });
+
+  it('says which half landed when it cannot finish', () => {
+    seedJob();
+    // Installing triggers is the last thing setup() does, and a script that
+    // has never been authorised for it from a web app will fail there —
+    // after the columns are already written. A red banner implying nothing
+    // happened would send the writer looking in the wrong place.
+    backend.call("ScriptApp.newTrigger = function () { throw new Error('Authorisation is required'); };");
+    const result = backend.fn('runSetup', adminToken);
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Authorisation/);
+    expect(result.status.ready).toBe(true);
+  });
+
+  it('is the writer\'s door, not the floor\'s', () => {
+    const { mech } = seedJob();
+    expect(() => backend.fn('runSetup', mech)).toThrow(/Sign in/);
+    expect(() => backend.fn('runSetup', '')).toThrow(/Sign in/);
+  });
+});
+
 describe('the housekeeping triggers', () => {
   it('schedules the nightly filing alongside the hourly and the parts list', () => {
     // A trigger nobody installs is a feature that silently never runs.

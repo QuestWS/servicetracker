@@ -1562,23 +1562,29 @@ async function renderSetup() {
   let sheet = null;
   try { sheet = await api('sheetStatus', []); } catch { sheet = null; }
   view.innerHTML = `
-    ${sheet ? (sheet.ready
-      ? `<div class="banner ok" style="margin-bottom:16px"><b>The sheet is up to date.</b>
-          Every tab and column the current code expects is there, and every job's totals agree
-          with the log.</div>`
-      : `<div class="banner warn" style="margin-bottom:16px">
-          <b>The sheet is behind the code — run <code>setup()</code>.</b>
-          <div style="margin-top:6px">Open the Apps Script project, pick <b>setup</b> from the
-            function list and run it once. It only ever adds what is missing.</div>
-          ${sheet.missing.length ? `<ul style="margin:8px 0 0 18px">${sheet.missing.map((gap) =>
-            `<li>${gap.absent
-              ? `The <b>${esc(gap.tab)}</b> tab does not exist yet`
-              : `<b>${esc(gap.tab)}</b> is missing: ${gap.columns.map((c) => `<code>${esc(c)}</code>`).join(', ')}`}</li>`).join('')}</ul>` : ''}
-          ${sheet.drifted ? `<div style="margin-top:8px">${sheet.drifted} job${sheet.drifted === 1 ? '' : 's'}
-            have entry or time totals that disagree with the log${sheet.driftedIds.length
-              ? ` (${sheet.driftedIds.map((id) => esc(id)).join(', ')}${sheet.drifted > sheet.driftedIds.length ? ', …' : ''})` : ''}.
-            Running setup() recounts them.</div>` : ''}
-        </div>`) : ''}
+    ${sheet ? `<div class="banner ${sheet.ready ? 'ok' : 'warn'}" style="margin-bottom:16px" id="sheetbanner">
+        ${sheet.ready
+          ? `<b>The sheet is up to date.</b>
+             Every tab and column the current code expects is there, and every job's totals agree
+             with the log.`
+          : `<b>The sheet is behind the code.</b>
+             <div style="margin-top:6px">A deploy has added something the workbook does not have
+               yet. Bringing it up to date only ever adds what is missing — nothing already there
+               is touched.</div>
+             ${sheet.missing.length ? `<ul style="margin:8px 0 0 18px">${sheet.missing.map((gap) =>
+               `<li>${gap.absent
+                 ? `The <b>${esc(gap.tab)}</b> tab does not exist yet`
+                 : `<b>${esc(gap.tab)}</b> is missing: ${gap.columns.map((c) => `<code>${esc(c)}</code>`).join(', ')}`}</li>`).join('')}</ul>` : ''}
+             ${sheet.drifted ? `<div style="margin-top:8px">${sheet.drifted} job${sheet.drifted === 1 ? '' : 's'}
+               have entry or time totals that disagree with the log${sheet.driftedIds.length
+                 ? ` (${sheet.driftedIds.map((id) => esc(id)).join(', ')}${sheet.drifted > sheet.driftedIds.length ? ', …' : ''})` : ''}.
+               This recounts them.</div>` : ''}`}
+        <div style="margin-top:12px">
+          <button class="btn ${sheet.ready ? 'ghost' : 'navy'} sm" type="button" id="runsetup">${
+            sheet.ready ? 'Run it again anyway' : 'Bring the sheet up to date'}</button>
+        </div>
+        <div id="setupout"></div>
+      </div>` : ''}
 
     <h1 class="page-title">Put the app on a phone</h1>
     <p class="lead">
@@ -1674,6 +1680,39 @@ async function renderSetup() {
   $('copyurl').onclick = async () => {
     try { await navigator.clipboard.writeText(appUrl); toast('Address copied.'); }
     catch { $('appurl').select(); }
+  };
+
+  /**
+   * setup(), without opening Apps Script.
+   *
+   * Every deploy that adds a column or a trigger needs it run once, and doing
+   * that in the editor means finding a function in a dropdown on a page
+   * nobody in the shop otherwise visits.
+   */
+  const runsetup = $('runsetup');
+  if (runsetup) runsetup.onclick = async () => {
+    runsetup.disabled = true;
+    runsetup.textContent = 'Bringing it up to date…';
+    try {
+      const result = await api('runSetup', []);
+      if (result.ok) {
+        toast('The sheet is up to date.');
+        return renderSetup();
+      }
+      // Part way. The columns are written before the triggers are installed,
+      // so say which half landed rather than implying none of it did.
+      $('setupout').innerHTML = `<div style="margin-top:10px">
+        <b>Partly done.</b> ${esc(result.error)}
+        <div style="margin-top:6px">${result.status && result.status.ready
+          ? 'The tabs and columns are in place. What is left needs running once from the Apps Script editor.'
+          : 'Nothing was changed. Try again, or run setup() from the Apps Script editor.'}</div></div>`;
+      runsetup.disabled = false;
+      runsetup.textContent = 'Try again';
+    } catch (error) {
+      $('setupout').innerHTML = `<div style="margin-top:10px">${esc(error.message)}</div>`;
+      runsetup.disabled = false;
+      runsetup.textContent = 'Try again';
+    }
   };
 
   const drawSpeed = () => {
