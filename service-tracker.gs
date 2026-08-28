@@ -182,7 +182,12 @@ const SHEETS = {
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
                'transcript_id', 'transcript_error', 'notified_at', 'created_at',
-               'logged_at'],
+               'logged_at',
+               // The words off the recording, kept apart from `text` because
+               // `text` is what a person typed. A mechanic who records AND
+               // types has said two things, and a transcript landing in the
+               // same cell would have wiped one of them out.
+               'transcript'],
   // A part somebody needs: off a work order, or a bare stock request. One row
   // per part; rows ordered together share a vendor and order number, and the
   // group is done when every row in it has been received.
@@ -340,6 +345,20 @@ function appendRow_(name, obj) {
  * calling from a new feature's entry point, in the window between a deploy and
  * somebody running setup() — after that it is always true.
  */
+/**
+ * Whether a column setup() is supposed to have written is actually there.
+ *
+ * Memoised: this is asked on the transcript path, which can run for a dozen
+ * entries in one sweep, and the header does not change mid-execution.
+ */
+let _headers = {};
+function headerHas_(name, column) {
+  if (!_headers[name]) {
+    _headers[name] = sheet_(name).getRange(1, 1, 1, SHEETS[name].length).getValues()[0];
+  }
+  return _headers[name].indexOf(column) !== -1;
+}
+
 function requireColumn_(name, column) {
   const header = sheet_(name).getRange(1, 1, 1, SHEETS[name].length).getValues()[0];
   if (header.indexOf(column) === -1) {
@@ -952,6 +971,9 @@ function entryView_(entry) {
     quantity: entry.quantity === '' || entry.quantity === null ? null : Number(entry.quantity),
     audioFile: entry.audio_file || null,
     photos: parsePhotos_(entry.photos),
+    // What was typed and what was said, separately. Older entries kept the
+    // transcript in `text`, which is why this is not a rename.
+    transcript: entry.transcript || null,
     transcriptStatus: entry.transcript_status || null,
     transcriptError: entry.transcript_error || null,
     loggedAt: entry.logged_at || null,
@@ -976,19 +998,27 @@ function entriesForJob_(jobId) {
  * its transcript has no words yet, so it stays out rather than showing an
  * empty row; it appears on its own once the text lands.
  *
+ * Spoken words count as words. They used to arrive in `text` and now arrive
+ * in `transcript`, so both are read and joined — the customer sees the note,
+ * not the mechanics of how it was dictated.
+ *
  * If a new field is ever added to a log entry, its visibility is decided
  * here, not in a page template.
  */
+function customerWords_(entry) {
+  return [entry.text, entry.transcript].filter(Boolean).join('\n\n') || null;
+}
+
 function customerView_(entries) {
   return entries
     .filter(function (entry) {
       if (entry.entryType !== 'customer_note') return false;
-      return Boolean(entry.text) || entry.photos.length > 0;
+      return Boolean(customerWords_(entry)) || entry.photos.length > 0;
     })
     .map(function (entry) {
       return {
         id: entry.id,
-        text: entry.text,
+        text: customerWords_(entry),
         photos: entry.photos,
         createdAt: entry.createdAt
       };
@@ -1187,7 +1217,11 @@ function addEntry(token, jobToken, payload) {
       quantity: type === 'part' && quantity ? quantity : '',
       audio_file: audioFile,
       photos: stored.length ? JSON.stringify(stored) : '',
-      transcript_status: audioFile && !text ? 'pending' : '',
+      // Every recording gets transcribed. It used to skip the ones with a
+      // typed note beside them — on the reasoning that the words were already
+      // there — but a mechanic who records AND types has said two things, and
+      // only one of them was being kept.
+      transcript_status: audioFile ? 'pending' : '',
       transcript_id: '',
       transcript_error: '',
       notified_at: '',
@@ -2035,7 +2069,11 @@ function transcriptsFor(token, jobToken) {
       .map(function (entry) {
         return {
           id: entry.id,
+          // Both, because both can move: an older entry keeps its words in
+          // `text`, a new one has them in `transcript` beside whatever was
+          // typed.
           text: entry.text,
+          transcript: entry.transcript,
           transcriptStatus: entry.transcriptStatus,
           transcriptError: entry.transcriptError
         };
@@ -2619,7 +2657,10 @@ function sendDigest() {
         bits.push('<b>' + esc_(entry.partIdentifier) + '</b>' + (entry.quantity ? ' &times; ' + entry.quantity : ''));
       }
       if (entry.text) bits.push(esc_(entry.text));
-      if (!entry.text && entry.transcriptStatus === 'pending') bits.push('<i>voice note — still transcribing</i>');
+      if (entry.transcript) bits.push('<i>said:</i> ' + esc_(entry.transcript));
+      if (!entry.transcript && entry.transcriptStatus === 'pending') {
+        bits.push('<i>voice note — still transcribing</i>');
+      }
       if (entry.photos.length) bits.push('<i>' + entry.photos.length + ' photo' + (entry.photos.length === 1 ? '' : 's') + '</i>');
       return '<tr><td style="padding:6px 0;border-bottom:1px solid #EBF1F6;vertical-align:top">' +
         '<div style="font-size:12px;color:#4A81A6;text-transform:uppercase;letter-spacing:.06em">' +
@@ -2782,11 +2823,29 @@ function applyTranscript_(transcriptId) {
   for (let i = 0; i < all.length; i++) {
     if (String(all[i].transcript_id) !== String(transcriptId)) continue;
     if (body.status === 'completed') {
-      updateRow_('LogEntries', all[i]._row, {
-        text: String(body.text || '').trim(),
-        transcript_status: 'done',
-        transcript_error: ''
-      });
+      const words = String(body.text || '').trim();
+      // Into its own column, so a mechanic who typed a note and recorded one
+      // keeps both.
+      //
+      // Before that column exists — the window between this deploy and
+      // somebody running setup() — writing there would put the words in a
+      // cell with no header, to be read back as nothing. So: an entry with
+      // nothing typed takes them in `text`, exactly as it always did and
+      // losing nothing. An entry that has BOTH is left pending instead of
+      // being written over or quietly dropped; the hourly sweep asks again,
+      // and the words land properly the moment the column is there. Waiting
+      // is recoverable. Losing what a mechanic said is not.
+      let patch;
+      if (headerHas_('LogEntries', 'transcript')) {
+        patch = { transcript: words };
+      } else if (!all[i].text) {
+        patch = { text: words };
+      } else {
+        return;
+      }
+      patch.transcript_status = 'done';
+      patch.transcript_error = '';
+      updateRow_('LogEntries', all[i]._row, patch);
     } else if (body.status === 'error') {
       updateRow_('LogEntries', all[i]._row, {
         transcript_status: 'failed',

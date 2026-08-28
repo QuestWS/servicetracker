@@ -675,10 +675,14 @@ const ALERT_MARK = `<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden=
 function entryHtml(entry) {
   const pill = { customer_note: 'green', internal_note: 'blue', writer_note: 'gold', labor: 'frost', part: 'gold' }[entry.entryType];
   let body = '';
+  // Typed and spoken are two different things a mechanic said, and an entry
+  // can carry both. The transcript is labelled because it is a machine's
+  // guess at what was said and the shop is meant to read it as one.
   if (entry.text) body = `<div class="body">${esc(entry.text)}</div>`;
-  else if (entry.transcriptStatus === 'pending') body = `<div class="body pending">Voice note — transcribing…</div>`;
+  if (entry.transcript) body += `<div class="body said"><span class="saidtag">Said</span>${esc(entry.transcript)}</div>`;
+  else if (entry.transcriptStatus === 'pending') body += `<div class="body pending">Voice note — transcribing…</div>`;
   else if (entry.transcriptStatus === 'failed') {
-    body = `<div class="body pending">Voice note — transcription failed${entry.transcriptError ? ` (${esc(entry.transcriptError)})` : ''}. The recording is below.</div>`;
+    body += `<div class="body pending">Voice note — transcription failed${entry.transcriptError ? ` (${esc(entry.transcriptError)})` : ''}. The recording is below.</div>`;
   }
   return `<article class="entry ${entry.entryType}${entry.saveState ? ` ${entry.saveState}` : ''}">
     ${entry.saveState === 'saving' ? '<div class="savestate">Saving…</div>' : ''}
@@ -1424,10 +1428,14 @@ function watchTranscript(entryId, attempt = 0) {
 
     const entry = state.entries.find((e) => e.id === entryId);
     if (entry) {
+      // Both move: an entry logged before the transcript had its own column
+      // keeps its words in `text`, and a typed note sits alongside the
+      // spoken one rather than being replaced by it.
       entry.text = found.text;
+      entry.transcript = found.transcript;
       entry.transcriptStatus = found.transcriptStatus;
       entry.transcriptError = found.transcriptError;
-      renderJob();
+      drawFeed();
     }
     toast(found.transcriptStatus === 'done'
       ? 'Transcript is in — check it reads right.'

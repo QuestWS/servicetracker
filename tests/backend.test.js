@@ -1369,7 +1369,7 @@ describe('the customer email', () => {
 
 describe('a voice note coming back with its words', () => {
   // AssemblyAI: upload the audio, ask for a transcript, then it calls back.
-  function assemblyBackend() {
+  function assemblyBackend(options = {}) {
     const back = loadBackend({
       properties: {
         ADMIN_PASSWORD: 'shop-password',
@@ -1392,7 +1392,8 @@ describe('a voice note coming back with its words', () => {
     back.fn('createJob', admin, { invoiceNumber: '01-8891', customerName: 'Garrett B' });
     const jobToken = back.fn('jobRow_', '01-8891').token;
     const mech = back.fn('mechanicSignIn', 'Dale', true).token;
-    back.fn('addEntry', mech, jobToken, { entryType: 'labor', hours: 0.25, audio: 'YXVkaW8=' });
+    back.fn('addEntry', mech, jobToken,
+      options.entry || { entryType: 'labor', hours: 0.25, audio: 'YXVkaW8=' });
     return { back, admin };
   }
 
@@ -1425,7 +1426,7 @@ describe('a voice note coming back with its words', () => {
     expect(answer.ok).toBe(true);
 
     const entry = back.fn('getJob', admin, '01-8891').entries[0];
-    expect(entry.text).toBe('Impeller was shot, swapped it out.');
+    expect(entry.transcript).toBe('Impeller was shot, swapped it out.');
     expect(entry.transcriptStatus).toBe('done');
   });
 
@@ -1448,12 +1449,12 @@ describe('a voice note coming back with its words', () => {
     expect(waiting.entries[0].transcriptStatus).toBe('pending');
     // Nothing but what the poll needs.
     expect(Object.keys(waiting.entries[0]).sort())
-      .toEqual(['id', 'text', 'transcriptError', 'transcriptStatus']);
+      .toEqual(['id', 'text', 'transcript', 'transcriptError', 'transcriptStatus']);
 
     back.fn('sweepTranscripts_');
     const done = back.fn('transcriptsFor', mech, jobToken);
     expect(done.entries[0].transcriptStatus).toBe('done');
-    expect(done.entries[0].text).toBe('Impeller was shot, swapped it out.');
+    expect(done.entries[0].transcript).toBe('Impeller was shot, swapped it out.');
   });
 
   it('leaves out entries that were never spoken', () => {
@@ -1477,7 +1478,66 @@ describe('a voice note coming back with its words', () => {
   it('still catches it on the hourly sweep if the callback never arrives', () => {
     const { back, admin } = assemblyBackend();
     back.fn('sweepTranscripts_');
-    expect(back.fn('getJob', admin, '01-8891').entries[0].text).toBe('Impeller was shot, swapped it out.');
+    expect(back.fn('getJob', admin, '01-8891').entries[0].transcript)
+      .toBe('Impeller was shot, swapped it out.');
+  });
+
+  it('keeps what was typed as well as what was said', () => {
+    // A mechanic who records AND types has said two things. The transcript
+    // used to be skipped entirely when there was a typed note beside it, so
+    // the recording was stored and never turned into words.
+    const { back, admin } = assemblyBackend({
+      entry: { entryType: 'internal_note', text: 'Impeller housing, port side.',
+               audio: 'YXVkaW8=', audioMime: 'audio/webm' },
+    });
+    back.fn('sweepTranscripts_');
+    const entry = back.fn('getJob', admin, '01-8891').entries[0];
+    expect(entry.text).toBe('Impeller housing, port side.');
+    expect(entry.transcript).toBe('Impeller was shot, swapped it out.');
+    expect(entry.audioFile).toBeTruthy();
+  });
+
+  it('and does not lose the words if setup() has not been run yet', () => {
+    // Between this deploy and somebody running setup() there is no transcript
+    // column, so the words would be written to a cell with no header and read
+    // back as nothing. They go where they always went instead.
+    const { back, admin } = assemblyBackend();
+    const sheet = back.sheet('LogEntries');
+    const at = sheet.rows[0].indexOf('transcript');
+    expect(at).toBeGreaterThan(-1);
+    sheet.rows[0][at] = '';                       // the header before setup()
+    back.call('forget_(); _headers = {};');
+    back.fn('sweepTranscripts_');
+    const entry = back.fn('getJob', admin, '01-8891').entries[0];
+    expect(entry.text).toBe('Impeller was shot, swapped it out.');
+  });
+
+  it('and waits rather than choosing between them when both exist', () => {
+    // Nothing typed can be written over to make room, and the words are not
+    // worth throwing away, so the entry stays pending until the column is
+    // there and the next sweep puts them where they belong.
+    const { back, admin } = assemblyBackend({
+      entry: { entryType: 'internal_note', text: 'Impeller housing, port side.',
+               audio: 'YXVkaW8=', audioMime: 'audio/webm' },
+    });
+    const sheet = back.sheet('LogEntries');
+    const at = sheet.rows[0].indexOf('transcript');
+    sheet.rows[0][at] = '';
+    back.call('forget_(); _headers = {};');
+    back.fn('sweepTranscripts_');
+    let entry = back.fn('getJob', admin, '01-8891').entries[0];
+    expect(entry.text).toBe('Impeller housing, port side.');
+    expect(entry.transcript).toBeNull();
+    expect(entry.transcriptStatus).toBe('pending');
+
+    // setup() puts the header right; the next sweep finishes the job.
+    sheet.rows[0][at] = 'transcript';
+    back.call('forget_(); _headers = {};');
+    back.fn('sweepTranscripts_');
+    entry = back.fn('getJob', admin, '01-8891').entries[0];
+    expect(entry.text).toBe('Impeller housing, port side.');
+    expect(entry.transcript).toBe('Impeller was shot, swapped it out.');
+    expect(entry.transcriptStatus).toBe('done');
   });
 });
 

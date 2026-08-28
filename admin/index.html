@@ -236,9 +236,13 @@ async function renderJobs() {
 function entryHtml(entry) {
   const pill = { customer_note: 'green', internal_note: 'blue', writer_note: 'gold', labor: 'frost', part: 'gold' }[entry.entryType];
   let body = '';
+  // Typed and spoken are two different things a mechanic said, and an entry
+  // can carry both. The transcript is labelled because it is a machine's
+  // guess at what was said and the writer is meant to read it as one.
   if (entry.text) body = `<div class="body">${esc(entry.text)}</div>`;
-  else if (entry.transcriptStatus === 'pending') body = `<div class="body pending">Voice note — transcribing…</div>`;
-  else if (entry.transcriptStatus === 'failed') body = `<div class="body pending">Voice note — transcription failed${entry.transcriptError ? ` (${esc(entry.transcriptError)})` : ''}. The recording is below.</div>`;
+  if (entry.transcript) body += `<div class="body said"><span class="saidtag">Said</span>${esc(entry.transcript)}</div>`;
+  else if (entry.transcriptStatus === 'pending') body += `<div class="body pending">Voice note — transcribing…</div>`;
+  else if (entry.transcriptStatus === 'failed') body += `<div class="body pending">Voice note — transcription failed${entry.transcriptError ? ` (${esc(entry.transcriptError)})` : ''}. The recording is below.</div>`;
   return `<article class="entry ${entry.entryType}">
     <div class="meta">
       <span class="pill ${pill}">${esc(ENTRY_LABEL[entry.entryType])}</span>

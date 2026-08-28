@@ -97,6 +97,15 @@ nothing.
 a code path that writes to a sheet without going through `appendRow_` or
 `updateRow_` — `deleteRow`, say — it must call `forget_` itself.
 
+- **Typed and spoken are two fields, not one.** `text` is what a person typed;
+  `transcript` is what the recording said. A mechanic who records *and* types
+  has said two things, and for a while the second was thrown away: the
+  transcript was only requested when `text` was empty, so a recording next to
+  a typed note was stored and never turned into words. Every recording is
+  transcribed now, and the transcript lands in its own column so it can never
+  write over what somebody typed. Entries older than the column keep their
+  words in `text`, which is why this was an addition and not a rename — and
+  why anything reading a voice note reads both.
 - Photos are `[{thumb, full}]` JSON in one cell — the browser uploads two sizes
   so the feed is cheap and the lightbox is sharp.
 - **`work_requested` is what the customer asked for**, parsed off the body of

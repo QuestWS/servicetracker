@@ -408,6 +408,32 @@ const posted = await mech.evaluate(async ({ base, job, text }) => {
 }, { base: BASE, job: token, text: 'Impeller is replaced and she runs clean.' });
 check('the backend still takes a customer note', !posted.error, posted.error);
 
+// A mechanic who records AND types has said two things. The recording used to
+// be stored and then skipped for transcription, on the reasoning that the
+// words were already there — so only one of the two was ever kept. Posted on
+// the wire because a headless browser has no microphone.
+const spoken = await mech.evaluate(async ({ base, job }) => {
+  const token = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const res = await fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn: 'addEntry', token, args: [job, {
+      entryType: 'internal_note',
+      text: 'Typed this and said more.',
+      audio: 'YXVkaW8=',
+      audioMime: 'audio/webm',
+    }] }),
+  });
+  return res.json();
+}, { base: BASE, job: token });
+check('a recording alongside a typed note still gets transcribed',
+  spoken.entry && spoken.entry.transcriptStatus === 'pending',
+  JSON.stringify(spoken.entry && spoken.entry.transcriptStatus));
+check('and the typed note is kept as typed',
+  spoken.entry && spoken.entry.text === 'Typed this and said more.',
+  spoken.entry && spoken.entry.text);
+check('and the recording is saved with it', Boolean(spoken.entry && spoken.entry.audioFile));
+
 await mech.click('.segmented button[data-tab="part"]');
 await mech.fill('#part', '6BH-44352-00-00');
 await mech.fill('#qty', '2');
