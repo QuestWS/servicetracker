@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import { chromium } from 'playwright-core';
 import { makeWorkOrderPdf, makeInvoicePdf } from '../scripts/lib/sample-work-order.mjs';
 import { encode as encodePng } from '../scripts/lib/png.mjs';
+import { lastNameOf } from '../assets/lib/names.js';
 
 const BASE = process.env.BASE || 'http://localhost:8787';
 const PASSWORD = process.env.ADMIN_PASSWORD || 'shop';
@@ -747,7 +748,9 @@ check('and can no longer be pulled off the list',
   await admin.locator('[data-propcancel]').count() === 0);
 
 await admin.click('[data-fixed]');
-await admin.waitForFunction(() => document.querySelectorAll('[data-fixed]').length === 0,
+// Wait for the settled page, not for the button to go: the loading render has
+// no buttons on it either, and reading through that is how this flaked.
+await admin.waitForFunction(() => /Returned — fixed/.test(document.body.innerText),
   null, { timeout: 20000 });
 check('and comes back fixed', /Returned — fixed/.test(await propsText()), (await propsText()).slice(0, 200));
 await admin.screenshot({ path: `${SHOTS}/57-props-back.png`, fullPage: true });
@@ -984,9 +987,10 @@ await admin.locator('.entry:has-text("Meant the boat next to it.") [data-move]')
 await admin.waitForSelector('#moveto', { timeout: 20000 });
 await admin.fill('#moveto', FIX_B);
 await admin.click('#movego');
-await admin.waitForFunction(
-  (needle) => !document.body.innerText.includes(needle), 'Meant the boat next to it.',
-  { timeout: 20000 });
+// The settled page, not merely the absence of the entry — a job page that is
+// still loading has neither the entry nor anything else on it.
+await admin.waitForFunction(() => document.body.innerText.includes('No time logged yet'),
+  null, { timeout: 20000 });
 check('the writer can move an entry to another work order',
   !(await admin.evaluate(() => document.body.innerText)).includes('Meant the boat next to it.'));
 check('and the hours come off the job it was logged against',
@@ -1005,9 +1009,8 @@ await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(FIX_A)}`, { waitUntil:
 await admin.waitForSelector('.entry', { timeout: 20000 });
 admin.once('dialog', (dialog) => dialog.accept());
 await admin.locator('.entry:has-text("Typed this one twice.") [data-del]').click();
-await admin.waitForFunction(
-  (needle) => !document.body.innerText.includes(needle), 'Typed this one twice.',
-  { timeout: 20000 });
+await admin.waitForFunction(() => document.body.innerText.includes('Nothing logged yet'),
+  null, { timeout: 20000 });
 check('and delete takes the duplicate off the log',
   (await admin.evaluate(() => document.body.innerText)).includes('Nothing logged yet'),
   (await admin.evaluate(() => document.body.innerText)).slice(0, 200));
@@ -1032,6 +1035,38 @@ await admin.waitForSelector('.jobrow', { timeout: 20000 });
 check('but All still finds it',
   (await admin.evaluate(() => document.body.innerText)).includes(invoiceNumber));
 await admin.screenshot({ path: `${SHOTS}/60-open-jobs.png`, fullPage: true });
+
+// Two other ways to look for a job: the number off a piece of paper, and the
+// customer who has just rung up.
+const rowIds = () => admin.evaluate(() =>
+  [...document.querySelectorAll('.jobrow .num')].map((el) => el.textContent.trim()));
+const rowNames = () => admin.evaluate(() =>
+  [...document.querySelectorAll('.jobrow .who')].map((el) => el.textContent.trim()));
+const ascending = (values, key) => values.every((value, i) =>
+  i === 0 || key(values[i - 1]).localeCompare(key(value), undefined,
+    { numeric: true, sensitivity: 'base' }) <= 0);
+
+check('the jobs list offers a sort', await admin.locator('#sortby').count() === 1);
+await admin.selectOption('#sortby', 'number');
+await admin.waitForSelector('.jobrow', { timeout: 20000 });
+const byNumber = await rowIds();
+check('by work order number, counting rather than spelling',
+  byNumber.length > 1 && ascending(byNumber, (id) => id), byNumber.join(', '));
+check('and the order is in the address, so a refresh keeps it',
+  new URL(admin.url()).searchParams.get('sort') === 'number', admin.url());
+
+await admin.selectOption('#sortby', 'customer');
+await admin.waitForSelector('.jobrow', { timeout: 20000 });
+const byCustomer = (await rowNames()).filter((name) => !name.startsWith('('));
+check('and by customer surname, not by the name as written',
+  byCustomer.length > 1 && ascending(byCustomer, lastNameOf), byCustomer.join(' | '));
+
+// Picking a different stage should not quietly put the list back in date order.
+await admin.click('.chip:has-text("All")');
+await admin.waitForSelector('.jobrow', { timeout: 20000 });
+check('and it survives changing which jobs are shown',
+  await admin.inputValue('#sortby') === 'customer', await admin.inputValue('#sortby'));
+await admin.screenshot({ path: `${SHOTS}/61-jobs-by-customer.png`, fullPage: true });
 
 /* ------------------------------------------------------ the QR on the paper */
 console.log('\n== what a customer scanning the work order gets ==');

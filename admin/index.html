@@ -39,6 +39,7 @@
 
 <script type="module">
 import { api, storeSession, storedToken, clearSession, timings } from '../assets/lib/api.js';
+import { byLastName } from '../assets/lib/names.js';
 import { SITE_URL } from '../assets/lib/config.js';
 import { ENTRY_LABEL, STATUSES, STATUS_LABEL, STATUS_PILL, formatHours, decimalHours } from '../assets/lib/entry-types.js';
 import { extractPdf } from '../assets/lib/extract.js';
@@ -160,18 +161,53 @@ async function consumeMagicLink(nonce) {
 const JOB_FILTERS = ['open', 'received', 'work_underway', 'work_finished', 'all', 'done'];
 const JOB_FILTER_LABEL = Object.assign({ open: 'Open jobs', all: 'All' }, STATUS_LABEL);
 
+/**
+ * The three ways the writer looks for a job.
+ *
+ * Newest first is the working list. The other two are for going FOR something
+ * — a number off a piece of paper, or a customer on the phone — so the number
+ * runs upwards and the names run A to Z, which is the order you scan in.
+ *
+ * Sorted in the browser off the one fetch, like the parts archive: Apps
+ * Script charges per round trip, and re-asking the backend to put the same
+ * rows in a different order would be a wait for nothing.
+ */
+const JOB_SORTS = {
+  newest: 'Newest first',
+  number: 'Work order number',
+  customer: 'Customer last name',
+};
+
+function sortJobs(jobs, sort) {
+  const rows = jobs.slice();
+  if (sort === 'number') {
+    // Numeric compare, so 01-889 comes before 01-8891 rather than after it.
+    return rows.sort((a, b) => String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+  }
+  if (sort === 'customer') {
+    return rows.sort((a, b) => byLastName(a.customerName, b.customerName)
+      || String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+  }
+  return rows;                                  // as the backend sent it
+}
+
 async function renderJobs() {
   // Open is the default, so it is the one that carries no parameter.
   const status = params.get('status') || 'open';
   const search = params.get('q') || '';
+  const sort = JOB_SORTS[params.get('sort')] ? params.get('sort') : 'newest';
   view.innerHTML = `<p class="loading">Loading jobs…</p>`;
-  const { jobs, counts, testMode: mode } = await api('listJobs', [{ status, search }]);
+  const { jobs: fetched, counts, testMode: mode } = await api('listJobs', [{ status, search }]);
   showTestBanner(mode);
+  const jobs = sortJobs(fetched, sort);
 
   const href = (value) => {
     const next = new URLSearchParams();
     if (value !== 'open') next.set('status', value);
     if (search) next.set('q', search);
+    // The order carries across the chips: picking a different stage should
+    // not quietly put the list back into date order.
+    if (sort !== 'newest') next.set('sort', sort);
     const query = next.toString();
     return query ? `?${query}` : '?';
   };
@@ -193,9 +229,17 @@ async function renderJobs() {
       ${search || status !== 'open' ? `<a class="btn ghost" href="?">Clear</a>` : ''}
     </form>
 
-    <div class="row tight" style="margin-bottom:14px">
-      ${JOB_FILTERS.map((value) => `<a class="chip${status === value ? ' on' : ''}" href="${href(value)}">${
-        JOB_FILTER_LABEL[value]}${value === 'open' ? ` (${counts.open || 0})` : ''}</a>`).join('')}
+    <div class="row filterbar" style="margin-bottom:14px">
+      <div class="row tight" style="flex:1 1 auto">
+        ${JOB_FILTERS.map((value) => `<a class="chip${status === value ? ' on' : ''}" href="${href(value)}">${
+          JOB_FILTER_LABEL[value]}${value === 'open' ? ` (${counts.open || 0})` : ''}</a>`).join('')}
+      </div>
+      <label class="sortby" for="sortby">Sort
+        <select id="sortby">
+          ${Object.keys(JOB_SORTS).map((value) => `<option value="${value}"${
+            sort === value ? ' selected' : ''}>${JOB_SORTS[value]}</option>`).join('')}
+        </select>
+      </label>
     </div>
 
     ${jobs.length ? `<div class="joblist">${jobs.map((job) => `
@@ -227,6 +271,17 @@ async function renderJobs() {
     const next = new URLSearchParams();
     if (status !== 'all') next.set('status', status);
     if ($('q').value.trim()) next.set('q', $('q').value.trim());
+    if (sort !== 'newest') next.set('sort', sort);
+    go(next.toString());
+  };
+
+  // In the address, so it survives a refresh and the browser's Back button
+  // walks the list the way the writer walked it.
+  $('sortby').onchange = (event) => {
+    const next = new URLSearchParams();
+    if (status !== 'open') next.set('status', status);
+    if (search) next.set('q', search);
+    if (event.target.value !== 'newest') next.set('sort', event.target.value);
     go(next.toString());
   };
 }

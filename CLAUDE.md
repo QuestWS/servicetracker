@@ -302,6 +302,20 @@ not what you should land on.
 Open carries no query parameter, being the default, so `?` is the working
 list and `?status=all` is everything.
 
+**Three orders, sorted in the browser off the one fetch** — the same reasoning
+as the parts archive: Apps Script charges per round trip, and re-asking the
+backend to put the same rows in a different order is a wait for nothing.
+Newest first is the working list; work order number and customer surname are
+for going *for* something, so they run upwards and A-to-Z, which is the order
+you scan in. The choice lives in `?sort=` so a refresh keeps it and the status
+chips carry it across.
+
+Surnames come out of `assets/lib/names.js`, which is under test because one
+name field holds several shapes: "John Purnell", "SMITH, JOHN", "John Purnell
+Jr" and "Quest Watersports LLC". A business sorts under what it trades as —
+filed under L, "Quest Watersports LLC" is unfindable — and a job with no name
+yet sorts last, being a job to fix rather than a customer called nothing.
+
 ## Fixing a misfiled entry
 
 The office can move a log entry to another work order, or delete it. The
