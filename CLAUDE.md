@@ -118,6 +118,20 @@ a code path that writes to a sheet without going through `appendRow_` or
   job used to be two calls to Apps Script and the second one cost more in
   start-up than in reading. Never let the anonymous branch grow the log, the
   customer's phone or their email: a test asserts each of those is absent.
+- **Opening a job does not fetch the log.** One job's entries means reading
+  every entry in the shop — a Sheet has no index — and it was the largest read
+  on the path, paid by a mechanic who opened the job to *write*. The card says
+  "Job log (7)" from the row's own `entry_count` and fetches those seven
+  through `jobLog` when somebody taps for them. Anything saved since shows at
+  once, fetched or not: what the mechanic just wrote is never behind a button.
+  `hours.total` on that screen comes off `minutes_total`; the by-person
+  breakdown only comes back with the log, where somebody is reading detail.
+
+  Props are out of the open payload for the same reason plus a simpler one:
+  they are drawn only inside the Prop tab, so `jobProps` runs when that tab
+  opens. Shrinking what the log SHOWS would have saved nothing — the read is
+  the whole tab either way. Only not asking for it saves anything.
+
 - **A save does not make the mechanic wait.** The entry goes into the feed on
   the tap, marked *Saving…*, the form clears for the next one, and the row
   settles when the backend answers — only the feed and the running total are

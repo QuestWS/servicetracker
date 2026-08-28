@@ -152,11 +152,16 @@ const state = {
   who: storedWho(),
   roster: [],
   job: null,
+  // What is on screen: the fetched log, plus anything saved since. Opening a
+  // job no longer brings the log with it, so `logLoaded` says whether these
+  // are all of it or only the entries this phone has just written.
   entries: [],
+  logLoaded: false,
   tab: 'labor',
   audio: null,
   photos: [],
-  props: [],
+  // null until the Prop tab is opened, which is the only place they are drawn.
+  props: null,
   tagPhoto: null,
   scanning: null,
   // What Back does from here, and where the job screen should send you —
@@ -519,11 +524,12 @@ async function openJob(code, source) {
     // Signed in already, so the log came back with the lookup rather than
     // costing a second trip to the backend. That second call was most of the
     // wait between scanning the paper and seeing the job.
-    if (data.entries) {
+    if (data.mechanic) {
       state.who = data.mechanic;
-      state.entries = data.entries;
       state.hours = data.hours;
-      state.props = data.props;
+      state.entries = [];
+      state.logLoaded = false;
+      state.props = null;
       return renderJob();
     }
     if (state.who && storedToken()) return loadJob();
@@ -624,9 +630,10 @@ async function loadJob() {
     const data = await api('jobForMechanic', [state.job.token]);
     state.who = data.mechanic;
     state.job = data.job;
-    state.entries = data.entries;
     state.hours = data.hours;
-    state.props = data.props;
+    state.entries = [];
+    state.logLoaded = false;
+    state.props = null;
     renderJob();
   } catch (error) {
     if (error instanceof ApiError && /Sign in/.test(error.message)) {
@@ -696,11 +703,62 @@ function entryHtml(entry) {
   </article>`;
 }
 
-/** The log itself, drawable on its own so a finished save need not redraw the form. */
+/**
+ * The log itself, drawable on its own so a finished save need not redraw the
+ * form — and drawable before the log has been fetched at all.
+ *
+ * Opening a job does not bring the entries with it: one job's log means
+ * reading every entry in the shop, and that was the biggest thing a mechanic
+ * waited for on a screen they had opened to write, not to read. The count
+ * comes off the job row instead, so the card is honest about what is there
+ * and fetches it when it is asked for. Anything saved since shows straight
+ * away, fetched or not.
+ */
+function hiddenEntries() {
+  if (state.logLoaded) return 0;
+  const settled = state.entries.filter((entry) => !entry.saveState).length;
+  return Math.max(Number((state.job && state.job.entryCount) || 0) - settled, 0);
+}
+
 function feedHtml() {
-  return `<h2>Job log (${state.entries.length})</h2>
-    ${state.entries.length ? `<div class="feed">${state.entries.map(entryHtml).join('')}</div>`
-      : `<div class="empty">Nothing logged yet.</div>`}`;
+  const hidden = hiddenEntries();
+  const total = hidden + state.entries.length;
+  return `<h2>Job log (${total})</h2>
+    ${state.entries.length ? `<div class="feed">${state.entries.map(entryHtml).join('')}</div>` : ''}
+    ${hidden ? `<button class="btn ghost block" type="button" id="showlog"${
+        state.entries.length ? ' style="margin-top:12px"' : ''}>${
+      state.entries.length
+        ? `Show the ${hidden} earlier ${hidden === 1 ? 'entry' : 'entries'}`
+        : `Show the log (${hidden})`}</button>`
+      : total ? '' : `<div class="empty">Nothing logged yet.</div>`}`;
+}
+
+/**
+ * Fetches the log, and merges rather than replaces: an entry saved a moment
+ * ago is already on screen and may still be in flight, and it must not
+ * vanish because the fetch went out first.
+ */
+async function loadLog() {
+  const button = $('showlog');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Loading the log…';
+  }
+  try {
+    const data = await api('jobLog', [state.job.token]);
+    const fetched = new Set(data.entries.map((entry) => entry.id));
+    state.entries = data.entries.concat(state.entries.filter((entry) => !fetched.has(entry.id)));
+    state.hours = data.hours;
+    state.logLoaded = true;
+    drawFeed();
+    drawHint();
+  } catch (error) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Show the log';
+    }
+    toast(error.message);
+  }
 }
 
 function bindFeed() {
@@ -718,6 +776,8 @@ function bindFeed() {
       if (entry) retryEntry(entry);
     };
   });
+  const showlog = $('showlog');
+  if (showlog) showlog.onclick = loadLog;
 }
 
 function drawFeed() {
@@ -948,6 +1008,7 @@ function drawFields() {
     $('minutes').oninput = (event) => { state.minutesValue = digits(event); event.target.value = state.minutesValue; };
   } else if (state.tab === 'prop') {
     box.innerHTML = `
+      ${state.props === null ? '<p class="loading">Checking what is already out…</p>' : ''}
       ${state.props && state.props.length ? `
         <label class="fld">Already out (${state.props.length})</label>
         <div class="proplist">${state.props.map((prop) => `
@@ -980,6 +1041,9 @@ function drawFields() {
     $('taketag').onclick = () => $('tagcamera').click();
     $('picktag').onclick = () => $('taglibrary').click();
     drawTagThumb();
+    // Props are drawn nowhere else, so they are fetched nowhere else either —
+    // opening a job does not pay for a list that four jobs in five is empty.
+    if (state.props === null) loadProps();
   } else if (state.tab === 'part') {
     box.innerHTML = `
       <label class="fld" for="part">Part number / UPC</label>
@@ -1148,6 +1212,21 @@ function drawTagThumb() {
   </figure>` : '';
   const clear = box.querySelector('[data-cleartag]');
   if (clear) clear.onclick = () => { state.tagPhoto = null; drawTagThumb(); };
+}
+
+/**
+ * What is already away at the prop shop. Fetched when the tab opens rather
+ * than when the job does, and a failure leaves an empty list rather than a
+ * broken tab: the mechanic came here to send a prop out, and they still can.
+ */
+async function loadProps() {
+  try {
+    const data = await api('jobProps', [state.job.token]);
+    state.props = data.props;
+  } catch {
+    state.props = [];
+  }
+  if (state.tab === 'prop') drawFields();
 }
 
 async function saveProp() {
@@ -1354,16 +1433,6 @@ function watchTranscript(entryId, attempt = 0) {
       ? 'Transcript is in — check it reads right.'
       : 'That recording could not be transcribed.');
   }, TRANSCRIPT_WAITS[attempt]);
-}
-
-async function refresh() {
-  try {
-    const data = await api('jobForMechanic', [state.job.token]);
-    state.entries = data.entries;
-    state.hours = data.hours;
-    state.props = data.props;
-    renderJob();
-  } catch { /* the page is still usable; the next save will refresh it */ }
 }
 
 function confirmFinish() {

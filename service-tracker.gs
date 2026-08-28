@@ -560,6 +560,8 @@ function doPost(e) {
     roster:           function (a) { return roster(); },
     signIn:           function (a) { return mechanicSignIn(a[0], a[1]); },
     lookupJob:        function (a) { return lookupJob(a[0], a[1], data.token); },
+    jobLog:           function (a) { return jobLog(data.token, a[0]); },
+    jobProps:         function (a) { return jobProps(data.token, a[0]); },
     jobForMechanic:   function (a) { return jobForMechanic(data.token, a[0]); },
     openJobs:         function (a) { return openJobs(data.token); },
     transcriptsFor:   function (a) { return transcriptsFor(data.token, a[0]); },
@@ -672,7 +674,11 @@ function jobSummary_(job) {
     trackingUrl: trackingUrl_(job),
     createdAt: job.created_at,
     updatedAt: job.updated_at,
-    doneAt: job.done_at || null
+    doneAt: job.done_at || null,
+    // The running totals off the row, so a page can say how much log there is
+    // without anything having read the log.
+    entryCount: Number(job.entry_count || 0),
+    minutesTotal: Number(job.minutes_total || 0)
   };
 }
 
@@ -1014,16 +1020,52 @@ function laborTotals_(entries) {
   };
 }
 
-/** Everything the mechanic's job screen draws itself from. */
+/**
+ * Everything the mechanic's job screen draws itself from — and deliberately
+ * NOT the log.
+ *
+ * Reading one job's entries means reading every entry in the shop: a Sheet has
+ * no index, so `entriesForJob_` pulls the whole LogEntries tab and filters it.
+ * It was the largest read on this path and the only one that grows every week
+ * the shop uses the app, and it was being paid on every single job opened.
+ *
+ * The screen does not need it to be useful. A mechanic opens a job for the
+ * alert, for what needs doing, and for the box to log into. The count and the
+ * running total come off the Jobs row, so the card can honestly say "Job log
+ * (7)" and fetch those seven when somebody asks for them — `jobLog` below.
+ *
+ * Props are left out for the same reason and a simpler one: they are only ever
+ * drawn inside the Prop tab, so the tab fetches them when it opens.
+ */
 function mechanicPayload_(who, job) {
-  const entries = entriesForJob_(job.id);
   return {
     mechanic: { id: who.id, name: who.name },
     job: jobSummary_(job),
-    entries: entries,
-    hours: laborTotals_(entries),
-    props: propsForJob_(job.id)
+    hours: {
+      total: hoursFromMinutes_(Number(job.minutes_total || 0)),
+      totalMinutes: Number(job.minutes_total || 0)
+    }
   };
+}
+
+/** The log itself, when the mechanic asks to see it. */
+function jobLog(token, jobToken) {
+  requireMechanic_(token);
+  const job = jobByToken_(jobToken);
+  if (!job) throw new Error('No such job.');
+  const entries = entriesForJob_(job.id);
+  // The full breakdown, not the row's total: whoever asked for the log is
+  // reading the detail, and this is the version that is right even if the
+  // derived column has drifted.
+  return { entries: entries, hours: laborTotals_(entries) };
+}
+
+/** What is already away at the prop shop, for the Prop tab. */
+function jobProps(token, jobToken) {
+  requireMechanic_(token);
+  const job = jobByToken_(jobToken);
+  if (!job) throw new Error('No such job.');
+  return { props: propsForJob_(job.id) };
 }
 
 function jobForMechanic(token, jobToken) {
@@ -1977,10 +2019,10 @@ function lookupJob(code, source, token) {
  * Just the transcript state of a job's voice notes, for the phone to poll
  * while the mechanic is still standing there.
  *
- * Deliberately not jobForMechanic: that returns every entry, the job and the
- * hours, and polling it every few seconds to watch one field change is a lot
- * of spreadsheet reading for a shop on wifi. This is the smallest answer to
- * "are the words back yet".
+ * Deliberately not jobLog: that returns every entry on the job, and polling
+ * it every few seconds to watch one field change is a lot of spreadsheet
+ * reading for a shop on wifi. This is the smallest answer to "are the words
+ * back yet".
  */
 function transcriptsFor(token, jobToken) {
   requireMechanic_(token);

@@ -108,9 +108,25 @@ Measured at 400 jobs / 3,200 entries:
   open a job (scanned)    3   64,888      two calls: 1 op + 3 ops
 ```
 
-Not fixed, and the honest limit of this pass: **opening a job still reads
-every log entry in the shop.** Three whole-tab reads, one of them LogEntries.
-That is step 4 below and nothing else will move it.
+**And then the log came off the open path altogether.** The shop asked whether
+showing only the last three to five entries would help. It would not: a Sheet
+has no index, so `entriesForJob_` reads the whole LogEntries tab and filters
+it — returning five rows costs exactly what returning five hundred does. Only
+*not asking* saves anything. So opening a job no longer fetches the log at
+all; the card says "Job log (7)" from the row's own `entry_count` and `jobLog`
+fetches them when the button is tapped. Props went the same way — they are
+drawn only in the Prop tab, so `jobProps` runs when that tab opens.
+
+Opening a job: **3 whole-tab reads → 1**, and the one that grows every week is
+gone from the path a mechanic waits on.
+
+```
+                        ops   cells        was
+  open a job (scanned)    1   10,426       3 ops, 64,888 cells
+```
+
+That leaves `getJob` — the writer's job page, still 5 reads — as the only
+place step 4 below would now move.
 
 What is not guesswork any more is where the time goes. Step 0 landed with
 this pass: every answer carries `serverMs`, the pages time the whole round

@@ -505,18 +505,46 @@ describe('how long the backend says it took', () => {
 });
 
 describe('what opening a job costs', () => {
-  it('brings the log back with the lookup when a mechanic is signed in', () => {
+  it('answers a signed-in scan with the whole job screen, in one call', () => {
     const { id, token, mech } = seedJob();
-    // Scanning used to be two calls to Apps Script: the lookup, then the log.
+    // Scanning used to be two calls to Apps Script: the lookup, then the job.
     // Each one pays Google's start-up and a redirect before it reads a cell,
     // and that was most of the wait between the scanner beeping and the job
     // appearing. One call now answers both.
     const answer = backend.fn('lookupJob', token, 'scan', mech);
     expect(answer.job.id).toBe(id);
     expect(answer.mechanic.name).toBe('Dale');
-    expect(answer.entries.length).toBeGreaterThan(0);
     expect(answer.hours.totalMinutes).toBe(90);
-    expect(Array.isArray(answer.props)).toBe(true);
+  });
+
+  it('without reading a single log entry to do it', () => {
+    const { token, mech } = seedJob();
+    // One job's log means reading every entry in the shop — a Sheet has no
+    // index — and it was being paid for on every job opened, by a mechanic who
+    // came to write rather than to read. The count and the running total come
+    // off the job's own row instead.
+    const answer = backend.fn('lookupJob', token, 'scan', mech);
+    expect(answer.entries).toBeUndefined();
+    expect(answer.props).toBeUndefined();
+    expect(answer.job.entryCount).toBe(4);
+    expect(answer.hours.totalMinutes).toBe(90);
+  });
+
+  it('and hands the log over when the mechanic asks for it', () => {
+    const { token, mech } = seedJob();
+    const log = backend.fn('jobLog', mech, token);
+    expect(log.entries.length).toBe(4);
+    expect(log.hours.totalMinutes).toBe(90);
+    // The breakdown by person only exists on this side, where somebody is
+    // actually reading the detail.
+    expect(log.hours.byMechanic[0].name).toBe('Dale');
+  });
+
+  it('which is the floor\'s to ask for, not anybody\'s', () => {
+    const { token } = seedJob();
+    expect(() => backend.fn('jobLog', 'not-a-token', token)).toThrow(/Sign in/);
+    expect(() => backend.fn('jobLog', adminToken, token)).toThrow(/Sign in/);
+    expect(() => backend.fn('jobProps', 'not-a-token', token)).toThrow(/Sign in/);
   });
 
   it('still hands an unsigned scan nothing but the summary', () => {
@@ -875,7 +903,9 @@ describe('a prop out for repair', () => {
 
   it('rides along with the job on both sides of the shop', () => {
     const { id, token, mech } = sendProp();
-    expect(backend.fn('jobForMechanic', mech, token).props).toHaveLength(1);
+    // The floor reads them in the Prop tab, which is the only place they are
+    // drawn and so the only place they are fetched.
+    expect(backend.fn('jobProps', mech, token).props).toHaveLength(1);
     expect(backend.fn('getJob', adminToken, id).props).toHaveLength(1);
   });
 
@@ -1485,7 +1515,7 @@ describe('a note from the office to the floor', () => {
     backend.fn('addWriterNote', adminToken, id, 'Owner wants a call before you pull the lower unit.');
 
     const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
-    const seen = backend.fn('jobForMechanic', mech, token).entries;
+    const seen = backend.fn('jobLog', mech, token).entries;
     const note = seen.find((e) => e.entryType === 'writer_note');
     expect(note.text).toBe('Owner wants a call before you pull the lower unit.');
     expect(note.mechanicName).toBe('Service writer');

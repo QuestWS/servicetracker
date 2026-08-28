@@ -329,6 +329,10 @@ check('the prop form is a tab, not a card',
   await mech.locator('.segmented button[data-tab="prop"]').count() === 1);
 await mech.click('.segmented button[data-tab="prop"]');
 await mech.waitForSelector('#propdesc', { timeout: 20000 });
+// Props are drawn here and nowhere else, so this is where they are fetched —
+// four jobs in five have none, and opening a job should not pay for the list.
+await mech.waitForFunction(() => !document.querySelector('#fields .loading'),
+  null, { timeout: 20000 });
 // Nothing on this tab writes a log entry, so none of the log entry's controls
 // should be sitting there offering to.
 const propTabHas = await mech.evaluate(() => ({
@@ -368,6 +372,7 @@ await mech.screenshot({ path: `${SHOTS}/55-prop-mechanic.png`, fullPage: true })
 // Back to Hours, which is where the rest of this run expects to be.
 await mech.click('.segmented button[data-tab="labor"]');
 await mech.waitForSelector('#hours', { timeout: 20000 });
+
 
 // A logged voice note links out to Drive rather than embedding a player.
 // An embedded one pointed at the retired `uc?export=download` endpoint and
@@ -497,6 +502,54 @@ check('and the retry actually saves it',
   && (await mech.textContent('.feed')).includes('DEAD-1'));
 await mech.click('.segmented button[data-tab="labor"]');
 await mech.waitForSelector('#hours', { timeout: 20000 });
+
+/* ----------------------------------------------- the log, when asked for */
+console.log('\n== the log is fetched, not carried ==');
+
+// Opening a job means reading every log entry in the shop — a Sheet has no
+// index — and it was being paid for by a mechanic who came to write, not to
+// read. The count comes off the job's own row instead.
+await mech.click('#navhome');
+await mech.waitForSelector('#manual', { timeout: 20000 });
+await mech.click('#manual');
+await mech.fill('#code', invoiceNumber);
+const openCallsAgain = [];
+const countAgain = (request) => {
+  if (!request.url().endsWith('/exec')) return;
+  try { openCallsAgain.push(JSON.parse(request.postData() || '{}').fn); } catch { openCallsAgain.push('?'); }
+};
+mech.on('request', countAgain);
+await mech.click('button[type=submit]');
+await mech.waitForSelector('#showlog', { timeout: 20000 });
+mech.off('request', countAgain);
+check('opening a job does not fetch the log', !openCallsAgain.includes('jobLog'),
+  openCallsAgain.join(', '));
+check('but the card still says how much of it there is',
+  /Job log \(\d+\)/.test(await mech.textContent('#joblog')),
+  await mech.textContent('#joblog'));
+check('and none of it is on screen until it is asked for',
+  await mech.locator('.entry').count() === 0);
+
+// An entry written before the log has been fetched still appears at once —
+// what the mechanic just wrote is never behind a button.
+await mech.fill('#minutes', '15');
+await mech.fill('#text', 'Logged without reading the log first.');
+await mech.click('#save');
+await mech.waitForSelector('.entry.labor', { timeout: 20000 });
+await settled();
+check('an entry saved before the log is fetched shows straight away',
+  await mech.locator('.entry').count() === 1);
+check('and the button then offers the earlier ones',
+  /earlier entr/.test(await mech.textContent('#showlog')), await mech.textContent('#showlog'));
+
+await mech.click('#showlog');
+await mech.waitForFunction(() => document.querySelectorAll('.entry').length > 1, null, { timeout: 20000 });
+check('tapping it brings the whole log back', await mech.locator('.entry').count() > 5,
+  `${await mech.locator('.entry').count()} entries`);
+check('and the button is gone once everything is there',
+  await mech.locator('#showlog').count() === 0);
+check('with what was already on screen kept, not duplicated',
+  (await mech.textContent('.feed')).split('Logged without reading the log first.').length === 2);
 
 // And a stock request with no job behind it.
 await mech.click('a:has-text("Scan another work order")');
