@@ -907,6 +907,18 @@ await admin.waitForSelector('text=What the customer owes', { timeout: 20000 });
 check('stores the balance on the job', (await admin.textContent('.hourstotal')).includes('1,632.47'));
 await admin.screenshot({ path: `${SHOTS}/45-closeout.png`, fullPage: true });
 
+// The two columns of an open job. The left held every form on the page and
+// ran several screens past the right, which finished near the top and left
+// the rest of the window empty. Neither is expected to match the other
+// exactly — a long shop log or a job with no props moves them — but one
+// running to twice the other is the shape of the bug.
+const columns = await admin.evaluate(() => [...document.querySelectorAll('.split > .stack')]
+  .map((el) => Math.round(el.getBoundingClientRect().height)));
+const [tall, short] = [...columns].sort((a, b) => b - a);
+console.log(`  job page columns: ${columns.join('px, ')}px`);
+check('the two columns of a job end up roughly level',
+  columns.length === 2 && short > tall * 0.5, `${columns.join(' / ')}`);
+
 // The deployment starts in test mode, so this first pass is the rehearsal.
 check('the portal warns it is in test mode', await admin.locator('#testbanner .banner').count() > 0);
 check('the done button just closes the ticket',

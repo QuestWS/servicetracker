@@ -122,7 +122,11 @@ h1, h2, h3 { margin: 0; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .row.tight { gap: 6px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.split { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 16px; align-items: start; }
+/* The open job. Even columns rather than 5/7: the left side is all form
+   fields and the extra width takes lines off every one of them, which is
+   half of what was making that column run so far past the other. The other
+   half was which cards were in it — see the job page. */
+.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 @media (max-width: 860px) { .split, .grid2 { grid-template-columns: 1fr; } }
 
 .page-title {

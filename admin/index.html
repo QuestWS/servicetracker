@@ -316,53 +316,6 @@ async function renderJob(id) {
         </section>
 
         <section class="card">
-          <h2>Paperwork</h2>
-          <div class="stack">
-            ${job.workOrderFile
-              ? `<a class="btn ghost" href="${driveFileUrl(job.workOrderFile)}" target="_blank" rel="noreferrer">Open stamped work order (PDF)</a>`
-              : `<div class="banner warn">No stamped work order on file. Re-run intake if the printed copy has no QR code.</div>`}
-            <label class="fld">Work order link (shop only)</label>
-            <div class="row tight" style="flex-wrap:nowrap">
-              <input class="txt mono" readonly value="${esc(job.trackingUrl)}" id="tracklink">
-              <button class="btn ghost sm" type="button" id="copy">Copy</button>
-            </div>
-            <p class="hint">The address the QR code on the work order carries — what a mechanic's
-              phone opens when they scan it. Not for customers.</p>
-          </div>
-        </section>
-
-        <section class="card${job.alert ? ' alerting' : ''}">
-          <h2>For the mechanic</h2>
-          <p class="hint" style="margin-top:0">Two ways to reach the floor, neither of which the
-            customer ever sees. An alert is for what cannot be missed; a note is for everything else.</p>
-
-          <div class="subhead">Alert banner</div>
-          ${job.alert ? `
-            <div class="alertbox">
-              <div class="alertbox-tag">Showing on the mechanic's screen</div>
-              <div class="alertbox-text">${esc(job.alert)}</div>
-              ${job.alertAt ? `<div class="alertbox-when">Set ${formatDateTime(job.alertAt)}</div>` : ''}
-            </div>
-            <button class="btn ghost block" type="button" id="clearalert" style="margin-top:10px">Take it down</button>
-            <p class="hint">Take it down once it has been acted on — a banner that is always up is one
-              nobody reads. What it said stays in the shop log either way.</p>`
-          : `
-            <p class="hint" style="margin-top:0">Hold the job, call the owner first, do not order the
-              part. Goes across the top of the job in red and pushes it to the top of the open-jobs
-              list.</p>
-            <textarea class="txt" id="alerttext" rows="2"
-              placeholder="Do not start — owner is disputing the estimate."></textarea>
-            <button class="btn red block" type="button" id="setalert" style="margin-top:10px">Put up the alert</button>`}
-
-          <div class="subhead">Note in the shop log</div>
-          <p class="hint" style="margin-top:0">Sits in the log with everything else, where whoever is
-            working the boat will read it.</p>
-          <textarea class="txt" id="writernote" rows="2"
-            placeholder="Owner wants a call before you pull the lower unit…"></textarea>
-          <button class="btn ghost block" type="button" id="addnote" style="margin-top:10px">Add the note</button>
-        </section>
-
-        <section class="card">
           <h2>Parts for this job</h2>
           <p class="hint" style="margin-top:0">For when somebody rings up wanting a part ordered.
             It goes straight onto the <a href="?view=parts">parts list</a>, where it takes a supplier
@@ -473,6 +426,53 @@ async function renderJob(id) {
       </div>
 
       <div class="stack">
+        <section class="card${job.alert ? ' alerting' : ''}">
+          <h2>For the mechanic</h2>
+          <p class="hint" style="margin-top:0">Two ways to reach the floor, neither of which the
+            customer ever sees. An alert is for what cannot be missed; a note is for everything else.</p>
+
+          <div class="subhead">Alert banner</div>
+          ${job.alert ? `
+            <div class="alertbox">
+              <div class="alertbox-tag">Showing on the mechanic's screen</div>
+              <div class="alertbox-text">${esc(job.alert)}</div>
+              ${job.alertAt ? `<div class="alertbox-when">Set ${formatDateTime(job.alertAt)}</div>` : ''}
+            </div>
+            <button class="btn ghost block" type="button" id="clearalert" style="margin-top:10px">Take it down</button>
+            <p class="hint">Take it down once it has been acted on — a banner that is always up is one
+              nobody reads. What it said stays in the shop log either way.</p>`
+          : `
+            <p class="hint" style="margin-top:0">Hold the job, call the owner first, do not order the
+              part. Goes across the top of the job in red and pushes it to the top of the open-jobs
+              list.</p>
+            <textarea class="txt" id="alerttext" rows="2"
+              placeholder="Do not start — owner is disputing the estimate."></textarea>
+            <button class="btn red block" type="button" id="setalert" style="margin-top:10px">Put up the alert</button>`}
+
+          <div class="subhead">Note in the shop log</div>
+          <p class="hint" style="margin-top:0">Sits in the log with everything else, where whoever is
+            working the boat will read it.</p>
+          <textarea class="txt" id="writernote" rows="2"
+            placeholder="Owner wants a call before you pull the lower unit…"></textarea>
+          <button class="btn ghost block" type="button" id="addnote" style="margin-top:10px">Add the note</button>
+        </section>
+
+        <section class="card">
+          <h2>Paperwork</h2>
+          <div class="stack">
+            ${job.workOrderFile
+              ? `<a class="btn ghost" href="${driveFileUrl(job.workOrderFile)}" target="_blank" rel="noreferrer">Open stamped work order (PDF)</a>`
+              : `<div class="banner warn">No stamped work order on file. Re-run intake if the printed copy has no QR code.</div>`}
+            <label class="fld">Work order link (shop only)</label>
+            <div class="row tight" style="flex-wrap:nowrap">
+              <input class="txt mono" readonly value="${esc(job.trackingUrl)}" id="tracklink">
+              <button class="btn ghost sm" type="button" id="copy">Copy</button>
+            </div>
+            <p class="hint">The address the QR code on the work order carries — what a mechanic's
+              phone opens when they scan it. Not for customers.</p>
+          </div>
+        </section>
+
         ${job.amountDue !== null ? `<section class="card">
           <h2>What the customer owes</h2>
           <div class="hourstotal">${formatMoney(job.amountDue)}</div>
@@ -537,9 +537,7 @@ async function renderJob(id) {
 
         <section class="card">
           <h2>Timeline</h2>
-          <p class="hint" style="margin-top:0">When this job changed hands and status. Fetched when
-            you ask — reading it on every open cost a pass over the whole sheet for a panel nobody
-            looks at most visits.</p>
+          <p class="hint" style="margin-top:0">When this job changed hands and status.</p>
           <button class="btn ghost block" type="button" id="showhistory">Show the timeline</button>
           <div id="history"></div>
         </section>
