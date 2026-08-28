@@ -1569,6 +1569,19 @@ describe('what the mechanic needs before touching the boat', () => {
   });
 });
 
+describe('the housekeeping triggers', () => {
+  it('schedules the nightly filing alongside the hourly and the parts list', () => {
+    // A trigger nobody installs is a feature that silently never runs.
+    backend.fn('installTriggers_');
+    const byHandler = {};
+    backend.triggers.forEach((t) => { byHandler[t.handler] = t; });
+    expect(byHandler.hourly.everyHours).toBe(1);
+    expect(byHandler.sendDailyOrders.atHour).toBe(15);
+    expect(byHandler.nightly.atHour).toBe(2);
+    expect(byHandler.nightly.everyDays).toBe(1);
+  });
+});
+
 describe('putting a misfiled entry right', () => {
   it('deletes an entry and takes it off the job\'s totals', () => {
     const { id, token, mech } = seedJob();
@@ -1654,6 +1667,84 @@ describe('putting a misfiled entry right', () => {
       { entryType: 'internal_note', text: 'Note.' }).entry;
     expect(() => backend.fn('moveEntry', adminToken, entry.id, '01-9999')).toThrow(/No job found/);
     expect(() => backend.fn('moveEntry', adminToken, entry.id, '01-8886')).toThrow(/already on/);
+  });
+
+  it('leaves the photos where they are, and remembers where that is', () => {
+    const from = seedJob('01-8886');
+    seedJob('01-8887', { seedLabor: false });
+    const entry = backend.fn('addEntry', from.mech, from.token, {
+      entryType: 'internal_note', text: 'Corrosion on the mount.',
+      photos: [{ thumb: 'dGh1bWI=', full: 'ZnVsbA==' }],
+    }).entry;
+
+    backend.fn('moveEntry', adminToken, entry.id, '01-8887');
+    // Drive is several slow calls a file and the writer is at a counter.
+    // The links still work either way — every job folder is link-shared.
+    const row = backend.fn('entryRow_', entry.id);
+    expect(row.job_id).toBe('01-8887');
+    expect(row.files_job).toBe('01-8886');
+    expect(backend.parentOf(JSON.parse(row.photos)[0].full)).toBe('folder-01-8886');
+  });
+
+  it('and the nightly sweep walks them over', () => {
+    const from = seedJob('01-8886');
+    seedJob('01-8887', { seedLabor: false });
+    const entry = backend.fn('addEntry', from.mech, from.token, {
+      entryType: 'internal_note', text: 'Corrosion on the mount.',
+      photos: [{ thumb: 'dGh1bWI=', full: 'ZnVsbA==' }],
+      audio: 'YXVkaW8=', audioMime: 'audio/webm',
+    }).entry;
+    backend.fn('moveEntry', adminToken, entry.id, '01-8887');
+
+    backend.fn('nightly');
+
+    const row = backend.fn('entryRow_', entry.id);
+    const photo = JSON.parse(row.photos)[0];
+    expect(backend.parentOf(photo.thumb)).toBe('folder-01-8887');
+    expect(backend.parentOf(photo.full)).toBe('folder-01-8887');
+    expect(backend.parentOf(row.audio_file)).toBe('folder-01-8887');
+    // Filed, so there is nothing for tomorrow night to do.
+    expect(row.files_job).toBe('');
+    expect(backend.fn('sweepEntryFiles_')).toBe(0);
+  });
+
+  it('moved back before the sweep runs is nothing to do at all', () => {
+    const from = seedJob('01-8886');
+    seedJob('01-8887', { seedLabor: false });
+    const entry = backend.fn('addEntry', from.mech, from.token, {
+      entryType: 'internal_note', text: 'There and back.',
+      photos: [{ thumb: 'dGh1bWI=', full: 'ZnVsbA==' }],
+    }).entry;
+    backend.fn('moveEntry', adminToken, entry.id, '01-8887');
+    backend.fn('moveEntry', adminToken, entry.id, '01-8886');
+    expect(backend.fn('entryRow_', entry.id).files_job).toBe('');
+    expect(backend.fn('sweepEntryFiles_')).toBe(0);
+  });
+
+  it('an entry with nothing attached is never stamped', () => {
+    const from = seedJob('01-8886');
+    seedJob('01-8887', { seedLabor: false });
+    const entry = backend.fn('addEntry', from.mech, from.token,
+      { entryType: 'internal_note', text: 'Just words.' }).entry;
+    backend.fn('moveEntry', adminToken, entry.id, '01-8887');
+    expect(backend.fn('entryRow_', entry.id).files_job).toBe('');
+  });
+
+  it('survives a file somebody deleted out of Drive by hand', () => {
+    const from = seedJob('01-8886');
+    seedJob('01-8887', { seedLabor: false });
+    const entry = backend.fn('addEntry', from.mech, from.token, {
+      entryType: 'internal_note', text: 'One photo since deleted.',
+      photos: [{ thumb: 'dGh1bWI=', full: 'ZnVsbA==' }],
+    }).entry;
+    const row = backend.fn('entryRow_', entry.id);
+    backend.fn('updateRow_', 'LogEntries', row._row,
+      { photos: JSON.stringify([{ thumb: 'gone-1', full: 'gone-2' }]) });
+    backend.fn('moveEntry', adminToken, entry.id, '01-8887');
+
+    expect(() => backend.fn('nightly')).not.toThrow();
+    // The entry is filed anyway: there is nothing left to move.
+    expect(backend.fn('entryRow_', entry.id).files_job).toBe('');
   });
 
   it('is the office\'s to do, not the floor\'s', () => {

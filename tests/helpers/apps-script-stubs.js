@@ -112,6 +112,7 @@ export function loadBackend(options = {}) {
   const sheets = new Map();
   const properties = new Map(Object.entries(options.properties || {}));
   const sentMail = [];
+  const triggers = [];
   const driveFiles = new Map();
   const fetched = [];
   const sharing = new Map();
@@ -129,6 +130,21 @@ export function loadBackend(options = {}) {
     deleteSheet: (sheet) => sheets.delete(sheet.name),
   };
 
+  // Which folder each file is in, so a test can ask whether the nightly
+  // housekeeping actually walked it across.
+  const fileParent = new Map();
+
+  const fileHandle = (id) => ({
+    getId: () => id,
+    getName: () => (driveFiles.get(id) || { getName: () => 'file' }).getName(),
+    getBlob: () => driveFiles.get(id),
+    setSharing: (access, permission) => { sharing.set(id, `${access}/${permission}`); },
+    moveTo: (destination) => {
+      fileParent.set(id, destination.getId());
+      return fileHandle(id);
+    },
+  });
+
   const folder = (name) => ({
     name,
     getId: () => `folder-${name}`,
@@ -140,12 +156,8 @@ export function loadBackend(options = {}) {
     createFile: (blob) => {
       const id = `drive-${driveFiles.size + 1}`;
       driveFiles.set(id, blob);
-      return {
-        getId: () => id,
-        getName: () => blob.getName(),
-        getBlob: () => blob,
-        setSharing: (access, permission) => { sharing.set(id, `${access}/${permission}`); },
-      };
+      fileParent.set(id, `folder-${name}`);
+      return fileHandle(id);
     },
   });
 
@@ -168,11 +180,10 @@ export function loadBackend(options = {}) {
       Permission: { VIEW: 'VIEW' },
       createFolder: (name) => folder(name),
       getFolderById: () => folder('root'),
-      getFileById: (id) => ({
-        getId: () => id,
-        getName: () => (driveFiles.get(id) || { getName: () => 'file' }).getName(),
-        getBlob: () => driveFiles.get(id),
-      }),
+      getFileById: (id) => {
+        if (!driveFiles.has(id)) throw new Error('No item with the given ID could be found.');
+        return fileHandle(id);
+      },
     },
     GmailApp: {
       sendEmail: (to, subject, body, opts) => sentMail.push({ to, subject, body, opts }),
@@ -196,9 +207,20 @@ export function loadBackend(options = {}) {
     LockService: {
       getScriptLock: () => ({ waitLock: () => {}, releaseLock: () => {} }),
     },
+    // Records what setup() actually schedules. A trigger nobody installs is
+    // a feature that silently never runs.
     ScriptApp: {
       getProjectTriggers: () => [],
-      newTrigger: () => ({ timeBased: () => ({ everyHours: () => ({ create: () => {} }) }) }),
+      newTrigger: (handler) => {
+        const spec = { handler };
+        const timed = {
+          everyHours: (n) => { spec.everyHours = n; return timed; },
+          atHour: (n) => { spec.atHour = n; return timed; },
+          everyDays: (n) => { spec.everyDays = n; return timed; },
+          create: () => { triggers.push(spec); },
+        };
+        return { timeBased: () => timed };
+      },
       deleteTrigger: () => {},
     },
     ContentService: {
@@ -258,6 +280,9 @@ export function loadBackend(options = {}) {
     sharing,
     properties,
     fetched,
+    triggers,
+    /** Which folder a Drive file is sitting in right now. */
+    parentOf: (id) => fileParent.get(id) || null,
     /** Deliver a webhook the way AssemblyAI does: POST, id in the body. */
     post: (parameter, body) => {
       context.__event = { parameter: parameter, postData: { contents: JSON.stringify(body) } };

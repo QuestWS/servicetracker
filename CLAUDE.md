@@ -318,9 +318,16 @@ different thing from correcting a mistake.
   is still `needed`. An entry whose part has actually been ordered refuses to
   delete and says to deal with the parts list first, the same rule
   `cancelPartOrder` follows.
-- **Photos and recordings stay in the original job's Drive folder.** The links
-  keep working — the folder is link-shared and the entry carries the file ids
-  — and moving files is several slow Drive calls for a tidiness nobody sees.
+- **Photos and recordings stay put until 2am.** Moving Drive files is several
+  slow calls each and the writer is standing at a counter, so `moveEntry`
+  stamps `files_job` with the folder the files are actually in and the
+  `nightly` trigger walks them over. The links work either way — every job
+  folder is link-shared and the entry carries the file ids — so this is about
+  filing, not access: somebody opening last winter's job in Drive should find
+  that job's photos in that job's folder. `files_job` empty means nothing to
+  do, which is the answer for every entry that has never moved, and moving one
+  back before the sweep runs clears it. The sweep is capped per night so a
+  backlog cannot spend the day's trigger runtime in one go.
 - The move target is given as the number off the paper, through
   `jobByNumber_`, so `01-8886`, `018886` and `8886` all find it and an
   ambiguous suffix finds nothing.
@@ -473,8 +480,9 @@ Consumer Gmail, not Workspace, and the account is shared with the winter app:
   rather than one per entry. Do not turn that back into per-entry sending.
 - **15 GB of Drive**, shared. Photos are shrunk to ~200 KB before upload.
 - **90 minutes of trigger runtime a day.** One hourly trigger does both the
-  transcript sweep and the digest, for that reason. The parts list at 3pm is
-  the only other one.
+  transcript sweep and the digest, for that reason. Two dailies sit beside it:
+  the parts list at 3pm, and `nightly` at 2am for the file filing — put
+  housekeeping there, where slow costs nothing, rather than into the hourly.
 
 ## The two switches
 

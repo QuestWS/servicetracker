@@ -187,7 +187,12 @@ const SHEETS = {
                // `text` is what a person typed. A mechanic who records AND
                // types has said two things, and a transcript landing in the
                // same cell would have wiped one of them out.
-               'transcript'],
+               'transcript',
+               // Which job's Drive folder this entry's photos and recording
+               // are actually sitting in, and ONLY while that is not the job
+               // the entry is on. Empty means they are where they belong,
+               // which is the answer for every entry that has never moved.
+               'files_job'],
   // A part somebody needs: off a work order, or a bare stock request. One row
   // per part; rows ordered together share a vendor and order number, and the
   // group is done when every row in it has been received.
@@ -2611,7 +2616,18 @@ function moveEntry(token, entryId, toJob) {
     const from = entry.job_id;
     const minutes = entry.entry_type === 'labor' && entry.hours ? minutesFromHours_(entry.hours) : 0;
 
-    updateRow_('LogEntries', entry._row, { job_id: target.id });
+    // The files stay put for now and a nightly job walks them over. Moving
+    // Drive files is several slow calls each, and this runs while somebody is
+    // waiting at a counter — `files_job` remembers where they actually are
+    // until 2am. Already stamped means the entry has been moved twice since
+    // the last sweep, and the stamp still points at the folder holding them;
+    // moved back to that folder and there is nothing left to do.
+    const patch = { job_id: target.id };
+    if (entry.audio_file || entry.photos) {
+      const filesAt = entry.files_job || from;
+      patch.files_job = String(filesAt) === String(target.id) ? '' : filesAt;
+    }
+    updateRow_('LogEntries', entry._row, patch);
     partsFromEntry_(entry.id).forEach(function (part) {
       updateRow_('PartsOrders', part._row, { job_id: target.id });
     });
@@ -2999,6 +3015,60 @@ function sweepTranscripts_() {
     });
 }
 
+/**
+ * Walks the photos and the recording of a moved entry into the folder of the
+ * job it now belongs to.
+ *
+ * Moving an entry leaves its files behind on purpose: Drive is several slow
+ * calls per file and the writer is standing at a counter when they press the
+ * button. The links keep working either way — every job folder is
+ * link-shared and the entry carries the file ids — so nothing is broken in
+ * the meantime. What is wrong is the filing: somebody opening last winter's
+ * job in Drive should find that job's photos in that job's folder.
+ *
+ * So it happens at 2am, when slow costs nothing.
+ *
+ * Capped per run. A night with a hundred moved entries behind it must not
+ * spend the day's trigger runtime in one go; whatever is left is still
+ * stamped and the next night takes it.
+ */
+const FILE_SWEEP_LIMIT = 40;
+
+function sweepEntryFiles_() {
+  const waiting = rows_('LogEntries').filter(function (entry) {
+    return entry.files_job && String(entry.files_job) !== String(entry.job_id);
+  }).slice(0, FILE_SWEEP_LIMIT);
+
+  waiting.forEach(function (entry) {
+    try {
+      const folder = jobFolder_(entry.job_id);
+      const ids = [];
+      if (entry.audio_file) ids.push(entry.audio_file);
+      parsePhotos_(entry.photos).forEach(function (photo) {
+        if (photo.thumb) ids.push(photo.thumb);
+        if (photo.full) ids.push(photo.full);
+      });
+
+      ids.forEach(function (id) {
+        try {
+          // moveTo, not a copy: the id in the sheet has to keep working, and
+          // the file takes its new parent's sharing on the way in.
+          DriveApp.getFileById(id).moveTo(folder);
+        } catch (err) {
+          // A file somebody deleted out of Drive by hand. The entry still
+          // reads fine without it, and stopping here would strand every
+          // other file on the entry.
+        }
+      });
+      updateRow_('LogEntries', entry._row, { files_job: '' });
+    } catch (err) {
+      // Leave the stamp on. Whatever went wrong — a folder that would not
+      // open, Drive refusing — the next night tries again.
+    }
+  });
+  return waiting.length;
+}
+
 /* ============================== triggers =============================== */
 
 /** One hourly job does both: it keeps well inside the trigger runtime quota. */
@@ -3007,14 +3077,21 @@ function hourly() {
   sendDigest();
 }
 
+/** Housekeeping, at an hour when slow does not matter. */
+function nightly() {
+  sweepEntryFiles_();
+}
+
 function installTriggers_() {
-  const ours = { hourly: true, sendDailyOrders: true };
+  const ours = { hourly: true, sendDailyOrders: true, nightly: true };
   ScriptApp.getProjectTriggers().forEach(function (trigger) {
     if (ours[trigger.getHandlerFunction()]) ScriptApp.deleteTrigger(trigger);
   });
   ScriptApp.newTrigger('hourly').timeBased().everyHours(1).create();
   // 3pm Central — the script's own timezone, set in appsscript.json.
   ScriptApp.newTrigger('sendDailyOrders').timeBased().atHour(15).everyDays(1).create();
+  // 2am, for the filing nobody should have to wait on.
+  ScriptApp.newTrigger('nightly').timeBased().atHour(2).everyDays(1).create();
 }
 
 /* ================================ setup ================================ */
