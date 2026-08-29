@@ -39,6 +39,17 @@ short list of things that are easy to get wrong.
    `amountDue` is the number after deposits, never the grand total.
 5. **`SITE_URL` is printed onto paper.** Changing it after work orders are in
    the folder invalidates every QR code already printed.
+
+   The same reason a **re-stamp keeps the job's existing token**. A customer
+   adds to the job after the sheet is printed, so the writer changes it in BiT
+   and drops the new PDF on the job page: it is stamped with the same QR as the
+   first copy, so anything already in the folder still opens the job.
+   `attachWorkOrder` replaces the stored file and touches nothing else. A PDF
+   whose invoice number reads as a *different* job is refused — this job's QR
+   on another job's paper sends a mechanic to the wrong boat — while one with
+   no text layer is allowed through with a note, because it proves nothing
+   either way. The description off the new copy is **offered, not applied**:
+   the writer may have already typed a better version by hand.
 6. **No credential ever lands in this repo.** It is public. Passwords and API
    keys live in Apps Script → Project Settings → Script properties, and the
    code only ever names them.

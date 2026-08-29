@@ -159,6 +159,16 @@ h1, h2, h3 { margin: 0; }
 .card.flat { box-shadow: none; }
 .card.gold { border-color: var(--gold); background: var(--gold-soft); }
 
+/* Re-stamping a work order that is already in the system. Set apart from the
+   links above it: everything else on that card reads the paperwork, this one
+   replaces it. */
+.restamp {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ice);
+}
+.restamp input[type="file"] { font-size: 13.5px; max-width: 100%; }
+
 /* Status chips on the left, the order on the right; they stack rather than
    crush each other on a narrow counter iPad. */
 .filterbar { justify-content: space-between; align-items: center; gap: 12px; }

@@ -531,6 +531,17 @@ async function renderJob(id) {
             </div>
             <p class="hint">The address the QR code on the work order carries — what a mechanic's
               phone opens when they scan it. Not for customers.</p>
+
+            <div class="restamp">
+              <label class="fld" for="restamp">Re-stamp the work order</label>
+              <p class="hint" style="margin-top:0">A customer adds to the job after you have
+                printed it: change it in BiT, download the new copy and drop it here. It gets the
+                <b>same QR code</b> as the first one, so any sheet already printed still opens this
+                job — and the mechanic gets the whole description on paper instead of a note to
+                notice.</p>
+              <input id="restamp" type="file" accept="application/pdf">
+              <div id="restampmsg"></div>
+            </div>
           </div>
         </section>
 
@@ -709,6 +720,87 @@ async function renderJob(id) {
     } catch {
       $('tracklink').select();
     }
+  };
+
+  /**
+   * A new BiT copy of a job that already exists, stamped with the SAME QR.
+   *
+   * The token does not change, so the sheets already in the folder keep
+   * working and the shop never has to chase down a printed copy. What the
+   * mechanic gets is the current description on paper, rather than an old
+   * sheet plus a hope that somebody reads the note in the app.
+   */
+  const restamp = $('restamp');
+  if (restamp) restamp.onchange = async () => {
+    const file = restamp.files[0];
+    if (!file) return;
+    const say = (tone, html) => { $('restampmsg').innerHTML = `<div class="msg ${tone}">${html}</div>`; };
+    restamp.disabled = true;
+    say('', 'Reading the PDF…');
+    try {
+      if (file.type !== 'application/pdf') {
+        throw new Error('That does not look like a PDF. Download the work order from BiT and try again.');
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const extracted = await extractPdf(bytes);
+      const parsed = parseWorkOrder(extracted);
+
+      // Stamping this job's QR onto another job's paper would send a mechanic
+      // to the wrong boat, so a number that reads as a DIFFERENT job stops
+      // here. A PDF with no text layer proves nothing either way and is
+      // allowed through with a word about it.
+      if (parsed.invoiceNumber && parsed.invoiceNumber !== job.id) {
+        throw new Error(`That PDF is work order ${parsed.invoiceNumber}, not ${job.id}. `
+          + 'Open that job to re-stamp it.');
+      }
+
+      say('', 'Stamping the QR code…');
+      const stamped = await stampWorkOrder({
+        pdfBytes: bytes,
+        trackingUrl: job.trackingUrl,
+        invoiceNumber: job.id,
+        firstPage: extracted.pages[0],
+      });
+      await api('attachWorkOrder', [job.id, bytesToBase64(stamped)]);
+
+      const url = URL.createObjectURL(new Blob([stamped], { type: 'application/pdf' }));
+      const fresh = (parsed.workRequested || '').trim();
+      const differs = fresh && fresh !== (job.workRequested || '').trim();
+      say('ok', `Re-stamped, same QR code as before.
+        ${parsed.invoiceNumber ? '' : '<div style="margin-top:4px">That PDF had no text layer, so the work order number could not be checked against this job.</div>'}
+        <div class="stack" style="margin-top:10px">
+          <a class="btn navy" href="${url}" target="_blank" rel="noreferrer">Open print-ready work order</a>
+          ${differs ? `<button class="btn ghost" type="button" id="usedesc">Update what needs doing to match</button>` : ''}
+        </div>
+        ${differs ? `<p class="hint" style="margin-top:8px">The new copy says:
+          &ldquo;${esc(fresh)}&rdquo;</p>` : ''}`);
+
+      // Offered rather than applied: the writer may have already typed a
+      // better version of this by hand, and a silent overwrite of it would be
+      // the worst outcome of pressing a button labelled "re-stamp".
+      const usedesc = $('usedesc');
+      if (usedesc) usedesc.onclick = async () => {
+        usedesc.disabled = true;
+        try {
+          await api('saveJobDetails', [job.id, {
+            customerName: job.customerName || '',
+            customerPhone: job.customerPhone || '',
+            customerEmail: job.customerEmail || '',
+            boatInfo: job.boatInfo || '',
+            workRequested: fresh,
+          }]);
+          renderJob(job.id);
+          toast('What needs doing now matches the new work order.');
+        } catch (error) {
+          usedesc.disabled = false;
+          say('err', esc(error.message));
+        }
+      };
+    } catch (error) {
+      say('err', esc(error.message));
+    }
+    restamp.disabled = false;
+    restamp.value = '';
   };
 
   $('details').onsubmit = async (event) => {

@@ -821,6 +821,60 @@ check('and hands it over when it is', /received|work underway/i.test(history), h
 
 
 /* ------------------------------------------------------------- the alert */
+/* ------------------------------------------------ re-stamping a work order */
+console.log('\n== re-stamping a work order ==');
+// A customer adds to the job after the sheet has been printed. The writer
+// changes it in BiT and needs a new printable copy carrying the SAME QR code —
+// otherwise the mechanic gets either a sheet with no code on it, or the old
+// half of the description and a hope that they read the app.
+const REVISED_PDF = 'scratch/browser-check-wo-revised.pdf';
+fs.writeFileSync(REVISED_PDF, await makeWorkOrderPdf({
+  invoice: invoiceNumber,
+  description: 'Customer reports port engine stalling at idle. 100 hour service. '
+    + 'Added at the counter: replace both batteries and service the trailer bearings.',
+  unit: { year: '2019', make: 'Yamaha', model: '242X E-Series', serial: 'YAM12345K819', engine: 'Yamaha 1.8L HO' },
+}));
+const OTHER_PDF = 'scratch/browser-check-wo-other.pdf';
+fs.writeFileSync(OTHER_PDF, await makeWorkOrderPdf({ invoice: '01-0001' }));
+
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('#restamp', { timeout: 20000 });
+const linkBefore = await admin.inputValue('#tracklink');
+
+// The dangerous case first: this job's QR stamped onto another job's paper
+// would send a mechanic to the wrong boat.
+await admin.setInputFiles('#restamp', OTHER_PDF);
+await admin.waitForSelector('#restampmsg .msg.err', { timeout: 30000 });
+check('a work order for another job is refused',
+  /01-0001/.test(await admin.textContent('#restampmsg')), await admin.textContent('#restampmsg'));
+
+await admin.waitForFunction(() => !document.getElementById('restamp').disabled,
+  null, { timeout: 20000 });
+await admin.setInputFiles('#restamp', REVISED_PDF);
+await admin.waitForSelector('#restampmsg .msg.ok', { timeout: 30000 });
+check('the revised copy is re-stamped',
+  /same QR code/.test(await admin.textContent('#restampmsg')), await admin.textContent('#restampmsg'));
+check('and hands back something to print',
+  await admin.locator('#restampmsg a:has-text("print-ready")').count() === 1);
+// The token is what the QR carries, so an unchanged link is an unchanged code
+// — which is what keeps the sheets already in the folder working.
+check('with the same code the first copy carried',
+  (await admin.inputValue('#tracklink')) === linkBefore);
+
+check('and offers what the new copy says the job is',
+  await admin.locator('#usedesc').count() === 1);
+await admin.click('#usedesc');
+// The field itself, not the page text: the message above it already quotes the
+// new description, so waiting on innerText is satisfied before anything saves.
+await admin.waitForFunction(() => {
+  const box = document.getElementById('workRequested');
+  return box && box.value.includes('trailer bearings');
+}, null, { timeout: 20000 });
+check('which brings what needs doing into line with the paper',
+  (await admin.inputValue('#workRequested')).includes('trailer bearings'),
+  await admin.inputValue('#workRequested'));
+await admin.screenshot({ path: `${SHOTS}/62-restamped.png`, fullPage: true });
+
 console.log('\n== the red alert ==');
 // The props list left the portal on another page.
 await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
