@@ -1736,6 +1736,80 @@ describe('running setup from the portal', () => {
   });
 });
 
+describe('documents on a job', () => {
+  const attach = (id, visibility, name) => backend.fn('addJobFile', adminToken, id, {
+    name: name || 'photo.jpg', mime: 'image/jpeg', visibility, base64: 'ZmlsZQ==',
+  });
+
+  it('keeps what each one is for, decided when it is added', () => {
+    const { id } = seedJob();
+    attach(id, 'customer', 'damage.jpg');
+    attach(id, 'internal', 'supplier-quote.pdf');
+
+    const files = backend.fn('getJob', adminToken, id).files;
+    expect(files.map((f) => f.name)).toEqual(['damage.jpg', 'supplier-quote.pdf']);
+    expect(files.map((f) => f.visibility)).toEqual(['customer', 'internal']);
+  });
+
+  it('treats anything it cannot read as internal', () => {
+    const { id } = seedJob();
+    // The failure that matters is a cost sheet going out with an invoice, so
+    // the ambiguous answer is the one that stays in the building.
+    backend.fn('addJobFile', adminToken, id, { name: 'x.pdf', base64: 'ZmlsZQ==' });
+    backend.fn('addJobFile', adminToken, id, { name: 'y.pdf', base64: 'ZmlsZQ==', visibility: 'CUSTOMER' });
+    expect(backend.fn('getJob', adminToken, id).files.map((f) => f.visibility))
+      .toEqual(['internal', 'internal']);
+  });
+
+  it('sends the customer ones with the invoice and keeps the rest back', () => {
+    goLive();
+    const { id } = seedJob();
+    attach(id, 'customer', 'damage.jpg');
+    attach(id, 'internal', 'supplier-quote.pdf');
+    backend.fn('saveInvoice', adminToken, id, '', 'JVBERi0=');
+    backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+
+    const names = backend.sentMail[0].opts.attachments.map((blob) => blob.getName());
+    expect(names).toContain('Invoice-' + id + '.pdf');
+    expect(names).toContain('damage.jpg');
+    expect(names).not.toContain('supplier-quote.pdf');
+    // And the customer is told what came with it.
+    expect(backend.sentMail[0].opts.htmlBody).toContain('damage.jpg');
+    expect(backend.sentMail[0].opts.htmlBody).not.toContain('supplier-quote');
+  });
+
+  it('never reaches the customer page, whatever it is marked', () => {
+    goLive();
+    const { id, token } = seedJob();
+    attach(id, 'customer', 'damage.jpg');
+    // Attachments are not a log entry and publicJob does not touch the tab.
+    // The only way one leaves the building is a writer pressing send.
+    const shown = JSON.stringify(backend.fn('publicJob', token));
+    expect(shown).not.toContain('damage.jpg');
+    expect(shown).not.toContain('files');
+  });
+
+  it('bins a removed file rather than destroying it', () => {
+    const { id } = seedJob();
+    attach(id, 'customer', 'wrong.jpg');
+    const file = backend.fn('getJob', adminToken, id).files[0];
+
+    backend.fn('deleteJobFile', adminToken, file.id);
+    expect(backend.fn('getJob', adminToken, id).files).toHaveLength(0);
+    expect(backend.trashed).toContain(file.driveFile);
+  });
+
+  it('is the office\'s to add and to remove', () => {
+    const { id, mech } = seedJob();
+    expect(() => backend.fn('addJobFile', mech, id, { name: 'x', base64: 'ZmlsZQ==' }))
+      .toThrow(/Sign in/);
+    expect(() => backend.fn('deleteJobFile', mech, 'file-nope')).toThrow(/Sign in/);
+    expect(() => backend.fn('addJobFile', adminToken, id, { name: 'x' })).toThrow(/No file/);
+    expect(() => backend.fn('deleteJobFile', adminToken, 'file-nope')).toThrow(/No such attachment/);
+  });
+});
+
 describe('the housekeeping triggers', () => {
   it('schedules the nightly filing alongside the hourly and the parts list', () => {
     // A trigger nobody installs is a feature that silently never runs.

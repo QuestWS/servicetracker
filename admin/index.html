@@ -327,6 +327,9 @@ async function renderJob(id) {
   const data = await api('getJob', [id]);
   showTestBanner(data.testMode);
   const { job, entries, hours, props, parts, emails } = data;
+  // Older deployments have no JobFiles tab until setup() has been run; the
+  // card simply shows nothing rather than the page falling over.
+  const files = data.files || [];
   // A mechanic can add to a job after the writer has written the rest up, so
   // the split is per entry rather than a flag on the job.
   const pending = entries.filter((entry) => !entry.loggedAt);
@@ -545,6 +548,31 @@ async function renderJob(id) {
           </div>
         </section>
 
+        <section class="card">
+          <h2>Attachments${files.length ? ` (${files.length})` : ''}</h2>
+          <p class="hint" style="margin-top:0">Anything else that belongs on this job — a photo of
+            what you found, a supplier quote. You say which kind as you add it, and that is the
+            only thing that decides whether a customer ever sees it.</p>
+
+          ${files.length ? `<div class="filelist">${files.map((file) => `
+            <div class="filerow">
+              <span class="pill ${file.visibility === 'customer' ? 'green' : 'grey'}">${
+                file.visibility === 'customer' ? 'Customer' : 'Internal'}</span>
+              <a class="grow" href="${driveFileUrl(file.driveFile)}" target="_blank" rel="noreferrer">${esc(file.name)}</a>
+              <button type="button" data-delfile="${esc(file.id)}" aria-label="Remove ${esc(file.name)}">Remove</button>
+            </div>`).join('')}</div>` : ''}
+
+          <label class="fld" for="jobfile">Add a file</label>
+          <input id="jobfile" type="file">
+          <div class="row tight" style="margin-top:10px">
+            <button class="btn ghost sm" type="button" id="addfilecustomer" disabled>Attach for the customer</button>
+            <button class="btn ghost sm" type="button" id="addfileinternal" disabled>Keep internal</button>
+          </div>
+          <p class="hint">A customer file is attached to the invoice email when you send it.
+            An internal one never leaves the shop.</p>
+          <div id="filemsg"></div>
+        </section>
+
         ${job.amountDue !== null ? `<section class="card">
           <h2>What the customer owes</h2>
           <div class="hourstotal">${formatMoney(job.amountDue)}</div>
@@ -730,6 +758,70 @@ async function renderJob(id) {
    * mechanic gets is the current description on paper, rather than an old
    * sheet plus a hope that somebody reads the note in the app.
    */
+  /**
+   * Documents on the job, each marked for the customer or for the shop.
+   *
+   * Two buttons rather than a radio and one: which button you press IS the
+   * choice, so it cannot be made by not noticing a default. The wrong outcome
+   * here is a supplier's cost sheet leaving with an invoice, and that is not
+   * a mistake to leave one unticked box away.
+   */
+  const jobfile = $('jobfile');
+  if (jobfile) {
+    const filebuttons = [$('addfilecustomer'), $('addfileinternal')];
+    jobfile.onchange = () => {
+      filebuttons.forEach((button) => { button.disabled = !jobfile.files[0]; });
+      $('filemsg').innerHTML = '';
+    };
+
+    const addFile = async (visibility, button) => {
+      const file = jobfile.files[0];
+      if (!file) return;
+      // Gmail will not carry more than about 25MB in total, and a phone photo
+      // dropped in whole is the usual way that gets found out.
+      if (file.size > 10 * 1024 * 1024) {
+        $('filemsg').innerHTML = '<div class="msg err">That file is over 10MB. '
+          + 'Anything larger has to go in Drive and be linked by hand.</div>';
+        return;
+      }
+      filebuttons.forEach((b) => { b.disabled = true; });
+      button.textContent = 'Attaching…';
+      try {
+        await api('addJobFile', [job.id, {
+          name: file.name,
+          mime: file.type || 'application/octet-stream',
+          visibility: visibility,
+          base64: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
+        }]);
+        renderJob(job.id);
+        toast(visibility === 'customer'
+          ? 'Attached. It goes with the invoice email.'
+          : 'Attached, internal only.');
+      } catch (error) {
+        $('filemsg').innerHTML = `<div class="msg err">${esc(error.message)}</div>`;
+        filebuttons.forEach((b) => { b.disabled = false; });
+        button.textContent = visibility === 'customer' ? 'Attach for the customer' : 'Keep internal';
+      }
+    };
+    $('addfilecustomer').onclick = () => addFile('customer', $('addfilecustomer'));
+    $('addfileinternal').onclick = () => addFile('internal', $('addfileinternal'));
+  }
+
+  view.querySelectorAll('[data-delfile]').forEach((button) => {
+    button.onclick = async () => {
+      if (!confirm('Remove this attachment? It goes to the Drive bin, where it can be recovered for thirty days.')) return;
+      button.disabled = true;
+      try {
+        await api('deleteJobFile', [button.dataset.delfile]);
+        renderJob(job.id);
+        toast('Attachment removed.');
+      } catch (error) {
+        button.disabled = false;
+        notice('warn', error.message);
+      }
+    };
+  });
+
   const restamp = $('restamp');
   if (restamp) restamp.onchange = async () => {
     const file = restamp.files[0];

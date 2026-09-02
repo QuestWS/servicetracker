@@ -895,6 +895,52 @@ check('and hands it over when it is', /received|work underway/i.test(history), h
 
 
 /* ------------------------------------------------------------- the alert */
+/* --------------------------------------------------- documents on a job */
+console.log('\n== attachments ==');
+// Two kinds, and which button you press is the choice — the wrong outcome
+// here is a supplier's cost sheet leaving with a customer's invoice.
+const attachBytes = encodePng({
+  width: 24, height: 24,
+  data: Buffer.from(Array.from({ length: 24 * 24 * 4 }, (_, i) => (i % 4 === 3 ? 255 : (i * 11) % 256))),
+});
+const CUSTOMER_FILE = 'scratch/browser-check-damage.png';
+const INTERNAL_FILE = 'scratch/browser-check-quote.png';
+fs.writeFileSync(CUSTOMER_FILE, attachBytes);
+fs.writeFileSync(INTERNAL_FILE, attachBytes);
+
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('#jobfile', { timeout: 20000 });
+check('neither button is live until a file is picked',
+  await admin.locator('#addfilecustomer').isDisabled()
+  && await admin.locator('#addfileinternal').isDisabled());
+
+await admin.setInputFiles('#jobfile', CUSTOMER_FILE);
+await admin.click('#addfilecustomer');
+await admin.waitForSelector('.filerow', { timeout: 20000 });
+await admin.setInputFiles('#jobfile', INTERNAL_FILE);
+await admin.click('#addfileinternal');
+await admin.waitForFunction(() => document.querySelectorAll('.filerow').length === 2,
+  null, { timeout: 20000 });
+
+const fileRows = await admin.evaluate(() => [...document.querySelectorAll('.filerow')]
+  .map((row) => row.textContent.replace(/\s+/g, ' ').trim()));
+check('a file added for the customer says so', /Customer/.test(fileRows[0]), fileRows.join(' | '));
+check('and an internal one says that', /Internal/.test(fileRows[1]), fileRows.join(' | '));
+check('both are on the job', /damage/.test(fileRows[0]) && /quote/.test(fileRows[1]),
+  fileRows.join(' | '));
+await admin.screenshot({ path: `${SHOTS}/63-attachments.png`, fullPage: true });
+
+// Removing one bins it rather than destroying it, and asks first.
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.locator('.filerow:has-text("quote") [data-delfile]').click();
+await admin.waitForFunction(() => document.querySelectorAll('.filerow').length === 1,
+  null, { timeout: 20000 });
+const leftOnJob = await admin.evaluate(() => [...document.querySelectorAll('.filerow')]
+  .map((row) => row.textContent.replace(/\s+/g, ' ').trim()));
+check('removing one asks first and takes it off the job',
+  leftOnJob.length === 1 && /damage/.test(leftOnJob[0]) && !/quote/.test(leftOnJob[0]),
+  leftOnJob.join(' | '));
+
 /* ------------------------------------------------ re-stamping a work order */
 console.log('\n== re-stamping a work order ==');
 // A customer adds to the job after the sheet has been printed. The writer

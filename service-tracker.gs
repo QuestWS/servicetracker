@@ -205,6 +205,11 @@ const SHEETS = {
   // What identifies it is a photograph of the tag tied to it, not a number.
   PropRepairs: ['id', 'job_id', 'tag_photo', 'description', 'status', 'vendor',
                 'notes', 'requested_by', 'created_at', 'picked_up_at', 'returned_at'],
+  // Documents on a job that are not the work order and not the invoice: a
+  // photo of the damage for the customer, a supplier quote for the shop.
+  // `visibility` is the whole point of the tab — see addJobFile.
+  JobFiles: ['id', 'job_id', 'name', 'mime', 'drive_file', 'visibility',
+             'added_by', 'created_at'],
   Mechanics: ['id', 'name', 'active', 'created_at'],
   StatusEvents: ['id', 'job_id', 'from_status', 'to_status', 'actor_type', 'actor', 'note', 'created_at'],
   EmailLog: ['id', 'job_id', 'kind', 'recipient', 'subject', 'status', 'error', 'created_at']
@@ -552,6 +557,8 @@ function doPost(e) {
     setStatus:        function (a) { return setStatusByWriter(data.token, a[0], a[1]); },
     markLogged:       function (a) { return markEntriesLogged(data.token, a[0]); },
     addWriterNote:    function (a) { return addWriterNote(data.token, a[0], a[1]); },
+    addJobFile:       function (a) { return addJobFile(data.token, a[0], a[1]); },
+    deleteJobFile:    function (a) { return deleteJobFile(data.token, a[0]); },
     deleteEntry:      function (a) { return deleteEntry(data.token, a[0]); },
     moveEntry:        function (a) { return moveEntry(data.token, a[0], a[1]); },
     setJobAlert:      function (a) { return setJobAlert(data.token, a[0], a[1]); },
@@ -842,6 +849,7 @@ function getJob(token, id) {
     hours: laborTotals_(entries),
     props: propsForJob_(id),
     parts: partsForJob_(id),
+    files: filesForJob_(id),
     // The mail log stays. It is not just a panel: the page reads it to know
     // whether the invoice has already gone, which is what the send button
     // hangs off. The status timeline is display only, so that one is fetched
@@ -1693,6 +1701,91 @@ function addPropRepair(token, jobToken, payload) {
   });
 }
 
+function fileView_(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    mime: row.mime || '',
+    driveFile: row.drive_file,
+    // 'customer' rides along with the invoice email. 'internal' never leaves
+    // the building.
+    visibility: row.visibility === 'customer' ? 'customer' : 'internal',
+    addedBy: row.added_by || null,
+    createdAt: row.created_at
+  };
+}
+
+function filesForJob_(jobId) {
+  return rows_('JobFiles')
+    .filter(function (row) { return String(row.job_id) === String(jobId); })
+    .map(fileView_)
+    .sort(function (a, b) { return String(a.createdAt).localeCompare(String(b.createdAt)); });
+}
+
+/**
+ * A document on the job, marked for the customer or for the shop.
+ *
+ * The visibility is decided when the file is added and never inferred later:
+ * a `customer` file is attached to the invoice email when the writer sends
+ * it, an `internal` one is never sent anywhere. Anything ambiguous is
+ * internal — the failure that matters here is a supplier's cost sheet going
+ * out with an invoice, not a photo the customer has to ask twice for.
+ *
+ * Nothing here reaches /t/. Attachments are not a log entry, `publicJob`
+ * never touches this tab, and the only way one leaves the building is a
+ * writer pressing send on the invoice email.
+ */
+function addJobFile(token, id, payload) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such job.');
+
+  const name = String((payload && payload.name) || '').trim() || 'attachment';
+  if (!payload || !payload.base64) throw new Error('No file was attached.');
+  const visibility = payload.visibility === 'customer' ? 'customer' : 'internal';
+
+  const fileId = saveFile_(job.id, name, payload.mime || 'application/octet-stream', payload.base64);
+  const row = {
+    id: newId_('file'),
+    job_id: job.id,
+    name: name,
+    mime: payload.mime || '',
+    drive_file: fileId,
+    visibility: visibility,
+    added_by: SHOP_WRITER_NAME,
+    created_at: nowIso_()
+  };
+  appendRow_('JobFiles', row);
+  return { files: filesForJob_(job.id) };
+}
+
+/**
+ * Takes a document off the job.
+ *
+ * The Drive file goes to the bin rather than being destroyed: this is the
+ * writer tidying up a wrong upload, and a customer's photo is not something
+ * to lose to a mis-tap. Drive keeps a binned file for thirty days.
+ */
+function deleteJobFile(token, fileId) {
+  requireAdmin_(token);
+  return withLock_(function () {
+    const all = rows_('JobFiles');
+    const row = all.filter(function (r) { return String(r.id) === String(fileId); })[0];
+    if (!row) throw new Error('No such attachment.');
+
+    try {
+      DriveApp.getFileById(row.drive_file).setTrashed(true);
+    } catch (err) {
+      // Already gone from Drive by hand. The row still has to go.
+    }
+    sheet_('JobFiles').deleteRow(row._row);
+    // deleteRow goes round appendRow_/updateRow_, so it forgets the memoised
+    // rows itself or every read after this is a lie.
+    forget_('JobFiles');
+    return { files: filesForJob_(row.job_id) };
+  });
+}
+
 function propsForJob_(jobId) {
   return rows_('PropRepairs')
     .filter(function (prop) { return prop.job_id === jobId; })
@@ -2452,6 +2545,20 @@ function sendInvoiceEmail_(job) {
     }
   }
 
+  // Whatever the writer marked for the customer when they added it. Marked
+  // once, at upload, and never guessed at here: an internal file going out
+  // with an invoice is the mistake this whole distinction exists to prevent.
+  const extras = [];
+  filesForJob_(job.id).forEach(function (file) {
+    if (file.visibility !== 'customer') return;
+    try {
+      attachments.push(DriveApp.getFileById(file.driveFile).getBlob().setName(file.name));
+      extras.push(file.name);
+    } catch (err) {
+      /* Binned out of Drive by hand. Send the rest. */
+    }
+  });
+
   // No tracking link while the page is switched off — a dead link in a
   // customer's invoice is worse than no link at all.
   const link = customerTracking_() ? trackingUrl_(job) : '';
@@ -2518,12 +2625,15 @@ function sendInvoiceEmail_(job) {
       // something and it has been done.
       intro: 'The work you requested has been done. ' +
         (attachments.length ? 'Your final invoice is attached' : 'Everything is wrapped up') +
-        (job.payment_link ? ', and you can pay online with the button below.' : '.') + balance,
+        (job.payment_link ? ', and you can pay online with the button below.' : '.') +
+        (extras.length ? '<div style="margin-top:8px">Also attached: ' +
+          extras.map(esc_).join(', ') + '.</div>' : '') + balance,
       meta: 'INVOICE# ' + job.id + (job.boat_info ? ' · ' + job.boat_info : ''),
       buttons: (link ? button_(link, 'View your job') : '') +
         (job.payment_link ? button_(job.payment_link, due === null ? 'Pay online' : 'Pay ' + money_(due), '#C08A22') : '')
     }),
     text: 'The work you requested has been done.' +
+      (extras.length ? '\n\nAlso attached: ' + extras.join(', ') : '') +
       (due === null ? '' : '\n\nAmount due: ' + money_(due)) +
       (link ? '\n\nJob status: ' + link : '') +
       (job.payment_link ? '\nPay your invoice: ' + job.payment_link : '') +

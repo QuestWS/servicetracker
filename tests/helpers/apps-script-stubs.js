@@ -112,6 +112,7 @@ export function loadBackend(options = {}) {
   const sheets = new Map();
   const properties = new Map(Object.entries(options.properties || {}));
   const sentMail = [];
+  const trashed = [];
   const triggers = [];
   const driveFiles = new Map();
   const fetched = [];
@@ -143,6 +144,9 @@ export function loadBackend(options = {}) {
       fileParent.set(id, destination.getId());
       return fileHandle(id);
     },
+    // Binned, not destroyed: a customer's photo is not something to lose to
+    // a mis-tap, and Drive keeps a binned file for thirty days.
+    setTrashed: (yes) => { if (yes) trashed.push(id); },
   });
 
   const folder = (name) => ({
@@ -284,6 +288,7 @@ export function loadBackend(options = {}) {
     properties,
     fetched,
     triggers,
+    trashed,
     /** Which folder a Drive file is sitting in right now. */
     parentOf: (id) => fileParent.get(id) || null,
     /** Deliver a webhook the way AssemblyAI does: POST, id in the body. */

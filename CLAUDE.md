@@ -302,6 +302,34 @@ alert nobody sees until they have already picked the job is half an alert.
   read back as undefined and never appear — and the writer would have no way to
   tell that from a mechanic ignoring it.
 
+## Documents on a job
+
+Anything that belongs on a job and is neither the work order nor the invoice:
+a photo of what was found, a supplier's quote. Its own tab, `JobFiles`,
+because it is a document on the job rather than a line in the log.
+
+- **`visibility` is decided when the file is added and never inferred later.**
+  A `customer` file is attached to the invoice email when the writer presses
+  send; an `internal` one never leaves the building. Anything the backend
+  cannot read as exactly `customer` is internal — the failure that matters
+  here is a supplier's cost sheet going out with an invoice, not a photo the
+  customer has to ask twice for.
+- The page makes that the *action* rather than a setting: two buttons,
+  **Attach for the customer** and **Keep internal**, and which one you press
+  is the choice. A default nobody notices is how the wrong file gets sent.
+- **None of it reaches `/t/`.** It is not a log entry, `publicJob` never
+  touches the tab, and a test asserts a customer-marked file is absent from
+  the customer payload — being marked for the customer means the invoice
+  email, and nothing else.
+- Removing one **bins the Drive file rather than destroying it**. This is the
+  writer undoing a wrong upload, and a customer's photo is not something to
+  lose to a mis-tap; Drive keeps a binned file for thirty days.
+- Capped at 10MB a file in the browser, because Gmail will not carry much more
+  than 25MB in total and a phone photo dropped in whole is how that gets found
+  out.
+- A new tab needs `setup()` run once. `sheet_` fails with "Run setup()." if it
+  is missing, and the App setup page has the button.
+
 ## Props out for repair
 
 A propeller off a customer's boat, away at the prop shop and back again. It
