@@ -239,6 +239,16 @@ invoice with a deposit against it (`01-7153`) — and encoded in
   wordmark over the gold rule and the navy footer, sent under the shop name
   with `Reply-To: service@questwatersports.com`. Copied convention, not shared
   infrastructure — a separate script, sheet and Drive folder.
+
+  Two things about it are load-bearing rather than styling. **A button is a
+  table**, not an `<a>` with padding: Outlook ignores padding on an inline
+  element, so the old one arrived as a coloured rectangle behind the words —
+  a highlighted phrase rather than something to press. The colour goes on a
+  `<td>` (with `bgcolor`, which Outlook wants as an attribute) and the padding
+  on a block-level `<a>` filling it. And **nothing customer-facing says
+  "boat"**: a trailer, a prop or an engine on a stand all come through the
+  same shop. The email says the work you requested has been done, and the unit
+  is named on its own line.
 - **Drive files are link-shared**, matching how the shop already handles unit
   photos. See the comment on `saveFile_` for what actually protects them.
 

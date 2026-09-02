@@ -1317,6 +1317,41 @@ describe('the customer email', () => {
     expect(mail.opts.htmlBody).not.toContain('1.5 h');
   });
 
+  it('does not call a trailer a boat', () => {
+    goLive();
+    // A trailer, a prop, an engine on a stand: plenty of what comes through
+    // the shop is not a boat, and the unit is named on its own line anyway.
+    backend.fn('createJob', adminToken, {
+      invoiceNumber: '01-8921', customerName: 'Ada Trail',
+      customerEmail: 'ada@example.com', boatInfo: '2016 ShoreLand\'r tandem trailer',
+    });
+    backend.fn('markDone', adminToken, '01-8921');
+    backend.fn('sendInvoiceEmail', adminToken, '01-8921');
+
+    const mail = backend.sentMail[0];
+    expect(mail.opts.htmlBody).toContain('The work you requested has been done');
+    expect(mail.opts.htmlBody).not.toMatch(/your boat/i);
+    expect(mail.body).not.toMatch(/your boat/i);
+    // The unit still travels, on the line that names the job.
+    expect(mail.opts.htmlBody).toContain('tandem trailer');
+  });
+
+  it('sends a button a mail client will draw as a button', () => {
+    goLive();
+    const { id } = seedJob();
+    backend.fn('saveInvoice', adminToken, id, 'https://pos.example.com/pay/abc', 'JVBERi0=');
+    backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+
+    const html = backend.sentMail[0].opts.htmlBody;
+    // Outlook ignores padding on an inline element, so an <a> with a
+    // background arrived as a highlighted word rather than something to
+    // press. The colour has to be on a cell and the padding on a block.
+    expect(html).toMatch(/<td[^>]*bgcolor="#C08A22"/);
+    expect(html).toMatch(/<a href="https:\/\/pos\.example\.com\/pay\/abc"[^>]*display:block/);
+    expect(html).toMatch(/<a href="https:\/\/pos\.example\.com\/pay\/abc"[^>]*padding:14px/);
+  });
+
   it('says what the customer owes, not what the job cost', () => {
     goLive();
     const { id } = seedJob();

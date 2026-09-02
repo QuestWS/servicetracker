@@ -2275,10 +2275,29 @@ function logoBlob_() {
   return _logoBlob;
 }
 
+/**
+ * A button built out of a table, which is the only kind that survives Outlook.
+ *
+ * It used to be an <a> with padding and a background colour. Outlook's
+ * renderer ignores padding on an inline element, so what arrived was the
+ * label with a coloured rectangle behind the text and nothing else — which
+ * reads as a highlighted word rather than something to press. The colour goes
+ * on a table cell, where every client honours it, and the padding goes on a
+ * block-level <a> filling that cell so the whole rectangle is clickable.
+ *
+ * bgcolor as an attribute as well as CSS: Outlook wants the attribute.
+ */
 function button_(url, label, bg) {
-  return '<a href="' + esc_(url) + '" style="display:inline-block;background:' + (bg || '#14293E') +
-    ';color:#ffffff;text-decoration:none;font-weight:bold;font-size:15px;' +
-    'padding:12px 22px;border-radius:8px;margin:4px 6px 4px 0">' + esc_(label) + '</a>';
+  const fill = bg || '#14293E';
+  const edge = bg ? '#9C6E14' : '#0C1B2C';
+  return '<table role="presentation" border="0" cellpadding="0" cellspacing="0" ' +
+      'style="display:inline-block;margin:0 10px 10px 0;border-collapse:separate"><tr>' +
+      '<td align="center" bgcolor="' + fill + '" style="background:' + fill +
+        ';border:1px solid ' + edge + ';border-radius:8px">' +
+      '<a href="' + esc_(url) + '" style="display:block;padding:14px 30px;' +
+        'font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:bold;' +
+        'color:#ffffff;text-decoration:none;white-space:nowrap">' + esc_(label) + '</a>' +
+      '</td></tr></table>';
 }
 
 /**
@@ -2302,11 +2321,25 @@ function noticeHtml_(parts) {
         (parts.greeting ? '<p style="font-size:16px;color:#1D2B38;margin:0 0 6px">Hi ' + esc_(parts.greeting) + ',</p>' : '') +
         '<div style="font-size:15px;color:#1D2B38;line-height:1.55;margin:0 0 14px">' + parts.intro + '</div>' +
         (parts.meta ? '<div style="font-family:Courier New,monospace;font-size:13px;color:#5C7185;margin-bottom:10px">' + esc_(parts.meta) + '</div>' : '') +
-        (parts.buttons || '') +
-        '<p style="font-size:13px;color:#5C7185;line-height:1.5;margin:12px 0 0">Questions? Call us at ' + esc_(SHOP_PHONE) + '.</p>' +
+        (parts.buttons ? '<div style="margin:18px 0 4px">' + parts.buttons + '</div>' : '') +
+        // Ruled off, so it reads as a closing note rather than small print
+        // hanging off the button above it.
+        '<div style="border-top:1px solid #EBF1F6;margin:18px 0 0;padding-top:14px">' +
+          '<p style="font-size:13.5px;color:#4A5A68;line-height:1.5;margin:0">' +
+            'Any questions, give us a call on ' + esc_(SHOP_PHONE) + ' — we&rsquo;re happy to talk it through.' +
+          '</p></div>' +
       '</div>' +
-      '<div style="background:#14293E;color:#B9CDDD;padding:14px 28px;font-size:12px">' +
-        esc_(SHOP_NAME) + ' &middot; ' + esc_(SHOP_ADDRESS) + ' &middot; ' + esc_(SHOP_PHONE) +
+      // The same gold rule that sits under the wordmark, so the navy band
+      // reads as the bottom of a frame rather than a line that wandered in.
+      // Centred and on three lines, because a shop's address run together
+      // with its phone number is a string, not a footer.
+      '<div style="height:4px;background:#C08A22;font-size:0;line-height:0">&nbsp;</div>' +
+      '<div style="background:#14293E;color:#B9CDDD;padding:20px 28px;font-size:12.5px;' +
+          'line-height:1.7;text-align:center">' +
+        '<div style="color:#ffffff;font-size:13.5px;font-weight:bold;letter-spacing:.04em;' +
+          'margin-bottom:2px">' + esc_(SHOP_NAME) + '</div>' +
+        esc_(SHOP_ADDRESS) + '<br>' +
+        esc_(SHOP_PHONE) + ' &middot; ' + esc_(SERVICE_EMAIL) +
       '</div>' +
     '</div></div>';
 }
@@ -2414,14 +2447,18 @@ function sendInvoiceEmail_(job) {
     html: noticeHtml_({
       banner: banner,
       greeting: first,
-      intro: 'The work on ' + (job.boat_info ? esc_('your ' + job.boat_info) : 'your boat') + ' is complete. ' +
+      // Not "your boat": plenty of what comes through the shop is a trailer,
+      // a prop or an engine on a stand, and the unit is named on the line
+      // below anyway. What is always true is that the customer asked for
+      // something and it has been done.
+      intro: 'The work you requested has been done. ' +
         (attachments.length ? 'Your final invoice is attached' : 'Everything is wrapped up') +
         (job.payment_link ? ', and you can pay online with the button below.' : '.') + balance,
       meta: 'INVOICE# ' + job.id + (job.boat_info ? ' · ' + job.boat_info : ''),
       buttons: (link ? button_(link, 'View your job') : '') +
         (job.payment_link ? button_(job.payment_link, due === null ? 'Pay online' : 'Pay ' + money_(due), '#C08A22') : '')
     }),
-    text: 'The work on your boat is complete.' +
+    text: 'The work you requested has been done.' +
       (due === null ? '' : '\n\nAmount due: ' + money_(due)) +
       (link ? '\n\nJob status: ' + link : '') +
       (job.payment_link ? '\nPay your invoice: ' + job.payment_link : '') +
