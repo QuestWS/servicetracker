@@ -152,6 +152,20 @@ a code path that writes to a sheet without going through `appendRow_` or
   opens. Shrinking what the log SHOWS would have saved nothing — the read is
   the whole tab either way. Only not asking for it saves anything.
 
+- **Every tab keeps its own draft, and one tap saves all of them.** A
+  mechanic finishing a job puts the hours in, scans the part they used and
+  writes what they found, in whatever order those things happened. The strip
+  used to be four forms sharing one set of fields, redrawn empty on every tab
+  change, so two of those three were lost on the way to the third. Each tab
+  holds its own text, photos, recording and figures now; the strip marks the
+  tabs holding something; and the button says how many it is about to save.
+
+  A tab with SOME of an entry in it stops the save and names the tab —
+  "Parts: Scan or type the part number." Skipping it quietly would throw away
+  exactly the thing the mechanic thought they had written down. The saves go
+  out one after another rather than all at once, because they all queue on the
+  same script lock anyway and the feed should read in tab order.
+
 - **A save does not make the mechanic wait.** The entry goes into the feed on
   the tap, marked *Saving…*, the form clears for the next one, and the row
   settles when the backend answers — only the feed and the running total are

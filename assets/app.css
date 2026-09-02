@@ -624,6 +624,20 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
 }
 
 /* Sign-in: the roster as tap targets, sized for a gloved hand on an iPad. */
+/* A tab holding something not yet saved. Small and on the corner: it says
+   "this has your part number in it", not "look at me". */
+.segmented button.filled::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gold);
+}
+.segmented button { position: relative; }
+
 .namegrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
 .namegrid button {
   font-family: var(--body);

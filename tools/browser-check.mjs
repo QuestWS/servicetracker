@@ -530,6 +530,80 @@ check('and the retry actually saves it',
 await mech.click('.segmented button[data-tab="labor"]');
 await mech.waitForSelector('#hours', { timeout: 20000 });
 
+/* ------------------------------------------- several tabs, one save */
+console.log('\n== several tabs, one save ==');
+// A mechanic finishing a job puts the hours in, scans the part they used and
+// writes what they found — in whatever order those things happened. The strip
+// used to redraw the fields empty on every tab change, so two of those three
+// were lost on the way to the third.
+await mech.click('.segmented button[data-tab="labor"]');
+await mech.waitForSelector('#minutes', { timeout: 20000 });
+await mech.fill('#minutes', '25');
+await mech.fill('#text', 'Swapped the impeller and re-torqued the mounts.');
+
+await mech.click('.segmented button[data-tab="part"]');
+await mech.waitForSelector('#part', { timeout: 20000 });
+await mech.fill('#part', 'MULTI-1');
+await mech.fill('#text', 'Last one on the shelf.');
+
+await mech.click('.segmented button[data-tab="labor"]');
+await mech.waitForSelector('#minutes', { timeout: 20000 });
+check('what was typed on one tab survives a look at another',
+  (await mech.inputValue('#minutes')) === '25'
+  && (await mech.inputValue('#text')).includes('re-torqued'),
+  `${await mech.inputValue('#minutes')} / ${await mech.inputValue('#text')}`);
+check('and the strip marks the tabs holding something',
+  await mech.locator('.segmented button.filled').count() === 2,
+  String(await mech.locator('.segmented button.filled').count()));
+check('and the button says how many it is about to save',
+  /Save all 2/.test(await mech.textContent('#save')), await mech.textContent('#save'));
+
+const beforeMulti = await mech.locator('.entry').count();
+await mech.click('#save');
+await mech.waitForFunction((n) => document.querySelectorAll('.entry').length === n + 2,
+  beforeMulti, { timeout: 20000 });
+await settled();
+const multiFeed = await mech.textContent('.feed');
+check('one tap saves both', /re-torqued/.test(multiFeed) && /MULTI-1/.test(multiFeed));
+check('and leaves every tab it saved empty',
+  await mech.locator('.segmented button.filled').count() === 0);
+
+// Half an entry is not something to skip quietly: that is exactly the note
+// the mechanic thought they had written down.
+await mech.click('.segmented button[data-tab="part"]');
+await mech.waitForSelector('#part', { timeout: 20000 });
+await mech.fill('#text', 'Something about a part whose number I never typed.');
+await mech.click('.segmented button[data-tab="labor"]');
+await mech.waitForSelector('#minutes', { timeout: 20000 });
+await mech.fill('#minutes', '10');
+await mech.fill('#text', 'Ten minutes chasing it down.');
+const beforeRefusal = await mech.locator('.entry').count();
+await mech.click('#save');
+await mech.waitForSelector('.banner.warn', { timeout: 10000 });
+check('a half-filled tab stops the save and says which one',
+  /Parts/.test(await mech.textContent('.banner.warn'))
+  && /part number/.test(await mech.textContent('.banner.warn')),
+  await mech.textContent('.banner.warn'));
+check('and nothing went in behind it',
+  await mech.locator('.entry').count() === beforeRefusal);
+
+// Give it what it asked for; both go in together.
+await mech.click('.segmented button[data-tab="part"]');
+await mech.waitForSelector('#part', { timeout: 20000 });
+await mech.fill('#part', 'MULTI-2');
+await mech.click('#save');
+await mech.waitForFunction((n) => document.querySelectorAll('.entry').length === n + 2,
+  beforeRefusal, { timeout: 20000 });
+await settled();
+check('and once it is filled in, both go together',
+  /MULTI-2/.test(await mech.textContent('.feed'))
+  && /chasing it down/.test(await mech.textContent('.feed')));
+
+// Back to Hours, which is the tab this app opens on and where the rest of
+// this run expects to be.
+await mech.click('.segmented button[data-tab="labor"]');
+await mech.waitForSelector('#minutes', { timeout: 20000 });
+
 /* ----------------------------------------------- the log, when asked for */
 console.log('\n== the log is fetched, not carried ==');
 

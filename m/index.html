@@ -138,6 +138,12 @@ if ('serviceWorker' in navigator) {
 
 const view = $('view');
 
+// Delegated, and bound once: #fields is rebuilt every time a tab changes, so
+// per-field handlers would have to be re-attached on every redraw. What this
+// keeps live is the tab strip's marks and the count on the save button.
+view.addEventListener('input', () => drawSaveButton());
+view.addEventListener('change', () => drawSaveButton());
+
 /**
  * Says where Back goes from the screen about to be drawn, and shows or hides
  * the button accordingly. Home is always available and always means the scan
@@ -158,8 +164,10 @@ const state = {
   entries: [],
   logLoaded: false,
   tab: 'labor',
-  audio: null,
-  photos: [],
+  // One draft per tab, so a mechanic can fill in the hours, scan a part and
+  // write a note in any order and lose none of it by looking at another tab.
+  // A single shape covers all four; each tab uses the keys it needs.
+  drafts: {},
   // null until the Prop tab is opened, which is the only place they are drawn.
   props: null,
   tagPhoto: null,
@@ -169,6 +177,77 @@ const state = {
   back: null,
   jobFrom: null,
 };
+
+/**
+ * What is typed into one tab, kept while the mechanic is looking at another.
+ *
+ * The strip used to be four forms sharing one set of fields: switching tabs
+ * redrew them empty, so a part number scanned before the hours were entered
+ * was simply gone. Each tab has its own draft now, everything with anything
+ * in it is saved by the one button, and the tab strip marks the ones holding
+ * something so nothing is saved by surprise or forgotten in silence.
+ */
+function blankDraft() {
+  return {
+    text: '', audio: null, photos: [],
+    hours: '', minutes: '',
+    part: '', qty: '', needorder: false, orderqty: '', needrestock: false, restockqty: '',
+    tagPhoto: null, description: '',
+  };
+}
+
+function draft(tab) {
+  const key = tab || state.tab;
+  if (!state.drafts[key]) state.drafts[key] = blankDraft();
+  return state.drafts[key];
+}
+
+function clearDrafts() {
+  state.drafts = {};
+}
+
+/** Whether a tab is holding anything a save should pick up. */
+function draftHasSomething(tab) {
+  const d = draft(tab);
+  const typed = (value) => Boolean(String(value || '').trim());
+  if (tab === 'prop') return Boolean(d.tagPhoto || typed(d.description));
+  if (tab === 'labor') {
+    return Boolean(Number(d.hours) || Number(d.minutes) || typed(d.text) || d.audio || d.photos.length);
+  }
+  if (tab === 'part') {
+    return Boolean(typed(d.part) || typed(d.qty) || typed(d.text) || d.audio || d.photos.length ||
+      d.needorder || d.needrestock);
+  }
+  return Boolean(typed(d.text) || d.audio || d.photos.length);
+}
+
+function filledTabs() {
+  return TABS.map(([value]) => value).filter(draftHasSomething);
+}
+
+/**
+ * Reads the fields on screen back into the current tab's draft.
+ *
+ * Called before anything redraws or saves. The hours, the photos and the
+ * recording already live in the draft as they are entered; these are the
+ * boxes that only exist in the DOM until somebody asks.
+ */
+function captureDraft() {
+  const d = draft();
+  if (state.tab === 'prop') {
+    if ($('propdesc')) d.description = $('propdesc').value;
+    return;
+  }
+  if ($('text')) d.text = $('text').value;
+  if (state.tab === 'part') {
+    if ($('part')) d.part = $('part').value;
+    if ($('qty')) d.qty = $('qty').value;
+    if ($('needorder')) d.needorder = $('needorder').checked;
+    if ($('orderqty')) d.orderqty = $('orderqty').value;
+    if ($('needrestock')) d.needrestock = $('needrestock').checked;
+    if ($('restockqty')) d.restockqty = $('restockqty').value;
+  }
+}
 
 /* ------------------------------------------------------------ scanner --- */
 
@@ -663,6 +742,7 @@ const TABS = [
   // splitting it into its own card put it below the log where nobody scrolled.
   ['prop', 'Prop'],
 ];
+const TAB_LABEL = TABS.reduce((out, [value, label]) => Object.assign(out, { [value]: label }), {});
 // The chips a mechanic actually reaches for, in minutes. A quarter hour is
 // the smallest stint anybody books, and anything past four hours gets typed.
 const TIME_STEPS = [15, 30, 45, 60, 120, 240];
@@ -844,14 +924,16 @@ function renderJob() {
     <section class="card" style="margin-bottom:14px">
       <h2>Add to the log</h2>
       <div class="segmented" style="margin-bottom:12px">
-        ${TABS.map(([value, label]) => `<button type="button" data-tab="${value}"${state.tab === value ? ' class="on"' : ''}>${label}</button>`).join('')}
+        ${TABS.map(([value, label]) => `<button type="button" data-tab="${value}" class="${
+          [state.tab === value ? 'on' : '', draftHasSomething(value) ? 'filled' : ''].filter(Boolean).join(' ')
+        }">${label}</button>`).join('')}
       </div>
       <p class="hint" style="margin-top:0">${esc(TAB_HELP[state.tab])}</p>
       <div id="fields"></div>
 
       ${state.tab === 'prop' ? '' : `
       <label class="fld" for="text">${state.tab === 'part' ? 'Note about this part (optional)' : state.tab === 'labor' ? 'What you did with that time — type it or say it' : 'Note — type it or say it'}</label>
-      <textarea class="txt" id="text" placeholder="${state.tab === 'labor' ? 'Pulled and reset the impeller housing, re-torqued the mounts…' : 'What did you find or do?'}"></textarea>
+      <textarea class="txt" id="text" placeholder="${state.tab === 'labor' ? 'Pulled and reset the impeller housing, re-torqued the mounts…' : 'What did you find or do?'}">${esc(draft().text)}</textarea>
 
       <div style="margin-top:12px" id="recorder"></div>
 
@@ -875,8 +957,8 @@ function renderJob() {
       <input id="photolibrary" type="file" accept="image/*" multiple class="hidden">
       <div class="thumbrow" id="thumbs"></div>`}
 
-      <button class="btn navy big block" type="button" id="save" style="margin-top:16px">${
-        state.tab === 'prop' ? 'Ready for pick-up' : 'Save entry'}</button>
+      <button class="btn navy big block" type="button" id="save" style="margin-top:16px"></button>
+      <p class="hint" id="savehint" style="margin-top:8px"></p>
     </section>
 
     <section class="card" style="margin-bottom:14px" id="joblog">${feedHtml()}</section>
@@ -890,7 +972,13 @@ function renderJob() {
     <p style="margin-top:18px"><a href="./" id="another">Scan another work order</a></p>`;
 
   view.querySelectorAll('.segmented button').forEach((button) => {
-    button.onclick = () => { state.tab = button.dataset.tab; renderJob(); };
+    button.onclick = () => {
+      // Read the fields back before they are redrawn, or a part number typed
+      // on the way to the Hours tab is gone.
+      captureDraft();
+      state.tab = button.dataset.tab;
+      renderJob();
+    };
   });
   $('another').onclick = (event) => { event.preventDefault(); state.job = null; renderHome(); };
 
@@ -899,7 +987,7 @@ function renderJob() {
   if (finish) finish.onclick = confirmFinish;
   // A prop is not a log entry, so the one button at the bottom of the card
   // does the thing the current tab is for.
-  $('save').onclick = () => (state.tab === 'prop' ? saveProp() : saveEntry());
+  $('save').onclick = saveEntry;
   // drawFields() builds the prop tab's own controls, so everything below only
   // exists on the three tabs that write a log entry.
   if (state.tab !== 'prop') {
@@ -915,6 +1003,36 @@ function renderJob() {
     drawRecorder();
     drawThumbs();
   }
+  drawSaveButton();
+}
+
+/**
+ * What the one button is about to save, said on the button.
+ *
+ * With four tabs each holding their own draft, "Save entry" is not enough:
+ * the mechanic has to be able to see that the part they scanned two tabs ago
+ * is going with this tap, and equally that it is not being sent by accident.
+ */
+function drawSaveButton() {
+  const button = $('save');
+  if (!button) return;
+  captureDraft();
+  const filled = filledTabs();
+  const hint = $('savehint');
+
+  // Mark the tabs holding something, without redrawing the fields underneath.
+  view.querySelectorAll('.segmented button').forEach((tab) => {
+    tab.classList.toggle('filled', draftHasSomething(tab.dataset.tab));
+  });
+
+  if (filled.length > 1) {
+    button.textContent = `Save all ${filled.length}`;
+    if (hint) hint.textContent = 'Saving ' + filled.map((tab) => TAB_LABEL[tab]).join(', ') + '.';
+    return;
+  }
+  const only = filled[0] || state.tab;
+  button.textContent = only === 'prop' ? 'Ready for pick-up' : 'Save entry';
+  if (hint) hint.textContent = '';
 }
 
 /**
@@ -925,12 +1043,12 @@ function renderJob() {
  * markup is shared, the behaviour is not, so the buttons carry data-qty and
  * the time ones do not.
  */
-function qtyField(id, label) {
+function qtyField(id, label, value) {
   return `
     <label class="fld" for="${id}">${label}</label>
     <div class="stepper">
       <button type="button" data-qty="${id}" data-by="-1" aria-label="One fewer">&minus;</button>
-      <input class="txt mono" id="${id}" inputmode="decimal" placeholder="1">
+      <input class="txt mono" id="${id}" inputmode="decimal" placeholder="1" value="${esc(value || '')}">
       <button type="button" data-qty="${id}" data-by="1" aria-label="One more">+</button>
     </div>`;
 }
@@ -951,18 +1069,19 @@ function bindQtySteppers(root) {
 
 /** The two boxes as one figure in whole minutes. */
 function timeTotal() {
-  const hours = Number(($('hours') || {}).value || 0) || 0;
-  const minutes = Number(($('minutes') || {}).value || 0) || 0;
-  return hours * 60 + minutes;
+  const d = draft('labor');
+  return (Number(d.hours) || 0) * 60 + (Number(d.minutes) || 0);
 }
 
 /** And back again, carrying into hours. Never below zero. */
 function setTimeTotal(total) {
   const whole = Math.max(0, Math.round(total));
-  state.hoursValue = String(Math.floor(whole / 60));
-  state.minutesValue = String(whole % 60);
-  if ($('hours')) $('hours').value = state.hoursValue;
-  if ($('minutes')) $('minutes').value = state.minutesValue;
+  const d = draft('labor');
+  d.hours = String(Math.floor(whole / 60));
+  d.minutes = String(whole % 60);
+  if ($('hours')) $('hours').value = d.hours;
+  if ($('minutes')) $('minutes').value = d.minutes;
+  drawSaveButton();
 }
 
 function drawFields() {
@@ -975,7 +1094,7 @@ function drawFields() {
           <div class="stepper">
             <button type="button" data-by="-60" aria-label="An hour less">&minus;</button>
             <input class="txt mono" id="hours" inputmode="numeric" placeholder="0"
-              value="${esc(state.hoursValue || '')}" aria-label="Hours">
+              value="${esc(draft('labor').hours || '')}" aria-label="Hours">
             <button type="button" data-by="60" aria-label="An hour more">+</button>
           </div>
           <span>hours</span>
@@ -984,7 +1103,7 @@ function drawFields() {
           <div class="stepper">
             <button type="button" data-by="-5" aria-label="Five minutes less">&minus;</button>
             <input class="txt mono" id="minutes" inputmode="numeric" placeholder="0"
-              value="${esc(state.minutesValue || '')}" aria-label="Minutes">
+              value="${esc(draft('labor').minutes || '')}" aria-label="Minutes">
             <button type="button" data-by="5" aria-label="Five minutes more">+</button>
           </div>
           <span>minutes</span>
@@ -1006,10 +1125,18 @@ function drawFields() {
       button.onclick = () => setTimeTotal(timeTotal() + Number(button.dataset.by));
     });
     const digits = (event) => event.target.value.replace(/[^0-9]/g, '').slice(0, 4);
-    $('hours').oninput = (event) => { state.hoursValue = digits(event); event.target.value = state.hoursValue; };
+    $('hours').oninput = (event) => {
+      draft('labor').hours = digits(event);
+      event.target.value = draft('labor').hours;
+      drawSaveButton();
+    };
     // 90 in the minutes box is a real thing to type after a long stint, so it
     // is not clamped to 59 — it is carried into hours when the entry is saved.
-    $('minutes').oninput = (event) => { state.minutesValue = digits(event); event.target.value = state.minutesValue; };
+    $('minutes').oninput = (event) => {
+      draft('labor').minutes = digits(event);
+      event.target.value = draft('labor').minutes;
+      drawSaveButton();
+    };
   } else if (state.tab === 'prop') {
     box.innerHTML = `
       ${state.props === null ? '<p class="loading">Checking what is already out…</p>' : ''}
@@ -1034,7 +1161,7 @@ function drawFields() {
       <input id="taglibrary" type="file" accept="image/*" class="hidden">
       <div class="thumbrow" id="tagthumb"></div>
       <label class="fld" for="propdesc">Which prop</label>
-      <input class="txt" id="propdesc" placeholder="Stainless 3-blade, port side">
+      <input class="txt" id="propdesc" placeholder="Stainless 3-blade, port side" value="${esc(draft('prop').description)}">
       <p class="hint">That tag is how the prop shop knows whose it is, and how the office knows which
         boat it goes back on.</p>`;
     // The tag gets its own pair of doors for the same reason the log photos
@@ -1052,28 +1179,28 @@ function drawFields() {
     box.innerHTML = `
       <label class="fld" for="part">Part number / UPC</label>
       <div class="row tight" style="flex-wrap:nowrap">
-        <input class="txt mono" id="part" placeholder="Scan or type">
+        <input class="txt mono" id="part" placeholder="Scan or type" value="${esc(draft('part').part)}">
         <button class="btn ghost sm" type="button" id="scanpart">Scan</button>
       </div>
       <div id="partscanner"></div>
-      ${qtyField('qty', 'Quantity used (optional)')}
+      ${qtyField('qty', 'Quantity used (optional)', draft('part').qty)}
 
       <label class="checkline">
-        <input type="checkbox" id="needorder">
+        <input type="checkbox" id="needorder"${draft('part').needorder ? ' checked' : ''}>
         <span>Needs ordering for this job
           <small>Goes on the parts list for the service writer.</small></span>
       </label>
-      <div id="orderqtybox" class="hidden">
-        ${qtyField('orderqty', 'How many to order')}
+      <div id="orderqtybox"${draft('part').needorder ? '' : ' class="hidden"'}>
+        ${qtyField('orderqty', 'How many to order', draft('part').orderqty)}
       </div>
 
       <label class="checkline">
-        <input type="checkbox" id="needrestock">
+        <input type="checkbox" id="needrestock"${draft('part').needrestock ? ' checked' : ''}>
         <span>Took from stock — needs restocking
           <small>Puts a replacement on the same list.</small></span>
       </label>
-      <div id="restockqtybox" class="hidden">
-        ${qtyField('restockqty', 'How many to restock')}
+      <div id="restockqtybox"${draft('part').needrestock ? '' : ' class="hidden"'}>
+        ${qtyField('restockqty', 'How many to restock', draft('part').restockqty)}
       </div>`;
 
     // The quantity is asked for the moment the box is ticked, because a part
@@ -1121,11 +1248,11 @@ function drawRecorder(seconds) {
     ? 'Talk instead of typing and we will type it up — the hours still go in above. The recording is kept on the job.'
     : 'Speak it and we will type it up. The recording is kept on the job either way.';
 
-  if (state.audio) {
-    box.innerHTML = `<audio controls src="${URL.createObjectURL(state.audio)}" style="width:100%"></audio>
+  if (draft().audio) {
+    box.innerHTML = `<audio controls src="${URL.createObjectURL(draft().audio)}" style="width:100%"></audio>
       <button class="btn ghost sm" type="button" id="discard" style="margin-top:8px">Discard recording</button>
       <p class="hint">${hint}</p>`;
-    $('discard').onclick = () => { state.audio = null; drawRecorder(); };
+    $('discard').onclick = () => { draft().audio = null; drawRecorder(); drawSaveButton(); };
     return;
   }
   const active = Boolean(recorder);
@@ -1149,7 +1276,7 @@ async function startRecording() {
   recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
   recorder.onstop = () => {
     const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-    if (blob.size) state.audio = blob;
+    if (blob.size) draft().audio = blob;
     stream.getTracks().forEach((track) => track.stop());
     recorder = null;
     clearInterval(recTimer);
@@ -1170,26 +1297,31 @@ function stopRecording() {
 async function onPhotos(event) {
   const files = Array.from(event.target.files || []);
   event.target.value = '';
-  for (const file of files.slice(0, 8 - state.photos.length)) {
+  const d = draft();
+  for (const file of files.slice(0, 8 - d.photos.length)) {
     try {
-      const prepared = await preparePhoto(file);
-      state.photos.push(prepared);
+      d.photos.push(await preparePhoto(file));
     } catch {
       toast('Could not read one of those photos.');
     }
   }
   drawThumbs();
+  drawSaveButton();
 }
 
 function drawThumbs() {
   const box = $('thumbs');
   if (!box) return;
-  box.innerHTML = state.photos.map((photo, index) => `<figure>
+  box.innerHTML = draft().photos.map((photo, index) => `<figure>
     <img src="data:image/jpeg;base64,${photo.thumb}" alt="">
     <button type="button" data-index="${index}" aria-label="Remove photo">✕</button>
   </figure>`).join('');
   box.querySelectorAll('button').forEach((button) => {
-    button.onclick = () => { state.photos.splice(Number(button.dataset.index), 1); drawThumbs(); };
+    button.onclick = () => {
+      draft().photos.splice(Number(button.dataset.index), 1);
+      drawThumbs();
+      drawSaveButton();
+    };
   });
 }
 
@@ -1200,7 +1332,7 @@ async function onTagPhoto(event) {
   event.target.value = '';
   if (!file) return;
   try {
-    state.tagPhoto = await preparePhoto(file);
+    draft('prop').tagPhoto = await preparePhoto(file);
   } catch {
     toast('Could not read that photo.');
   }
@@ -1210,12 +1342,12 @@ async function onTagPhoto(event) {
 function drawTagThumb() {
   const box = $('tagthumb');
   if (!box) return;
-  box.innerHTML = state.tagPhoto ? `<figure>
-    <img src="data:image/jpeg;base64,${state.tagPhoto.thumb}" alt="">
+  box.innerHTML = draft('prop').tagPhoto ? `<figure>
+    <img src="data:image/jpeg;base64,${draft('prop').tagPhoto.thumb}" alt="">
     <button type="button" data-cleartag aria-label="Remove the tag photo">&#10005;</button>
   </figure>` : '';
   const clear = box.querySelector('[data-cleartag]');
-  if (clear) clear.onclick = () => { state.tagPhoto = null; drawTagThumb(); };
+  if (clear) clear.onclick = () => { draft('prop').tagPhoto = null; drawTagThumb(); drawSaveButton(); };
 }
 
 /**
@@ -1233,24 +1365,13 @@ async function loadProps() {
   if (state.tab === 'prop') drawFields();
 }
 
-async function saveProp() {
-  const button = $('save');
-  const description = $('propdesc').value.trim();
-  if (!state.tagPhoto && !description) {
-    return toast('Photograph the tag, or say which prop this is.');
-  }
-  button.disabled = true;
-  button.textContent = 'Saving…';
+async function sendProp(tagPhoto, description) {
   try {
-    const result = await api('addPropRepair', [state.job.token,
-      { tagPhoto: state.tagPhoto, description }]);
+    const result = await api('addPropRepair', [state.job.token, { tagPhoto, description }]);
     state.props = result.props;
-    state.tagPhoto = null;
-    renderJob();
+    if (state.tab === 'prop') drawFields();
     toast('On the list for pick-up.');
   } catch (error) {
-    button.disabled = false;
-    button.textContent = 'Ready for pick-up';
     toast(error.message);
   }
 }
@@ -1300,63 +1421,117 @@ let pendingSeq = 0;
  * line from the start — a note the phone swallowed is worse than one the
  * mechanic knows did not send.
  */
-async function saveEntry() {
-  const text = $('text').value.trim();
-  const payload = { entryType: state.tab, text };
+/** One draft, as the backend wants it. */
+async function payloadFor(tab) {
+  const d = draft(tab);
+  const payload = { entryType: tab, text: d.text.trim() };
 
   // One figure goes over the wire. 1h 90m is 150 minutes, which is a
   // reasonable thing to have typed and not an error to hand back.
-  if (state.tab === 'labor') payload.minutes = String(timeTotal());
-  if (state.tab === 'part') {
-    payload.partIdentifier = ($('part') || {}).value || '';
-    payload.quantity = ($('qty') || {}).value || '';
-    if ($('needorder') && $('needorder').checked) payload.orderQty = $('orderqty').value || '1';
-    if ($('needrestock') && $('needrestock').checked) payload.restockQty = $('restockqty').value || '1';
+  if (tab === 'labor') payload.minutes = String((Number(d.hours) || 0) * 60 + (Number(d.minutes) || 0));
+  if (tab === 'part') {
+    payload.partIdentifier = d.part;
+    payload.quantity = d.qty;
+    if (d.needorder) payload.orderQty = d.orderqty || '1';
+    if (d.needrestock) payload.restockQty = d.restockqty || '1';
   }
-  if (state.audio) {
-    payload.audio = await fileToBase64(state.audio);
-    payload.audioMime = state.audio.type || 'audio/webm';
+  if (d.audio) {
+    payload.audio = await fileToBase64(d.audio);
+    payload.audioMime = d.audio.type || 'audio/webm';
     payload.audioExt = payload.audioMime.includes('mp4') ? 'm4a' : payload.audioMime.includes('ogg') ? 'ogg' : 'webm';
   }
-  payload.photos = state.photos;
+  payload.photos = d.photos;
+  return payload;
+}
 
-  const missing = whatIsMissing(payload);
-  if (missing) {
+/**
+ * The one button saves every tab that has something in it.
+ *
+ * A mechanic finishing a job puts the hours in, scans the part they used and
+ * writes what they found — in whatever order those things happened. Making
+ * that three trips through the same button, with the fields wiped in between,
+ * is how a note gets lost. Nothing is saved by surprise either: the tab strip
+ * marks what is holding something, and the button says how many.
+ *
+ * A tab with SOME of an entry in it but not enough stops the save and says
+ * which tab and what is missing. Silently skipping it would throw away
+ * exactly the thing the mechanic thought they had written down.
+ */
+async function saveEntry() {
+  captureDraft();
+  const filled = filledTabs();
+  if (!filled.length) {
+    // Nothing anywhere. The most useful thing to say is what the tab they are
+    // looking at would need.
+    const missing = state.tab === 'prop'
+      ? 'Photograph the tag, or say which prop this is.'
+      : (whatIsMissing(await payloadFor(state.tab)) || 'Nothing to save yet.');
     $('notice').innerHTML = `<div class="banner warn" style="margin-bottom:12px">${esc(missing)}</div>`;
     return;
   }
 
-  pendingSeq += 1;
-  const pending = {
-    id: `pending-${pendingSeq}`,
-    saveState: 'saving',
-    payload: payload,
-    entryType: state.tab,
-    text: text,
-    hours: state.tab === 'labor' ? Number(payload.minutes) / 60 : null,
-    partIdentifier: payload.partIdentifier || '',
-    quantity: payload.quantity ? Number(payload.quantity) : null,
-    mechanicName: state.who.name,
-    createdAt: new Date().toISOString(),
-    audioFile: '',
-    transcriptStatus: '',
-    photos: [],
-    // Straight off the phone, so the shot appears in the feed before Drive
-    // has heard of it.
-    localPhotos: payload.photos || [],
-  };
+  const payloads = {};
+  const problems = [];
+  for (const tab of filled) {
+    if (tab === 'prop') continue;                 // its own rule, checked above
+    payloads[tab] = await payloadFor(tab);
+    const missing = whatIsMissing(payloads[tab]);
+    if (missing) problems.push(`<b>${esc(TAB_LABEL[tab])}:</b> ${esc(missing)}`);
+  }
+  if (problems.length) {
+    $('notice').innerHTML = `<div class="banner warn" style="margin-bottom:12px">${problems.join('<br>')}</div>`;
+    return;
+  }
 
-  // The feed is oldest first, so the new one goes on the end.
-  state.entries = state.entries.concat([pending]);
-  state.audio = null;
-  state.photos = [];
-  state.hoursValue = '';
-  state.minutesValue = '';
+  filled.forEach((tab) => {
+    if (tab === 'prop') {
+      const d = draft('prop');
+      queueSend(() => sendProp(d.tagPhoto, d.description.trim()));
+      return;
+    }
+    pendingSeq += 1;
+    const payload = payloads[tab];
+    const pending = {
+      id: `pending-${pendingSeq}`,
+      saveState: 'saving',
+      payload: payload,
+      entryType: tab,
+      text: payload.text,
+      hours: tab === 'labor' ? Number(payload.minutes) / 60 : null,
+      partIdentifier: payload.partIdentifier || '',
+      quantity: payload.quantity ? Number(payload.quantity) : null,
+      mechanicName: state.who.name,
+      createdAt: new Date().toISOString(),
+      audioFile: '',
+      transcriptStatus: '',
+      photos: [],
+      // Straight off the phone, so the shot appears in the feed before Drive
+      // has heard of it.
+      localPhotos: payload.photos || [],
+    };
+    // The feed is oldest first, so the new one goes on the end.
+    state.entries = state.entries.concat([pending]);
+    queueSend(() => sendEntry(pending));
+  });
+
+  clearDrafts();
   // A full redraw here is right: nothing is being typed at the instant the
   // save button is tapped, and the form has to come back empty for the next
   // entry. Everything after this touches only the feed.
   renderJob();
-  sendEntry(pending);
+}
+
+/**
+ * Saves go out one after another rather than all at once.
+ *
+ * Every save in the shop queues on one script lock, so three at the same
+ * instant would sit waiting on each other anyway — and the mechanic is not
+ * waiting on any of them. One at a time also keeps the feed in the order the
+ * tabs are in.
+ */
+let sendChain = Promise.resolve();
+function queueSend(run) {
+  sendChain = sendChain.then(run).catch(() => {});
 }
 
 async function sendEntry(pending) {
