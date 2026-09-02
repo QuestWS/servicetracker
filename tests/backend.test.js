@@ -1238,8 +1238,12 @@ describe('test mode', () => {
     const mail = backend.sentMail[0];
     expect(mail.to).toBe('service@questwatersports.com');
     expect(mail.to).not.toBe('jane@example.com');
-    expect(mail.subject).toMatch(/^\[TEST\]/);
+    // The stamp is what stops Gmail stacking every rehearsal of one job into
+    // a single conversation and hiding the repeated body behind its trimmed
+    // content dots — which reads as "I resent it and nothing changed".
+    expect(mail.subject).toMatch(/^\[TEST \w{3} \d{1,2} \d{2}:\d{2}\]/);
     expect(mail.opts.htmlBody).toContain('TEST MODE');
+    expect(mail.opts.htmlBody).toMatch(/Generated \w{3} \d{1,2} \d{2}:\d{2}/);
     // Whoever reads it needs to know who it was meant for.
     expect(mail.opts.htmlBody).toContain('jane@example.com');
   });
@@ -1334,6 +1338,17 @@ describe('the customer email', () => {
     expect(mail.body).not.toMatch(/your boat/i);
     // The unit still travels, on the line that names the job.
     expect(mail.opts.htmlBody).toContain('tandem trailer');
+  });
+
+  it('carries no rehearsal stamp when it is the real thing', () => {
+    goLive();
+    const { id } = seedJob();
+    backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+    // The customer gets a clean subject. The stamp exists for the shop's own
+    // rehearsals and has no business on the real send.
+    expect(backend.sentMail[0].subject).toBe('Your Quest Watersports service is complete — ' + id);
+    expect(backend.sentMail[0].opts.htmlBody).not.toContain('Generated ');
   });
 
   it('sends a button a mail client will draw as a button', () => {

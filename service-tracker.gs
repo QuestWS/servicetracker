@@ -2393,6 +2393,11 @@ function send_(options) {
  * job they have already marked done — marking done and emailing the customer
  * are two deliberate acts, so closing a ticket can never post mail by itself.
  */
+/** The date and time a rehearsal was generated, in the shop's own timezone. */
+function rehearsalStamp_() {
+  return Utilities.formatDate(new Date(), 'America/Chicago', 'MMM d HH:mm');
+}
+
 function sendInvoiceEmail_(job) {
   if (!job.customer_email) {
     logEmail_(job.id, 'customer_done', '(none on file)', 'Service complete', 'skipped', 'No customer email on the job');
@@ -2433,7 +2438,11 @@ function sendInvoiceEmail_(job) {
     ? '<div style="background:#FBEEE2;border:1px solid #E4B48F;border-left:4px solid #A6541F;' +
       'border-radius:8px;padding:12px 14px;margin:0 0 16px;color:#A6541F;font-size:14px">' +
       '<b>TEST MODE — not sent to the customer.</b><br>This is what ' +
-      esc_(job.customer_email) + ' would have received for job ' + esc_(job.id) + '.</div>'
+      esc_(job.customer_email) + ' would have received for job ' + esc_(job.id) + '.' +
+      // Which rehearsal this is. Two copies of the same job an hour apart are
+      // otherwise identical to look at, and the whole point of resending one
+      // is to see whether something changed.
+      '<br>Generated ' + esc_(rehearsalStamp_()) + '.</div>'
     : '';
 
   return send_({
@@ -2442,7 +2451,14 @@ function sendInvoiceEmail_(job) {
     kind: rehearsal ? 'customer_done_test' : 'customer_done',
     suppressed: rehearsal,
     intendedFor: job.customer_email,
-    subject: (rehearsal ? '[TEST] ' : '') + 'Your ' + SHOP_NAME + ' service is complete — ' + job.id,
+    // The rehearsal carries its own time. Every test send of the same job
+    // used to have an identical subject, so Gmail stacked them into one
+    // conversation and hid the repeated body behind its "trimmed content"
+    // dots — which is how a re-sent rehearsal can look exactly like the one
+    // received an hour earlier, whatever changed in between. What the
+    // customer gets is unchanged.
+    subject: (rehearsal ? '[TEST ' + rehearsalStamp_() + '] ' : '') +
+      'Your ' + SHOP_NAME + ' service is complete — ' + job.id,
     greeting: first,
     html: noticeHtml_({
       banner: banner,

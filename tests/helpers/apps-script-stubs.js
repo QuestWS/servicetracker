@@ -244,11 +244,14 @@ export function loadBackend(options = {}) {
       formatDate: (date, timeZone, pattern) => {
         const parts = new Intl.DateTimeFormat('en-US', {
           timeZone, weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
+          hour: '2-digit', minute: '2-digit', hour12: false,
         }).formatToParts(date).reduce((out, part) => ({ ...out, [part.type]: part.value }), {});
         return pattern
           .replace(/EEE/g, parts.weekday)
           .replace(/MMM/g, parts.month)
           .replace(/yyyy/g, parts.year)
+          .replace(/HH/g, parts.hour === '24' ? '00' : parts.hour)
+          .replace(/mm/g, parts.minute)
           .replace(/\bd\b/g, parts.day);
       },
       newBlob: (bytes, mime, name) => ({
