@@ -1340,6 +1340,39 @@ describe('the customer email', () => {
     expect(mail.opts.htmlBody).toContain('tandem trailer');
   });
 
+  it('is built the way Outlook needs, not the way a browser forgives', () => {
+    goLive();
+    const { id } = seedJob();
+    // With a balance on it, so the coloured box is in the markup too.
+    backend.fn('saveInvoice', adminToken, id, 'https://pos.example.com/pay/abc', 'JVBERi0=', {
+      grandTotal: 1284.55, deposits: 400, amountDue: 884.55,
+    });
+    backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+    const html = backend.sentMail[0].opts.htmlBody;
+
+    // Outlook on Windows renders mail through Word, which drops a background
+    // colour it was only given in CSS — the white card, the navy footer and
+    // every coloured notice came out plain white. Gmail rendered the same
+    // markup beautifully, which is why it survived this long.
+    const filled = html.match(/<[a-z]+[^>]*style="[^"]*background:#[0-9A-Fa-f]{6}[^"]*"[^>]*>/g) || [];
+    expect(filled.length).toBeGreaterThan(3);
+    filled.forEach((tag) => expect(tag).toMatch(/bgcolor="#[0-9A-Fa-f]{6}"/));
+
+    // Word ignores max-width, so a card built that way becomes as wide as the
+    // window. The ghost table pins it; everyone else uses max-width.
+    expect(html).toContain('<!--[if mso]>');
+    expect(html).toContain('max-width:640px');
+
+    // And it will not inherit font-family into a table, which is how half an
+    // email arrives in Times New Roman.
+    // A spacer rule carries font-size:0 and no words, so it is exempt.
+    const sized = (html.match(/<td[^>]*style="[^"]*font-size:[^"]*"[^>]*>/g) || [])
+      .filter((tag) => !/font-size:0/.test(tag));
+    expect(sized.length).toBeGreaterThan(4);
+    sized.forEach((tag) => expect(tag).toMatch(/font-family:/));
+  });
+
   it('carries no rehearsal stamp when it is the real thing', () => {
     goLive();
     const { id } = seedJob();

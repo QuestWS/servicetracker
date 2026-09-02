@@ -2305,43 +2305,79 @@ function button_(url, label, bg) {
  * both arrive looking like the same shop: the wordmark over a gold rule, one
  * card on ice blue, a navy footer with the address and phone.
  *
- * The width and height attributes on the logo are load-bearing — Outlook's
- * renderer ignores the CSS and prints the full-size image without them.
+ * Built out of TABLES carrying bgcolor attributes, not divs with CSS
+ * backgrounds, because Outlook on Windows renders mail through Word — and
+ * Word is not a browser. It ignores max-width, so a div card becomes as wide
+ * as the window. It drops background colours given only in CSS, so the white
+ * card, the navy footer and every coloured notice arrived plain white. And it
+ * will not inherit font-family into a table, which is how half an email ends
+ * up in Times New Roman.
+ *
+ * So: every colour is an attribute as well as a style, every cell that holds
+ * text names its own font, line heights are in pixels rather than multiples,
+ * and a ghost table inside an mso conditional pins the width for Outlook
+ * while every other client uses max-width. Gmail rendered the div version
+ * beautifully, which is exactly why it survived this long.
+ *
+ * The width and height attributes on the logo are load-bearing for the same
+ * reason — Outlook ignores the CSS and prints the full-size image without
+ * them.
  */
+const MAIL_FONT = 'font-family:Arial,Helvetica,sans-serif';
+
+/** A coloured notice box: the test-mode banner, the balance. */
+function mailBox_(fill, edge, body, extra) {
+  return '<div style="margin:0 0 16px">' +
+    '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" ' +
+        'bgcolor="' + fill + '" style="background:' + fill + ';border:1px solid ' + edge +
+        ';border-radius:8px' + (extra || '') + '">' +
+      '<tr><td style="padding:13px 16px">' + body + '</td></tr>' +
+    '</table></div>';
+}
+
 function noticeHtml_(parts) {
   const logo = logoBlob_()
     ? '<img src="cid:questlogo" alt="' + esc_(SHOP_NAME) + '" width="104" height="56" style="width:104px;height:56px;display:block;border:0">'
-    : '<div style="font-family:Arial Black,Arial;font-size:24px;color:#14293E;letter-spacing:1px">' + esc_(SHOP_NAME.toUpperCase()) + '</div>';
+    : '<div style="font-family:Arial Black,Arial,sans-serif;font-size:24px;color:#14293E;letter-spacing:1px">' +
+      esc_(SHOP_NAME.toUpperCase()) + '</div>';
 
-  return '<div style="background:#EBF1F6;padding:24px 12px;font-family:Arial,Helvetica,sans-serif">' +
-    '<div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:10px;overflow:hidden;border:1px solid #C7D5E0">' +
-      '<div style="padding:22px 28px;border-bottom:4px solid #C08A22">' + logo + '</div>' +
-      '<div style="padding:26px 28px">' +
+  const card =
+    '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" align="center" ' +
+        'bgcolor="#ffffff" style="max-width:640px;background:#ffffff;border:1px solid #C7D5E0;border-collapse:collapse">' +
+      '<tr><td bgcolor="#ffffff" style="padding:22px 28px;border-bottom:4px solid #C08A22">' + logo + '</td></tr>' +
+      '<tr><td bgcolor="#ffffff" style="padding:26px 28px;' + MAIL_FONT +
+          ';font-size:15px;color:#1D2B38;line-height:23px">' +
         (parts.banner || '') +
-        (parts.greeting ? '<p style="font-size:16px;color:#1D2B38;margin:0 0 6px">Hi ' + esc_(parts.greeting) + ',</p>' : '') +
-        '<div style="font-size:15px;color:#1D2B38;line-height:1.55;margin:0 0 14px">' + parts.intro + '</div>' +
-        (parts.meta ? '<div style="font-family:Courier New,monospace;font-size:13px;color:#5C7185;margin-bottom:10px">' + esc_(parts.meta) + '</div>' : '') +
+        (parts.greeting ? '<p style="' + MAIL_FONT + ';font-size:16px;line-height:24px;color:#1D2B38;margin:0 0 6px">Hi ' +
+          esc_(parts.greeting) + ',</p>' : '') +
+        '<div style="' + MAIL_FONT + ';font-size:15px;color:#1D2B38;line-height:23px;margin:0 0 14px">' + parts.intro + '</div>' +
+        (parts.meta ? '<div style="font-family:Courier New,Courier,monospace;font-size:13px;line-height:19px;' +
+          'color:#5C7185;margin-bottom:10px">' + esc_(parts.meta) + '</div>' : '') +
         (parts.buttons ? '<div style="margin:18px 0 4px">' + parts.buttons + '</div>' : '') +
-        // Ruled off, so it reads as a closing note rather than small print
-        // hanging off the button above it.
         '<div style="border-top:1px solid #EBF1F6;margin:18px 0 0;padding-top:14px">' +
-          '<p style="font-size:13.5px;color:#4A5A68;line-height:1.5;margin:0">' +
-            'Any questions, give us a call on ' + esc_(SHOP_PHONE) + ' — we&rsquo;re happy to talk it through.' +
+          '<p style="' + MAIL_FONT + ';font-size:13.5px;color:#4A5A68;line-height:20px;margin:0">' +
+            'Any questions, give us a call on ' + esc_(SHOP_PHONE) + ' &mdash; we&rsquo;re happy to talk it through.' +
           '</p></div>' +
-      '</div>' +
+      '</td></tr>' +
       // The same gold rule that sits under the wordmark, so the navy band
       // reads as the bottom of a frame rather than a line that wandered in.
-      // Centred and on three lines, because a shop's address run together
-      // with its phone number is a string, not a footer.
-      '<div style="height:4px;background:#C08A22;font-size:0;line-height:0">&nbsp;</div>' +
-      '<div style="background:#14293E;color:#B9CDDD;padding:20px 28px;font-size:12.5px;' +
-          'line-height:1.7;text-align:center">' +
-        '<div style="color:#ffffff;font-size:13.5px;font-weight:bold;letter-spacing:.04em;' +
-          'margin-bottom:2px">' + esc_(SHOP_NAME) + '</div>' +
-        esc_(SHOP_ADDRESS) + '<br>' +
-        esc_(SHOP_PHONE) + ' &middot; ' + esc_(SERVICE_EMAIL) +
-      '</div>' +
-    '</div></div>';
+      '<tr><td height="4" bgcolor="#C08A22" style="height:4px;background:#C08A22;font-size:0;' +
+        'line-height:0;mso-line-height-rule:exactly">&nbsp;</td></tr>' +
+      '<tr><td bgcolor="#14293E" style="background:#14293E;padding:20px 28px;' + MAIL_FONT +
+          ';font-size:12.5px;line-height:21px;color:#B9CDDD;text-align:center" align="center">' +
+        '<div style="color:#ffffff;font-size:13.5px;font-weight:bold;letter-spacing:.04em;margin-bottom:2px">' +
+          esc_(SHOP_NAME) + '</div>' +
+        esc_(SHOP_ADDRESS) + '<br>' + esc_(SHOP_PHONE) + ' &middot; ' + esc_(SERVICE_EMAIL) +
+      '</td></tr>' +
+    '</table>';
+
+  return '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" ' +
+      'bgcolor="#EBF1F6" style="background:#EBF1F6;border-collapse:collapse">' +
+      '<tr><td align="center" style="padding:24px 12px">' +
+        '<!--[if mso]><table role="presentation" width="640" border="0" cellpadding="0" cellspacing="0"><tr><td><![endif]-->' +
+        card +
+        '<!--[if mso]></td></tr></table><![endif]-->' +
+      '</td></tr></table>';
 }
 
 function logEmail_(jobId, kind, recipient, subject, status, error) {
@@ -2422,27 +2458,31 @@ function sendInvoiceEmail_(job) {
 
   // A job with a deposit against it owes nothing like its total, so the
   // balance gets said plainly rather than left for them to work out.
-  const balance = due === null ? '' :
-    '<div style="background:#FDFCF7;border:1px solid #C7D5E0;border-radius:8px;padding:14px 18px;margin:4px 0 16px">' +
-      '<table width="100%" cellpadding="0" cellspacing="0">' +
-        (deposits ? '<tr><td style="padding:3px 0;color:#5C7185;font-size:13px">Deposits already paid</td>' +
-          '<td align="right" style="padding:3px 0;color:#5C7185;font-size:13px">' + money_(deposits) + '</td></tr>' : '') +
-        '<tr><td style="padding:4px 0;font-weight:bold;color:#14293E">Amount due</td>' +
-          '<td align="right" style="padding:4px 0;font-weight:bold;color:#14293E;font-size:17px">' + money_(due) + '</td></tr>' +
-      '</table></div>';
+  const balance = due === null ? '' : mailBox_('#FDFCF7', '#C7D5E0',
+    '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">' +
+      (deposits ? '<tr><td style="' + MAIL_FONT + ';padding:3px 0;color:#5C7185;font-size:13px;line-height:19px">' +
+        'Deposits already paid</td>' +
+        '<td align="right" style="' + MAIL_FONT + ';padding:3px 0;color:#5C7185;font-size:13px;line-height:19px">' +
+        money_(deposits) + '</td></tr>' : '') +
+      '<tr><td style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;font-size:15px;line-height:23px">' +
+        'Amount due</td>' +
+        '<td align="right" style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;' +
+        'font-size:17px;line-height:24px">' + money_(due) + '</td></tr>' +
+    '</table>');
 
   // In test mode the customer's email is sent to the shop instead, headed with
   // who it was for, so it can be read end to end without anybody outside the
   // building seeing anything.
   const banner = rehearsal
-    ? '<div style="background:#FBEEE2;border:1px solid #E4B48F;border-left:4px solid #A6541F;' +
-      'border-radius:8px;padding:12px 14px;margin:0 0 16px;color:#A6541F;font-size:14px">' +
-      '<b>TEST MODE — not sent to the customer.</b><br>This is what ' +
-      esc_(job.customer_email) + ' would have received for job ' + esc_(job.id) + '.' +
-      // Which rehearsal this is. Two copies of the same job an hour apart are
-      // otherwise identical to look at, and the whole point of resending one
-      // is to see whether something changed.
-      '<br>Generated ' + esc_(rehearsalStamp_()) + '.</div>'
+    ? mailBox_('#FBEEE2', '#E4B48F',
+      '<div style="' + MAIL_FONT + ';font-size:14px;line-height:21px;color:#A6541F">' +
+        '<b>TEST MODE &mdash; not sent to the customer.</b><br>This is what ' +
+        esc_(job.customer_email) + ' would have received for job ' + esc_(job.id) + '.' +
+        // Which rehearsal this is. Two copies of the same job an hour apart
+        // are otherwise identical to look at, and the whole point of
+        // resending one is to see whether something changed.
+        '<br>Generated ' + esc_(rehearsalStamp_()) + '.</div>',
+      ';border-left:4px solid #A6541F')
     : '';
 
   return send_({

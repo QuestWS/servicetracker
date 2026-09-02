@@ -240,15 +240,27 @@ invoice with a deposit against it (`01-7153`) — and encoded in
   with `Reply-To: service@questwatersports.com`. Copied convention, not shared
   infrastructure — a separate script, sheet and Drive folder.
 
-  Two things about it are load-bearing rather than styling. **A button is a
-  table**, not an `<a>` with padding: Outlook ignores padding on an inline
-  element, so the old one arrived as a coloured rectangle behind the words —
-  a highlighted phrase rather than something to press. The colour goes on a
-  `<td>` (with `bgcolor`, which Outlook wants as an attribute) and the padding
-  on a block-level `<a>` filling it. And **nothing customer-facing says
-  "boat"**: a trailer, a prop or an engine on a stand all come through the
-  same shop. The email says the work you requested has been done, and the unit
-  is named on its own line.
+  **The whole email is tables, not divs, and that is not a style choice.**
+  Outlook on Windows renders mail through Word, which is not a browser: it
+  ignores `max-width` (so a div card becomes as wide as the window), it drops
+  a background colour given only in CSS (so the white card, the navy footer
+  and every coloured notice came out plain white), and it will not inherit
+  `font-family` into a table (so half the mail arrives in Times New Roman).
+  Gmail rendered the div version beautifully, which is exactly why it survived
+  as long as it did.
+
+  So every colour is a `bgcolor` attribute as well as a style, every cell
+  holding text names its own font, line heights are in pixels, and a ghost
+  table inside an `<!--[if mso]>` conditional pins the width for Outlook. A
+  test asserts all three, because none of it can be seen from here.
+
+  **A button is a table** for the same reason: Outlook ignores padding on an
+  inline element, so the old `<a>` arrived as a coloured rectangle behind the
+  words — a highlighted phrase rather than something to press.
+
+  And **nothing customer-facing says "boat"**: a trailer, a prop or an engine
+  on a stand all come through the same shop. The email says the work you
+  requested has been done, and the unit is named on its own line.
 - **Drive files are link-shared**, matching how the shop already handles unit
   photos. See the comment on `saveFile_` for what actually protects them.
 
