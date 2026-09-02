@@ -2403,13 +2403,16 @@ function send_(options) {
   if (logo) opts.inlineImages = { questlogo: logo };
   if (FROM_ALIAS) opts.from = FROM_ALIAS;
   if (options.attachments) opts.attachments = options.attachments;
+  if (options.cc) opts.cc = options.cc;
 
   try {
     GmailApp.sendEmail(options.to, options.subject, options.text || options.subject, opts);
     logEmail_(
       options.jobId,
       options.kind,
-      options.to,
+      // Who it went to, copies included, because "did the shop get one?" is a
+      // question the writer's email log should answer without guessing.
+      options.cc ? options.to + ' (cc ' + options.cc + ')' : options.to,
       options.subject,
       options.suppressed ? 'held (test mode)' : 'sent',
       options.suppressed ? 'would have gone to ' + options.intendedFor : ''
@@ -2485,8 +2488,14 @@ function sendInvoiceEmail_(job) {
       ';border-left:4px solid #A6541F')
     : '';
 
+  const to = rehearsal ? testEmail_() : job.customer_email;
+
   return send_({
-    to: rehearsal ? testEmail_() : job.customer_email,
+    to: to,
+    // The shop keeps a copy of everything that goes to a customer. Skipped
+    // when the service desk IS the recipient, which is what a rehearsal is —
+    // copying an address to itself is a duplicate, not a record.
+    cc: to === SERVICE_EMAIL ? '' : SERVICE_EMAIL,
     jobId: job.id,
     kind: rehearsal ? 'customer_done_test' : 'customer_done',
     suppressed: rehearsal,

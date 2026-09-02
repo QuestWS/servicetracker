@@ -523,8 +523,13 @@ If a save gets sluggish again, look here first:
 
 Consumer Gmail, not Workspace, and the account is shared with the winter app:
 
-- **~100 emails a day.** This is why notifications are an hourly per-job digest
-  rather than one per entry. Do not turn that back into per-entry sending.
+- **~100 emails a day**, counted per recipient. This is why notifications are
+  an hourly per-job digest rather than one per entry. Do not turn that back
+  into per-entry sending. The invoice email copies `SERVICE_EMAIL` so the shop
+  keeps a record of what each customer was sent — that is two recipients per
+  finished job, which at a handful of jobs a day is nothing, and it is skipped
+  when the desk is already the recipient (a rehearsal), because copying an
+  address to itself is a duplicate rather than a record.
 - **15 GB of Drive**, shared. Photos are shrunk to ~200 KB before upload.
 - **90 minutes of trigger runtime a day.** One hourly trigger does both the
   transcript sweep and the digest, for that reason. Two dailies sit beside it:

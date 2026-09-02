@@ -1321,6 +1321,31 @@ describe('the customer email', () => {
     expect(mail.opts.htmlBody).not.toContain('1.5 h');
   });
 
+  it('copies the service desk on what the customer gets', () => {
+    goLive();
+    const { id } = seedJob();
+    backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+
+    const mail = backend.sentMail[0];
+    expect(mail.to).toBe('jane@example.com');
+    expect(mail.opts.cc).toBe('service@questwatersports.com');
+    // And the log says so, because "did the shop get a copy" should not need
+    // somebody to remember how this was wired.
+    const logged = backend.fn('getJob', adminToken, id).emails.find((e) => e.kind === 'customer_done');
+    expect(logged.recipient).toContain('service@questwatersports.com');
+  });
+
+  it('does not copy the desk to itself during a rehearsal', () => {
+    // A rehearsal already goes TO the service desk. Copying an address to
+    // itself is a duplicate in the shop's inbox, not a record.
+    const { id } = seedJob();
+    backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+    expect(backend.sentMail[0].to).toBe('service@questwatersports.com');
+    expect(backend.sentMail[0].opts.cc).toBeFalsy();
+  });
+
   it('does not call a trailer a boat', () => {
     goLive();
     // A trailer, a prop, an engine on a stand: plenty of what comes through
