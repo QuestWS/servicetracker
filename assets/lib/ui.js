@@ -124,6 +124,19 @@ export function driveDownloadUrl(id) {
 }
 
 /**
+ * A file size the way a person says one. Two significant figures is as much
+ * as anybody wants when the question is "will that go in an email".
+ */
+export function formatBytes(bytes) {
+  const size = Number(bytes) || 0;
+  if (size <= 0) return '';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  const mb = size / (1024 * 1024);
+  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+}
+
+/**
  * Bytes to base64, in chunks. A work order can be several megabytes, and
  * building one intermediate string that size is a needless memory spike on
  * the shop laptop.

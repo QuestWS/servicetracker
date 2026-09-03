@@ -928,7 +928,32 @@ check('a file added for the customer says so', /Customer/.test(fileRows[0]), fil
 check('and an internal one says that', /Internal/.test(fileRows[1]), fileRows.join(' | '));
 check('both are on the job', /damage/.test(fileRows[0]) && /quote/.test(fileRows[1]),
   fileRows.join(' | '));
+check('each one says how big it is', await admin.evaluate(
+  () => [...document.querySelectorAll('.filerow .filesize')].length === 2
+    && /\d/.test(document.querySelector('.filerow .filesize').textContent)),
+  fileRows.join(' | '));
+const attachCard = (await admin.evaluate(
+  () => document.querySelector('#jobfile').closest('.card').innerText)).replace(/\s+/g, ' ');
+check('and the card says a big one goes as a link instead of an attachment',
+  /too big to email/.test(attachCard), attachCard.slice(0, 200));
 await admin.screenshot({ path: `${SHOTS}/63-attachments.png`, fullPage: true });
+
+// The only size limit left is the upload itself — the file goes to Apps
+// Script base64-encoded inside one POST. It is refused on the page, so
+// nothing is spent finding out, and the message says which limit it is.
+const OVERSIZE_FILE = 'scratch/browser-check-oversize.bin';
+fs.writeFileSync(OVERSIZE_FILE, Buffer.alloc(26 * 1024 * 1024, 7));
+await admin.setInputFiles('#jobfile', OVERSIZE_FILE);
+await admin.click('#addfilecustomer');
+await admin.waitForFunction(() => /MB/.test(document.getElementById('filemsg').innerText),
+  null, { timeout: 20000 });
+const overMsg = await admin.innerText('#filemsg');
+check('a file too big to upload is refused on the page', /26 MB/.test(overMsg), overMsg);
+check('and the reason given is the upload, not the email',
+  /25 MB is as much as one upload will carry/.test(overMsg.replace(/\s+/g, ' ')), overMsg);
+check('and nothing went to the backend behind it',
+  await admin.evaluate(() => document.querySelectorAll('.filerow').length) === 2);
+fs.unlinkSync(OVERSIZE_FILE);
 
 // Removing one bins it rather than destroying it, and asks first.
 admin.once('dialog', (dialog) => dialog.accept());

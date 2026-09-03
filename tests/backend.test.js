@@ -1741,6 +1741,13 @@ describe('documents on a job', () => {
     name: name || 'photo.jpg', mime: 'image/jpeg', visibility, base64: 'ZmlsZQ==',
   });
 
+  /** Makes a row claim a size, so the attach-or-link rule can be tried. */
+  const setFileSize = (jobId, name, size) => backend.call(
+    `updateRow_('JobFiles', rows_('JobFiles').filter(function (r) {`
+    + ` return r.job_id === ${JSON.stringify(jobId)} && r.name === ${JSON.stringify(name)}; })[0]._row,`
+    + ` { size: ${JSON.stringify(size)} });`,
+  );
+
   it('keeps what each one is for, decided when it is added', () => {
     const { id } = seedJob();
     attach(id, 'customer', 'damage.jpg');
@@ -1777,6 +1784,88 @@ describe('documents on a job', () => {
     // And the customer is told what came with it.
     expect(backend.sentMail[0].opts.htmlBody).toContain('damage.jpg');
     expect(backend.sentMail[0].opts.htmlBody).not.toContain('supplier-quote');
+  });
+
+  it('records how big each one is, without decoding it twice', () => {
+    const { id } = seedJob();
+    // 'ZmlsZQ==' is "file" — four bytes, and the arithmetic has to know that
+    // from the padding rather than by decoding a payload that may be tens of
+    // megabytes purely to measure it.
+    attach(id, 'customer', 'damage.jpg');
+    expect(backend.fn('getJob', adminToken, id).files[0].size).toBe(4);
+    expect(backend.call("base64Bytes_('ZmlsZQ==')")).toBe(4);
+    expect(backend.call("base64Bytes_('ZmlsZXM=')")).toBe(5);
+    expect(backend.call("base64Bytes_('ZmlsZXMh')")).toBe(6);
+    expect(backend.call("base64Bytes_('')")).toBe(0);
+  });
+
+  /**
+   * A file too big to email is not a file the customer cannot have. Refusing
+   * the upload puts the writer back to mailing it by hand, and attaching it
+   * anyway bounces the whole email — invoice included. So it goes as a Drive
+   * link in the body, and the invoice PDF is attached either way.
+   */
+  it('sends a file too big to email as a Drive link, invoice still attached', () => {
+    goLive();
+    const { id } = seedJob();
+    attach(id, 'customer', 'walkaround.mp4');
+    // Stamped straight onto the row: uploading 19MB through the test to get
+    // the same figure would measure the stub, not the rule.
+    setFileSize(id, 'walkaround.mp4', 19 * 1024 * 1024);
+
+    backend.fn('saveInvoice', adminToken, id, '', 'JVBERi0=');
+    backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+
+    const mail = backend.sentMail[0].opts;
+    const names = mail.attachments.map((blob) => blob.getName());
+    expect(names).toContain('Invoice-' + id + '.pdf');
+    expect(names).not.toContain('walkaround.mp4');
+
+    const drive = backend.fn('getJob', adminToken, id).files[0].driveFile;
+    expect(mail.htmlBody).toContain('walkaround.mp4');
+    expect(mail.htmlBody).toContain('drive.google.com/file/d/' + drive);
+    expect(mail.htmlBody).toContain('too large to email');
+    expect(backend.sentMail[0].body).toContain('drive.google.com/file/d/' + drive);
+  });
+
+  it('still attaches a small file added after a big one', () => {
+    goLive();
+    const { id } = seedJob();
+    attach(id, 'customer', 'walkaround.mp4');
+    attach(id, 'customer', 'damage.jpg');
+    setFileSize(id, 'walkaround.mp4', 19 * 1024 * 1024);
+
+    backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+
+    const mail = backend.sentMail[0].opts;
+    expect(mail.attachments.map((blob) => blob.getName())).toEqual(['damage.jpg']);
+    expect(mail.htmlBody).toContain('Also attached: damage.jpg');
+    expect(mail.htmlBody).toContain('walkaround.mp4');
+  });
+
+  it('links a file whose size never got recorded rather than gambling the email on it', () => {
+    goLive();
+    const { id } = seedJob();
+    attach(id, 'customer', 'mystery.pdf');
+    setFileSize(id, 'mystery.pdf', '');
+
+    backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+
+    const mail = backend.sentMail[0].opts;
+    expect(mail.attachments).toHaveLength(0);
+    expect(mail.htmlBody).toContain('mystery.pdf');
+    expect(mail.htmlBody).toContain('too large to email');
+  });
+
+  it('tells the page what an email can carry, so the writer is not surprised', () => {
+    const { id } = seedJob();
+    // The figure lives in the backend. The page reads it rather than keeping
+    // a second copy that can drift.
+    expect(backend.fn('getJob', adminToken, id).mailLimit).toBe(18 * 1024 * 1024);
+    expect(attach(id, 'customer', 'damage.jpg').mailLimit).toBe(18 * 1024 * 1024);
   });
 
   it('never reaches the customer page, whatever it is marked', () => {

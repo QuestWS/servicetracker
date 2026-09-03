@@ -324,9 +324,25 @@ because it is a document on the job rather than a line in the log.
 - Removing one **bins the Drive file rather than destroying it**. This is the
   writer undoing a wrong upload, and a customer's photo is not something to
   lose to a mis-tap; Drive keeps a binned file for thirty days.
-- Capped at 10MB a file in the browser, because Gmail will not carry much more
-  than 25MB in total and a phone photo dropped in whole is how that gets found
-  out.
+- **Upload is capped at 25MB, and that is the only cap.** A file goes to Apps
+  Script base64-encoded inside one POST, a third bigger than the file itself,
+  and past that size the request is refused before the script runs — so the
+  page refuses it first and says why, rather than letting a phone spend a
+  minute uploading something that was always going to fail.
+- **Whether a customer file is small enough to email is decided at send time,
+  not at upload.** `MAIL_ATTACHMENT_BUDGET` (18MB) is what is left for
+  attachments once the invoice PDF is on the message — Gmail refuses mail
+  over 25MB on the wire, where base64 makes every attachment a third bigger
+  again, so 18MB of files is roughly the ceiling. `addJobFile` records each
+  file's byte count (`base64Bytes_`, done arithmetically off the base64
+  string rather than by decoding it a second time) so `sendInvoiceEmail_` can
+  add them up without a Drive read. The invoice PDF is **always** a separate
+  attachment. Customer files are then taken in the order they were added:
+  one that still fits inside what is left of the budget is attached: one that
+  does not — or whose size was never recorded — goes into the email body as a
+  Drive link instead, named the same as it would have been attached. Nothing
+  is ever left off silently, and the invoice never rides on whether some
+  other file happens to fit.
 - A new tab needs `setup()` run once. `sheet_` fails with "Run setup()." if it
   is missing, and the App setup page has the button.
 

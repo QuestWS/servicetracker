@@ -208,8 +208,12 @@ const SHEETS = {
   // Documents on a job that are not the work order and not the invoice: a
   // photo of the damage for the customer, a supplier quote for the shop.
   // `visibility` is the whole point of the tab — see addJobFile.
+  // `size` is the file's own byte count, written at upload. The invoice email
+  // needs it to decide attach-or-link, and it is recorded rather than read
+  // back off Drive so deciding costs nothing — a file too big to attach is
+  // never downloaded to find that out.
   JobFiles: ['id', 'job_id', 'name', 'mime', 'drive_file', 'visibility',
-             'added_by', 'created_at'],
+             'added_by', 'created_at', 'size'],
   Mechanics: ['id', 'name', 'active', 'created_at'],
   StatusEvents: ['id', 'job_id', 'from_status', 'to_status', 'actor_type', 'actor', 'note', 'created_at'],
   EmailLog: ['id', 'job_id', 'kind', 'recipient', 'subject', 'status', 'error', 'created_at']
@@ -850,6 +854,10 @@ function getJob(token, id) {
     props: propsForJob_(id),
     parts: partsForJob_(id),
     files: filesForJob_(id),
+    // What the invoice email can carry in attachments, so the page can say
+    // when a customer file will go as a Drive link instead of an attachment
+    // rather than leaving the writer to find out from the customer.
+    mailLimit: MAIL_ATTACHMENT_BUDGET,
     // The mail log stays. It is not just a panel: the page reads it to know
     // whether the invoice has already gone, which is what the send button
     // hangs off. The status timeline is display only, so that one is fetched
@@ -1711,7 +1719,10 @@ function fileView_(row) {
     // the building.
     visibility: row.visibility === 'customer' ? 'customer' : 'internal',
     addedBy: row.added_by || null,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    // Bytes, so the page can say how big it is and the invoice email can work
+    // out what will fit. 0 for anything added before the column existed.
+    size: Math.max(0, Math.round(numberOrNull_(row.size) || 0))
   };
 }
 
@@ -1753,10 +1764,11 @@ function addJobFile(token, id, payload) {
     drive_file: fileId,
     visibility: visibility,
     added_by: SHOP_WRITER_NAME,
-    created_at: nowIso_()
+    created_at: nowIso_(),
+    size: base64Bytes_(payload.base64)
   };
   appendRow_('JobFiles', row);
-  return { files: filesForJob_(job.id) };
+  return { files: filesForJob_(job.id), mailLimit: MAIL_ATTACHMENT_BUDGET };
 }
 
 /**
@@ -1782,7 +1794,7 @@ function deleteJobFile(token, fileId) {
     // deleteRow goes round appendRow_/updateRow_, so it forgets the memoised
     // rows itself or every read after this is a lie.
     forget_('JobFiles');
-    return { files: filesForJob_(row.job_id) };
+    return { files: filesForJob_(row.job_id), mailLimit: MAIL_ATTACHMENT_BUDGET };
   });
 }
 
@@ -2332,6 +2344,20 @@ let _sharedFolders = {};
  * nothing else. An internal photo's id never reaches a page a customer can
  * open, so there is nothing there to leak.
  */
+/**
+ * How many bytes a base64 string stands for, without decoding it.
+ *
+ * Four characters carry three bytes, less whatever the padding stands in for.
+ * Worth doing arithmetically: the alternative is a second decode of a payload
+ * that may be tens of megabytes, purely to call `.length` on the result.
+ */
+function base64Bytes_(base64) {
+  const clean = String(base64 == null ? '' : base64).replace(/\s+/g, '');
+  if (!clean) return 0;
+  const padding = clean.slice(-2) === '==' ? 2 : (clean.slice(-1) === '=' ? 1 : 0);
+  return Math.max(0, Math.floor(clean.length / 4) * 3 - padding);
+}
+
 function saveFile_(jobId, name, mime, base64) {
   const blob = Utilities.newBlob(Utilities.base64Decode(base64), mime, name);
   const folder = jobFolder_(jobId);
@@ -2417,6 +2443,31 @@ function button_(url, label, bg) {
  * them.
  */
 const MAIL_FONT = 'font-family:Arial,Helvetica,sans-serif';
+
+/**
+ * How many bytes of attachment the invoice email will carry.
+ *
+ * Gmail refuses a message over 25MB, and that 25MB is the message as it goes
+ * on the wire — where MIME encodes every attachment in base64 and four
+ * characters carry three bytes. So 18MB of actual file is about 24MB of mail,
+ * and anything past that is a bounce rather than a big email.
+ *
+ * Over the budget the file is not dropped and the customer is not told to
+ * ring up: it goes in the body as a Drive link, which is the same file by a
+ * different door. See sendInvoiceEmail_.
+ */
+const MAIL_ATTACHMENT_BUDGET = 18 * 1024 * 1024;
+
+/**
+ * A Drive file by its id, the same URL shape the pages use.
+ *
+ * Built rather than fetched with getUrl(): every job folder is link-shared,
+ * so the id is all that is needed, and asking Drive would be a round trip
+ * per link for a string we can write ourselves.
+ */
+function driveViewUrl_(id) {
+  return 'https://drive.google.com/file/d/' + encodeURIComponent(String(id)) + '/view';
+}
 
 /** A coloured notice box: the test-mode banner, the balance. */
 function mailBox_(fill, edge, body, extra) {
@@ -2537,9 +2588,18 @@ function sendInvoiceEmail_(job) {
   }
   const rehearsal = testMode_();
   const attachments = [];
+
+  // The invoice is a separate PDF attachment on every one of these, whatever
+  // else the job carries. It is the document the email is about, it is small,
+  // and a customer should never have to follow a link to read their own bill.
+  let invoiceAttached = false;
+  let budget = MAIL_ATTACHMENT_BUDGET;
   if (job.invoice_file) {
     try {
-      attachments.push(DriveApp.getFileById(job.invoice_file).getBlob().setName('Invoice-' + job.id + '.pdf'));
+      const invoice = DriveApp.getFileById(job.invoice_file).getBlob().setName('Invoice-' + job.id + '.pdf');
+      attachments.push(invoice);
+      invoiceAttached = true;
+      budget -= invoice.getBytes().length;
     } catch (err) {
       /* The job is done either way; a missing attachment is not a reason to hold the mail. */
     }
@@ -2548,16 +2608,41 @@ function sendInvoiceEmail_(job) {
   // Whatever the writer marked for the customer when they added it. Marked
   // once, at upload, and never guessed at here: an internal file going out
   // with an invoice is the mistake this whole distinction exists to prevent.
+  //
+  // What is decided here is only HOW it goes: a file that fits inside what
+  // is left of the budget is attached, and one that does not goes in the body
+  // as a Drive link. That beats both alternatives — refusing the upload puts
+  // the writer back to mailing it by hand, and attaching it anyway bounces
+  // the whole email, invoice and all. Files are taken in the order they were
+  // added and each is measured against what is left, so a small one added
+  // after a large one is still attached rather than punished for its
+  // neighbour.
   const extras = [];
+  const linked = [];
   filesForJob_(job.id).forEach(function (file) {
     if (file.visibility !== 'customer') return;
+    // A file with no size recorded — a row from before the column, or one
+    // whose figure never landed — is linked rather than attached. What is
+    // being decided is whether to stake the whole email on it, invoice and
+    // all, and an unknown size is not something to gamble that on. A link
+    // always works.
+    if (!file.size || file.size > budget) {
+      linked.push(file);
+      return;
+    }
     try {
       attachments.push(DriveApp.getFileById(file.driveFile).getBlob().setName(file.name));
+      budget -= file.size;
       extras.push(file.name);
     } catch (err) {
       /* Binned out of Drive by hand. Send the rest. */
     }
   });
+
+  const linkList = linked.map(function (file) {
+    return '<a href="' + driveViewUrl_(file.driveFile) + '" style="color:#1F5C8B">' +
+      esc_(file.name) + '</a>';
+  }).join('<br>');
 
   // No tracking link while the page is switched off — a dead link in a
   // customer's invoice is worse than no link at all.
@@ -2624,16 +2709,24 @@ function sendInvoiceEmail_(job) {
       // below anyway. What is always true is that the customer asked for
       // something and it has been done.
       intro: 'The work you requested has been done. ' +
-        (attachments.length ? 'Your final invoice is attached' : 'Everything is wrapped up') +
+        (invoiceAttached ? 'Your final invoice is attached' : 'Everything is wrapped up') +
         (job.payment_link ? ', and you can pay online with the button below.' : '.') +
-        (extras.length ? '<div style="margin-top:8px">Also attached: ' +
-          extras.map(esc_).join(', ') + '.</div>' : '') + balance,
+        (extras.length ? '<div style="' + MAIL_FONT + ';margin-top:8px">Also attached: ' +
+          extras.map(esc_).join(', ') + '.</div>' : '') +
+        // Too big for the email, so the same file by link. Said as where it
+        // is rather than as an apology for the size of it.
+        (linked.length ? '<div style="' + MAIL_FONT + ';margin-top:8px">' +
+          (linked.length === 1 ? 'This is too large to email, so it is here to download:'
+            : 'These are too large to email, so they are here to download:') +
+          '<br>' + linkList + '</div>' : '') + balance,
       meta: 'INVOICE# ' + job.id + (job.boat_info ? ' · ' + job.boat_info : ''),
       buttons: (link ? button_(link, 'View your job') : '') +
         (job.payment_link ? button_(job.payment_link, due === null ? 'Pay online' : 'Pay ' + money_(due), '#C08A22') : '')
     }),
     text: 'The work you requested has been done.' +
       (extras.length ? '\n\nAlso attached: ' + extras.join(', ') : '') +
+      (linked.length ? '\n\nToo large to email, so here to download:\n' +
+        linked.map(function (file) { return file.name + ': ' + driveViewUrl_(file.driveFile); }).join('\n') : '') +
       (due === null ? '' : '\n\nAmount due: ' + money_(due)) +
       (link ? '\n\nJob status: ' + link : '') +
       (job.payment_link ? '\nPay your invoice: ' + job.payment_link : '') +

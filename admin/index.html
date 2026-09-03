@@ -47,7 +47,7 @@ import { parseWorkOrder, FIELD_LABELS } from '../assets/lib/parse-work-order.js'
 import { parseInvoiceTotals, formatMoney } from '../assets/lib/parse-invoice.js';
 import { stampWorkOrder, qrSvg } from '../assets/lib/stamp.js';
 import { trackingUrl } from '../assets/lib/tracking.js';
-import { $, esc, toast, formatDate, formatDateTime, relativeDays, driveImageUrl, driveFileUrl, bytesToBase64 } from '../assets/lib/ui.js';
+import { $, esc, toast, formatDate, formatDateTime, relativeDays, driveImageUrl, driveFileUrl, bytesToBase64, formatBytes } from '../assets/lib/ui.js';
 
 const view = $('view');
 const params = new URLSearchParams(location.search);
@@ -172,6 +172,18 @@ const JOB_FILTER_LABEL = Object.assign({ open: 'Open jobs', all: 'All' }, STATUS
  * Script charges per round trip, and re-asking the backend to put the same
  * rows in a different order would be a wait for nothing.
  */
+/**
+ * As much as one upload will carry.
+ *
+ * Nothing to do with what an email can hold — a customer file too big to
+ * attach is sent as a Drive link instead, so the size of a file no longer
+ * decides whether it can go on a job. This is the POST: the file goes to
+ * Apps Script base64-encoded inside the request body, which is a third bigger
+ * than the file, and past roughly this size the request is refused before
+ * the script runs at all.
+ */
+const UPLOAD_LIMIT = 25 * 1024 * 1024;
+
 const JOB_SORTS = {
   newest: 'Newest first',
   number: 'Work order number',
@@ -330,6 +342,16 @@ async function renderJob(id) {
   // Older deployments have no JobFiles tab until setup() has been run; the
   // card simply shows nothing rather than the page falling over.
   const files = data.files || [];
+  // What the invoice email can carry, straight from the backend rather than
+  // a second copy of the figure here. A customer file past what is left of it
+  // goes to the customer as a Drive link instead of an attachment, so the
+  // card says which — the writer should know what the customer will be
+  // looking at, not hear about it afterwards.
+  const mailLimit = Number(data.mailLimit) || 0;
+  const customerBytes = files
+    .filter((file) => file.visibility === 'customer')
+    .reduce((total, file) => total + (Number(file.size) || 0), 0);
+  const overMailLimit = mailLimit > 0 && customerBytes > mailLimit;
   // A mechanic can add to a job after the writer has written the rest up, so
   // the split is per entry rather than a flag on the job.
   const pending = entries.filter((entry) => !entry.loggedAt);
@@ -559,8 +581,14 @@ async function renderJob(id) {
               <span class="pill ${file.visibility === 'customer' ? 'green' : 'grey'}">${
                 file.visibility === 'customer' ? 'Customer' : 'Internal'}</span>
               <a class="grow" href="${driveFileUrl(file.driveFile)}" target="_blank" rel="noreferrer">${esc(file.name)}</a>
+              ${file.size ? `<span class="filesize">${esc(formatBytes(file.size))}</span>` : ''}
               <button type="button" data-delfile="${esc(file.id)}" aria-label="Remove ${esc(file.name)}">Remove</button>
             </div>`).join('')}</div>` : ''}
+          ${overMailLimit ? `<div class="msg note" id="filelimit">The customer files come to
+            ${esc(formatBytes(customerBytes))}, and an email will only carry
+            ${esc(formatBytes(mailLimit))}. Whatever does not fit goes to the customer as a
+            <b>Drive link</b> in the invoice email instead of an attachment. The invoice PDF
+            is always attached.</div>` : ''}
 
           <label class="fld" for="jobfile">Add a file</label>
           <input id="jobfile" type="file">
@@ -568,8 +596,9 @@ async function renderJob(id) {
             <button class="btn ghost sm" type="button" id="addfilecustomer" disabled>Attach for the customer</button>
             <button class="btn ghost sm" type="button" id="addfileinternal" disabled>Keep internal</button>
           </div>
-          <p class="hint">A customer file is attached to the invoice email when you send it.
-            An internal one never leaves the shop.</p>
+          <p class="hint">A customer file is attached to the invoice email when you send it —
+            or sent as a Drive link if it is too big to email. An internal one never leaves
+            the shop.</p>
           <div id="filemsg"></div>
         </section>
 
@@ -777,11 +806,15 @@ async function renderJob(id) {
     const addFile = async (visibility, button) => {
       const file = jobfile.files[0];
       if (!file) return;
-      // Gmail will not carry more than about 25MB in total, and a phone photo
-      // dropped in whole is the usual way that gets found out.
-      if (file.size > 10 * 1024 * 1024) {
-        $('filemsg').innerHTML = '<div class="msg err">That file is over 10MB. '
-          + 'Anything larger has to go in Drive and be linked by hand.</div>';
+      // Not the email's limit — that one is handled by sending a link instead
+      // of an attachment, so a big file still reaches the customer. This is
+      // the upload itself: the whole file goes to Apps Script base64-encoded
+      // inside one POST, which grows it by a third, and past about 25MB that
+      // request is refused before the script ever runs.
+      if (file.size > UPLOAD_LIMIT) {
+        $('filemsg').innerHTML = `<div class="msg err">That file is ${esc(formatBytes(file.size))}, and
+          ${esc(formatBytes(UPLOAD_LIMIT))} is as much as one upload will carry. Put it in the job's
+          Drive folder by hand and link it in a note.</div>`;
         return;
       }
       filebuttons.forEach((b) => { b.disabled = true; });
