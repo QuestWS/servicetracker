@@ -984,7 +984,7 @@ function renderJob() {
 
   bindFeed();
   const finish = $('finish');
-  if (finish) finish.onclick = confirmFinish;
+  if (finish) finish.onclick = finishWork;
   // A prop is not a log entry, so the one button at the bottom of the card
   // does the thing the current tab is for.
   $('save').onclick = saveEntry;
@@ -1618,26 +1618,32 @@ function watchTranscript(entryId, attempt = 0) {
   }, TRANSCRIPT_WAITS[attempt]);
 }
 
-function confirmFinish() {
-  $('notice').innerHTML = `<div class="banner info" style="margin-bottom:12px">
-    Mark ${esc(state.job.id)} finished? This tells the service writer the boat is physically done
-    and ready to be written up in BiT.
-    <div class="row" style="margin-top:12px">
-      <button class="btn green" type="button" id="yes">Yes, work finished</button>
-      <button class="btn ghost" type="button" id="no">Not yet</button>
-    </div></div>`;
-  $('no').onclick = () => { $('notice').innerHTML = ''; };
-  $('yes').onclick = async () => {
-    try {
-      const result = await api('finishWork', [state.job.token]);
-      state.job.status = result.status;
-      state.job.statusLabel = result.statusLabel;
-      renderJob();
-      toast('Marked finished.');
-    } catch (error) {
-      $('notice').innerHTML = `<div class="banner warn">${esc(error.message)}</div>`;
-    }
-  };
+/**
+ * One tap, no confirmation. There used to be a "Mark finished? Yes / Not
+ * yet" step, but it rendered into #notice at the TOP of the screen while
+ * this button sits at the bottom, below the whole log — a mechanic who had
+ * just scrolled down to it never saw the prompt appear above the fold, tapped
+ * once, saw nothing change where they were looking, and moved on. The job
+ * never actually finished, silently, which is worse than an accidental tap
+ * would have been. The writer can already put a job back to any status from
+ * the admin page, so a mis-tap here is a one-second fix there rather than
+ * something this screen needs to guard against.
+ */
+async function finishWork() {
+  const finish = $('finish');
+  if (finish) { finish.disabled = true; finish.textContent = 'Marking finished…'; }
+  try {
+    const result = await api('finishWork', [state.job.token]);
+    state.job.status = result.status;
+    state.job.statusLabel = result.statusLabel;
+    renderJob();
+    toast('Marked finished.');
+  } catch (error) {
+    // A toast, not the #notice banner at the top — the mechanic is standing
+    // at the button they just pressed, not scrolled up to look for a reply.
+    toast(error.message);
+    if (finish) { finish.disabled = false; finish.textContent = 'Work finished'; }
+  }
 }
 
 /**

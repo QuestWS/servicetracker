@@ -1156,6 +1156,52 @@ await admin.screenshot({ path: `${SHOTS}/45b-invoice-sent.png`, fullPage: true }
 
 /* ---------------------------------------------------- the writer's shortlist */
 /* -------------------------------------------- moving and deleting entries */
+console.log('\n== marking work finished, one tap ==');
+// There used to be a confirmation step here — "Mark finished? Yes / Not
+// yet" — that rendered into #notice at the TOP of the job screen while the
+// button that triggers it sits at the very bottom, below the whole log. A
+// mechanic who had just scrolled down to tap it never saw the prompt appear
+// above the fold, tapped once, and moved on — the job never actually
+// finished, silently. One tap now does the whole thing, and the writer can
+// already correct a mis-tap from the admin page.
+const FINISH_JOB = `01-${String(Math.floor(1000 + Math.random() * 8999))}`;
+await admin.evaluate(async ({ base, id }) => {
+  const shop = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const post = (fn, args, tok) => fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn, token: tok, args }),
+  }).then((res) => res.json());
+  await post('createJob', [{ invoiceNumber: id, customerName: 'Finish Line' }], shop);
+}, { base: BASE, id: FINISH_JOB });
+
+await mech.click('#navhome');
+await mech.waitForSelector('#manual', { timeout: 20000 });
+await mech.click('#manual');
+await mech.fill('#code', FINISH_JOB);
+await mech.click('button[type=submit]');
+await mech.waitForSelector('#finish', { timeout: 20000 });
+
+check('no confirmation step is offered before finishing',
+  await mech.locator('#yes, #no').count() === 0);
+
+await mech.click('#finish');
+await mech.waitForSelector('text=Marked finished.', { timeout: 20000 });
+check('one tap finishes it — the banner replaces the button, nothing left to confirm',
+  await mech.locator('#finish').count() === 0);
+
+const finishedJob = await admin.evaluate(async ({ base, id }) => {
+  const shop = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const res = await fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn: 'getJob', token: shop, args: [id] }),
+  }).then((r) => r.json());
+  return res.job;
+}, { base: BASE, id: FINISH_JOB });
+check('and the backend actually recorded it, not just the screen',
+  finishedJob && finishedJob.status === 'work_finished', JSON.stringify(finishedJob && finishedJob.status));
+
 console.log('\n== putting a misfiled entry right ==');
 // Two scratch jobs of its own, so nothing here disturbs the counts the rest of
 // this run asserts on. A mechanic scanning the work order next to the one they
