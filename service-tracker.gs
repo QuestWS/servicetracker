@@ -35,6 +35,14 @@ const SHOP_ADDRESS = '1851 Old Chicago Road, Ottawa, IL';
 const SERVICE_EMAIL = 'service@questwatersports.com';
 
 /**
+ * Where a statement sends somebody to pay, instead of any one job's own POS+
+ * link. A statement can bundle several invoices, and no individual job's
+ * link is right for all of them — this is the shop's own payment page, not
+ * tied to a particular ticket.
+ */
+const STATEMENT_PAYMENT_URL = 'https://pay.pospluslogin.com/questws';
+
+/**
  * Optional: after adding a "Send mail as" alias in this Google account's
  * Gmail settings, put that address here so mail comes from a
  * questwatersports.com address instead of the Gmail one. '' sends as the
@@ -558,6 +566,8 @@ function doPost(e) {
     saveInvoice:      function (a) { return saveInvoice(data.token, a[0], a[1], a[2], a[3]); },
     markDone:         function (a) { return markDone(data.token, a[0]); },
     sendInvoiceEmail: function (a) { return sendInvoiceEmail(data.token, a[0]); },
+    listOpenStatements: function (a) { return listOpenStatements(data.token); },
+    sendCustomerStatement: function (a) { return sendCustomerStatement(data.token, a[0]); },
     setStatus:        function (a) { return setStatusByWriter(data.token, a[0], a[1]); },
     markLogged:       function (a) { return markEntriesLogged(data.token, a[0]); },
     addWriterNote:    function (a) { return addWriterNote(data.token, a[0], a[1]); },
@@ -838,6 +848,85 @@ function listJobs(token, filter) {
     if (isOpenJob_(job)) byStatus.open += 1;
   });
   return { jobs: jobs, counts: byStatus, testMode: testMode_() };
+}
+
+/**
+ * Every open invoice — done, unpaid, still owing something real — grouped by
+ * the customer it belongs to. A "customer" here is an email address: it is
+ * the one field guaranteed to route a statement to a single mailbox, and a
+ * job carrying none cannot be statemented any more than it can be invoiced.
+ *
+ * Recomputed fresh on every call rather than cached, because this is what
+ * decides who gets mailed — a payment ticked five minutes ago must already
+ * be off the list.
+ */
+function openInvoicesByCustomer_() {
+  const groups = {};
+  rows_('Jobs').forEach(function (job) {
+    if (job.status !== 'done' || job.paid_at) return;
+    const due = numberOrNull_(job.amount_due);
+    if (!due || due <= 0) return;
+    const email = String(job.customer_email || '').trim();
+    if (!email) return;
+    const key = email.toLowerCase();
+    if (!groups[key]) {
+      groups[key] = {
+        customerEmail: email,
+        customerName: job.customer_name || '',
+        customerPhone: job.customer_phone || '',
+        invoices: [],
+        totalDue: 0,
+        _doneAt: ''
+      };
+    }
+    const group = groups[key];
+    // The most recently finished job's name and phone win, on the chance the
+    // office corrected a typo since an older invoice was written.
+    if (String(job.done_at || '') >= group._doneAt) {
+      group.customerName = job.customer_name || group.customerName;
+      group.customerPhone = job.customer_phone || group.customerPhone;
+      group._doneAt = job.done_at || group._doneAt;
+    }
+    group.invoices.push({ id: job.id, boatInfo: job.boat_info || '', amountDue: due, doneAt: job.done_at || '' });
+    group.totalDue += due;
+  });
+  return Object.keys(groups).map(function (key) {
+    const group = groups[key];
+    delete group._doneAt;
+    group.invoices.sort(function (a, b) { return String(a.doneAt).localeCompare(String(b.doneAt)); });
+    group.totalDue = Math.round(group.totalDue * 100) / 100;
+    return group;
+  }).sort(function (a, b) {
+    return String(a.customerName || a.customerEmail).localeCompare(String(b.customerName || b.customerEmail));
+  });
+}
+
+/** Open invoices that would belong on a statement but have nowhere to send one. */
+function openInvoicesMissingEmail_() {
+  return rows_('Jobs').filter(function (job) {
+    const due = numberOrNull_(job.amount_due);
+    return job.status === 'done' && !job.paid_at && due && due > 0 && !String(job.customer_email || '').trim();
+  }).map(function (job) {
+    return { id: job.id, customerName: job.customer_name || '', amountDue: numberOrNull_(job.amount_due) };
+  });
+}
+
+/** What the Statements page shows: every customer still owed for, and when a statement last reached each. */
+function listOpenStatements(token) {
+  requireAdmin_(token);
+  const groups = openInvoicesByCustomer_();
+  const lastSent = {};
+  rows_('EmailLog').forEach(function (mail) {
+    if (mail.kind !== 'statement' && mail.kind !== 'statement_test') return;
+    if (!lastSent[mail.job_id] || mail.created_at > lastSent[mail.job_id]) lastSent[mail.job_id] = mail.created_at;
+  });
+  groups.forEach(function (group) {
+    // A statement's invoices are logged and sent together, so any one of
+    // them carrying a recent send means the whole thing went.
+    const sent = group.invoices.map(function (inv) { return lastSent[inv.id]; }).filter(Boolean).sort();
+    group.lastSentAt = sent.length ? sent[sent.length - 1] : null;
+  });
+  return { customers: groups, missingEmail: openInvoicesMissingEmail_(), testMode: testMode_() };
 }
 
 function getJob(token, id) {
@@ -2537,7 +2626,7 @@ function logEmail_(jobId, kind, recipient, subject, status, error) {
   });
 }
 
-function send_(options) {
+function deliverMail_(options) {
   const opts = {
     htmlBody: options.html,
     name: SHOP_NAME,
@@ -2548,9 +2637,12 @@ function send_(options) {
   if (FROM_ALIAS) opts.from = FROM_ALIAS;
   if (options.attachments) opts.attachments = options.attachments;
   if (options.cc) opts.cc = options.cc;
+  GmailApp.sendEmail(options.to, options.subject, options.text || options.subject, opts);
+}
 
+function send_(options) {
   try {
-    GmailApp.sendEmail(options.to, options.subject, options.text || options.subject, opts);
+    deliverMail_(options);
     logEmail_(
       options.jobId,
       options.kind,
@@ -2564,6 +2656,30 @@ function send_(options) {
     return true;
   } catch (err) {
     logEmail_(options.jobId, options.kind, options.to, options.subject, 'failed', err);
+    return false;
+  }
+}
+
+/**
+ * Same delivery as send_, logged once per job instead of once for the
+ * message — a statement is one email about several invoices, and each job's
+ * own mail log (what the job page reads to know what has gone out about it)
+ * needs its own row to show it.
+ */
+function sendStatement_(options) {
+  const recipientLog = options.cc ? options.to + ' (cc ' + options.cc + ')' : options.to;
+  try {
+    deliverMail_(options);
+    options.jobIds.forEach(function (jobId) {
+      logEmail_(jobId, options.kind, recipientLog, options.subject,
+        options.suppressed ? 'held (test mode)' : 'sent',
+        options.suppressed ? 'would have gone to ' + options.intendedFor : '');
+    });
+    return true;
+  } catch (err) {
+    options.jobIds.forEach(function (jobId) {
+      logEmail_(jobId, options.kind, options.to, options.subject, 'failed', err);
+    });
     return false;
   }
 }
@@ -2988,6 +3104,179 @@ function sendInvoiceEmail(token, id) {
     throw new Error('This job has no customer email address, so there is nobody to send the invoice to.');
   }
   return { emailed: sendInvoiceEmail_(job), testMode: testMode_(), sentTo: testMode_() ? testEmail_() : job.customer_email };
+}
+
+/**
+ * A one-page account summary: every open invoice for this customer, what is
+ * owed on each, and the total. The only PDF this backend ever builds instead
+ * of just storing — there is no BiT document that shows several jobs' worth
+ * of balance at once, so the browser has nothing existing to hand up here.
+ * Built from markup rather than parsed from anything, which is a different
+ * thing from the "never opens a PDF" rule: nothing is being read, only
+ * written.
+ */
+function statementPdf_(group) {
+  const rows = group.invoices.map(function (inv) {
+    return '<tr>' +
+      '<td style="padding:6px 10px;border-bottom:1px solid #C7D5E0">' + esc_(inv.id) + '</td>' +
+      '<td style="padding:6px 10px;border-bottom:1px solid #C7D5E0">' + esc_(inv.boatInfo) + '</td>' +
+      '<td style="padding:6px 10px;border-bottom:1px solid #C7D5E0;text-align:right">' + esc_(money_(inv.amountDue)) + '</td>' +
+    '</tr>';
+  }).join('');
+
+  const html = '<html><body style="font-family:Arial,Helvetica,sans-serif;color:#1D2B38;font-size:13px;padding:24px">' +
+    '<div style="font-size:20px;font-weight:bold;color:#14293E">' + esc_(SHOP_NAME) + '</div>' +
+    '<div style="color:#5C7185;margin-bottom:18px">' + esc_(SHOP_ADDRESS) + ' &middot; ' + esc_(SHOP_PHONE) + '</div>' +
+    '<div style="font-size:16px;font-weight:bold;color:#14293E">Statement of account</div>' +
+    '<div style="color:#5C7185;margin-bottom:16px">' +
+      esc_(group.customerName || group.customerEmail) + ' &middot; ' +
+      esc_(Utilities.formatDate(new Date(), 'America/Chicago', 'MMM d, yyyy')) + '</div>' +
+    '<table style="width:100%;border-collapse:collapse">' +
+      '<tr>' +
+        '<th style="text-align:left;padding:6px 10px;border-bottom:2px solid #14293E">Invoice #</th>' +
+        '<th style="text-align:left;padding:6px 10px;border-bottom:2px solid #14293E">Unit</th>' +
+        '<th style="text-align:right;padding:6px 10px;border-bottom:2px solid #14293E">Amount due</th>' +
+      '</tr>' + rows +
+      '<tr><td colspan="2" style="padding:10px;text-align:right;font-weight:bold">Total due</td>' +
+        '<td style="padding:10px;text-align:right;font-weight:bold">' + esc_(money_(group.totalDue)) + '</td></tr>' +
+    '</table>' +
+  '</body></html>';
+
+  const tag = String(group.customerName || group.customerEmail).replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'customer';
+  return HtmlService.createHtmlOutput(html).getAs('application/pdf').setName('Statement-' + tag + '.pdf');
+}
+
+/**
+ * The statement email: one line per open invoice, the summary PDF above and
+ * every underlying BiT invoice attached alongside it, and language that
+ * checks in rather than chases — a customer who has already paid is far more
+ * likely than the shop having lost a boat over a payment link.
+ *
+ * Never carries an individual job's payment_link. A statement can straddle
+ * several jobs and no single one's link is right for all of them, so it
+ * always points at the shop's own payment page instead.
+ */
+function sendCustomerStatementMail_(group) {
+  const rehearsal = testMode_();
+  const attachments = [statementPdf_(group)];
+  let budget = MAIL_ATTACHMENT_BUDGET - attachments[0].getBytes().length;
+
+  // Each invoice's own PDF rides along too, same as the single-invoice email
+  // — a customer should never have to click through to read a bill. One
+  // that does not fit what is left of the budget goes in as a Drive link
+  // instead of bouncing the whole message.
+  const linked = [];
+  group.invoices.forEach(function (inv) {
+    const job = jobRow_(inv.id);
+    if (!job || !job.invoice_file) return;
+    try {
+      const blob = DriveApp.getFileById(job.invoice_file).getBlob().setName('Invoice-' + job.id + '.pdf');
+      const bytes = blob.getBytes().length;
+      if (bytes > budget) {
+        linked.push({ id: job.id, driveFile: job.invoice_file });
+        return;
+      }
+      attachments.push(blob);
+      budget -= bytes;
+    } catch (err) {
+      /* Binned out of Drive by hand. The statement still goes; that one invoice just isn't attached. */
+    }
+  });
+
+  const linkList = linked.map(function (file) {
+    return '<a href="' + driveViewUrl_(file.driveFile) + '" style="color:#1F5C8B">Invoice ' + esc_(file.id) + '</a>';
+  }).join('<br>');
+
+  const plural = group.invoices.length > 1;
+  const lineRows = group.invoices.map(function (inv) {
+    return '<tr>' +
+      '<td style="' + MAIL_FONT + ';padding:4px 10px 4px 0;color:#1D2B38;font-size:14px">' + esc_(inv.id) +
+        (inv.boatInfo ? ' <span style="color:#5C7185">&middot; ' + esc_(inv.boatInfo) + '</span>' : '') + '</td>' +
+      '<td align="right" style="' + MAIL_FONT + ';padding:4px 0;color:#1D2B38;font-size:14px;white-space:nowrap">' +
+        money_(inv.amountDue) + '</td></tr>';
+  }).join('');
+  const lineTable = '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" style="margin:8px 0 4px">' +
+    lineRows + '</table>';
+
+  const totalBox = mailBox_('#FDFCF7', '#C7D5E0',
+    '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">' +
+      '<tr><td style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;font-size:15px;line-height:23px">' +
+        'Total balance</td>' +
+      '<td align="right" style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;' +
+        'font-size:17px;line-height:24px">' + money_(group.totalDue) + '</td></tr></table>');
+
+  const banner = rehearsal
+    ? mailBox_('#FBEEE2', '#E4B48F',
+      '<div style="' + MAIL_FONT + ';font-size:14px;line-height:21px;color:#A6541F">' +
+        '<b>TEST MODE &mdash; not sent to the customer.</b><br>This is what ' +
+        esc_(group.customerEmail) + ' would have received.' +
+        '<br>Generated ' + esc_(rehearsalStamp_()) + '.</div>',
+      ';border-left:4px solid #A6541F')
+    : '';
+
+  const to = rehearsal ? testEmail_() : group.customerEmail;
+  const first = String(group.customerName || '').split(' ')[0];
+  const jobIds = group.invoices.map(function (inv) { return inv.id; });
+
+  return sendStatement_({
+    to: to,
+    cc: to === SERVICE_EMAIL ? '' : SERVICE_EMAIL,
+    jobIds: jobIds,
+    kind: rehearsal ? 'statement_test' : 'statement',
+    suppressed: rehearsal,
+    intendedFor: group.customerEmail,
+    subject: (rehearsal ? '[TEST ' + rehearsalStamp_() + '] ' : '') +
+      'A note about your account with ' + SHOP_NAME,
+    html: noticeHtml_({
+      banner: banner,
+      greeting: first,
+      intro: 'While going through our records, we noticed the invoice' + (plural ? 's' : '') + ' below ' +
+        (plural ? 'still show' : 'still shows') + ' an open balance, and wanted to check in — it is entirely ' +
+        'possible something slipped past us on our end.' + lineTable + totalBox +
+        '<div style="' + MAIL_FONT + ';margin-top:14px">If you have already taken care of ' +
+        (plural ? 'one or more of these' : 'this') + ', please let us know — it is possible we simply missed ' +
+        'recording the payment, though that would be unusual on our part. If you have not had a chance yet, ' +
+        'you can settle your balance any time using the button below, rather than any older payment link we ' +
+        'may have sent you.</div>' +
+        (linked.length ? '<div style="' + MAIL_FONT + ';margin-top:8px">' +
+          (linked.length === 1 ? 'One invoice is too large to attach, so it is here to download instead:'
+            : 'A couple of these are too large to attach, so they are here to download instead:') +
+          '<br>' + linkList + '</div>' : ''),
+      buttons: button_(STATEMENT_PAYMENT_URL, 'Pay your balance', '#C08A22')
+    }),
+    text: 'We noticed the following invoice' + (plural ? 's' : '') + ' still show a balance:\n\n' +
+      group.invoices.map(function (inv) { return inv.id + ': ' + money_(inv.amountDue); }).join('\n') +
+      '\n\nTotal balance: ' + money_(group.totalDue) +
+      '\n\nAlready paid? Please let us know, in case we missed recording it.' +
+      '\nNot yet? Pay online any time: ' + STATEMENT_PAYMENT_URL +
+      '\n\n' + SHOP_NAME,
+    attachments: attachments
+  });
+}
+
+/**
+ * Sendable more than once on purpose, the same as a single invoice — an
+ * address gets corrected, or one more invoice comes due before the last
+ * statement was acted on, and the fix each time is to send it again.
+ *
+ * Recomputes the customer's open invoices itself rather than trusting
+ * whatever the portal had on screen: a payment ticked in the last few
+ * minutes must never go out on a statement anyway.
+ */
+function sendCustomerStatement(token, customerEmail) {
+  requireAdmin_(token);
+  const wanted = String(customerEmail || '').trim().toLowerCase();
+  if (!wanted) throw new Error('No customer given.');
+  const group = openInvoicesByCustomer_().find(function (g) { return g.customerEmail.toLowerCase() === wanted; });
+  if (!group) {
+    throw new Error('That customer has no open invoices right now — the list may be out of date. Refresh and try again.');
+  }
+  return {
+    emailed: sendCustomerStatementMail_(group),
+    testMode: testMode_(),
+    sentTo: testMode_() ? testEmail_() : group.customerEmail,
+    invoiceCount: group.invoices.length
+  };
 }
 
 /** What the portal needs to know about this deployment. */

@@ -26,6 +26,7 @@
   <nav>
     <a class="linkbtn" href="?" data-nav="jobs">Jobs</a>
     <a class="linkbtn" href="?view=intake" data-nav="intake">New work order</a>
+    <a class="linkbtn" href="?view=statements" data-nav="statements">Statements</a>
     <a class="linkbtn" href="?view=parts" data-nav="parts">Parts</a>
     <a class="linkbtn" href="?view=props" data-nav="props">Props</a>
     <a class="linkbtn" href="?view=mechanics" data-nav="mechanics">Mechanics</a>
@@ -1743,6 +1744,96 @@ function propLine(prop, options) {
   </div>`;
 }
 
+/* --------------------------------------------------------- statements --- */
+
+async function renderStatements() {
+  view.className = 'wrap';
+  view.innerHTML = `<p class="loading">Loading open invoices…</p>`;
+  const { customers, missingEmail, testMode: mode } = await api('listOpenStatements', []);
+  showTestBanner(mode);
+
+  const totalDue = customers.reduce((sum, c) => sum + c.totalDue, 0);
+
+  view.innerHTML = `
+    <h1 class="page-title">Statements</h1>
+    <p class="lead">
+      Customers with a finished job that still shows a balance. A statement bundles every open invoice
+      for one customer into a single email — one line per invoice, a summary attached, and every
+      invoice itself alongside it. Sending is per customer and always by hand.
+    </p>
+    <div id="notice"></div>
+
+    ${missingEmail.length ? `<div class="banner warn" style="margin-bottom:16px">
+      ${missingEmail.length} open invoice${missingEmail.length === 1 ? '' : 's'} with no customer email on file,
+      so no statement can reach ${missingEmail.length === 1 ? 'it' : 'them'}:
+      ${missingEmail.map((j) => `<a href="?job=${encodeURIComponent(j.id)}">${esc(j.id)}</a>`).join(', ')}.
+    </div>` : ''}
+
+    ${customers.length ? `
+      <div class="row" style="justify-content:space-between;align-items:baseline;margin-bottom:10px">
+        <div class="sub">${customers.length} customer${customers.length === 1 ? '' : 's'} ·
+          ${formatMoney(totalDue)} total open</div>
+        <button class="btn ghost sm" type="button" id="sendall">Send statements to everyone below</button>
+      </div>
+      <div class="joblist">${customers.map((c) => `
+        <div class="jobrow" style="cursor:default">
+          <div class="grow">
+            <div class="who">${esc(c.customerName || '(no name on file)')}</div>
+            <div class="sub">${esc(c.customerEmail)}${c.customerPhone ? ` · ${esc(c.customerPhone)}` : ''}</div>
+            <div class="sub" style="margin-top:4px">${c.invoices.map((inv) =>
+              `${esc(inv.id)} (${formatMoney(inv.amountDue)})`).join(', ')}</div>
+            ${c.lastSentAt ? `<div class="sub">Statement last sent ${formatDateTime(c.lastSentAt)}</div>` : ''}
+          </div>
+          <div class="row tight jobmeta">
+            <span class="pill gold">${formatMoney(c.totalDue)}</span>
+            <button class="btn ${c.lastSentAt ? 'ghost' : 'navy'} sm" type="button" data-send="${esc(c.customerEmail)}">
+              ${c.lastSentAt ? 'Send again' : 'Send statement'}
+            </button>
+          </div>
+        </div>`).join('')}</div>`
+      : `<div class="empty">Nothing open. Every finished job is paid in full.</div>`}`;
+
+  const fail = (error) => {
+    $('notice').innerHTML = `<div class="banner warn">${esc(error.message)}</div>`;
+  };
+
+  const sendOne = async (email, button) => {
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Sending…';
+    try {
+      const result = await api('sendCustomerStatement', [email]);
+      toast(!result.emailed ? 'That statement did not send — check the log.'
+        : result.testMode ? `Test mode: it went to ${result.sentTo}, not the customer.`
+        : `Statement emailed to ${result.sentTo}.`);
+      return true;
+    } catch (error) {
+      fail(error);
+      return false;
+    } finally {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  };
+
+  const rows = Array.from(view.querySelectorAll('[data-send]'));
+  rows.forEach((button) => {
+    button.onclick = async () => {
+      if (!confirm(`Email a statement to ${button.dataset.send}?`)) return;
+      if (await sendOne(button.dataset.send, button)) renderStatements();
+    };
+  });
+
+  const sendall = $('sendall');
+  if (sendall) sendall.onclick = async () => {
+    if (!confirm(`Email a statement to all ${customers.length} customers listed below?`)) return;
+    sendall.disabled = true;
+    for (const button of rows) await sendOne(button.dataset.send, button);
+    sendall.disabled = false;
+    renderStatements();
+  };
+}
+
 async function renderProps() {
   view.className = 'wrap';
   view.innerHTML = `<p class="loading">Loading the props…</p>`;
@@ -2043,6 +2134,7 @@ async function route() {
   try {
     if (job) return await renderJob(job);
     if (which === 'intake') return renderIntake();
+    if (which === 'statements') return await renderStatements();
     if (which === 'parts') return await renderParts();
     if (which === 'props') return await renderProps();
     if (which === 'archive') return await renderArchive();

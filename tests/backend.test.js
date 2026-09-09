@@ -1475,6 +1475,156 @@ describe('the customer email', () => {
   });
 });
 
+describe('customer statements', () => {
+  /** A finished, unpaid job with a real balance — what makes an invoice "open". */
+  function openInvoice(id, email, amountDue, fields = {}) {
+    backend.fn('createJob', adminToken, {
+      invoiceNumber: id,
+      customerName: fields.customerName || 'Jane Rivers',
+      customerPhone: fields.customerPhone || '',
+      customerEmail: email,
+      boatInfo: fields.boatInfo || '2019 Yamaha 242X',
+    });
+    backend.fn('saveInvoice', adminToken, id, fields.paymentLink || '', 'JVBERi0=', {
+      grandTotal: amountDue, deposits: 0, amountDue,
+    });
+    backend.fn('markDone', adminToken, id);
+    return id;
+  }
+
+  it('groups open invoices by customer, and only ones with a real balance still owed', () => {
+    openInvoice('01-9101', 'jane@example.com', 500);
+    openInvoice('01-9102', 'jane@example.com', 250);
+    // Paid off: not open, whatever the balance used to be.
+    const paid = openInvoice('01-9103', 'jane@example.com', 300);
+    backend.fn('setJobFlag', adminToken, paid, 'paid', true);
+    // Zero due: nothing to statement even though the job is finished.
+    openInvoice('01-9104', 'jane@example.com', 0);
+    // Not finished yet: not an invoice at all as far as a statement is concerned.
+    backend.fn('createJob', adminToken, { invoiceNumber: '01-9105', customerEmail: 'jane@example.com' });
+
+    const { customers } = backend.fn('listOpenStatements', adminToken);
+    expect(customers).toHaveLength(1);
+    expect(customers[0].customerEmail).toBe('jane@example.com');
+    expect(customers[0].invoices.map((inv) => inv.id).sort()).toEqual(['01-9101', '01-9102']);
+    expect(customers[0].totalDue).toBe(750);
+  });
+
+  it('separates out open invoices with nobody to mail them to', () => {
+    backend.fn('createJob', adminToken, { invoiceNumber: '01-9201', customerName: 'No Email' });
+    backend.fn('saveInvoice', adminToken, '01-9201', '', 'JVBERi0=', { grandTotal: 400, deposits: 0, amountDue: 400 });
+    backend.fn('markDone', adminToken, '01-9201');
+
+    const { customers, missingEmail } = backend.fn('listOpenStatements', adminToken);
+    expect(customers).toHaveLength(0);
+    expect(missingEmail).toHaveLength(1);
+    expect(missingEmail[0]).toMatchObject({ id: '01-9201', amountDue: 400 });
+  });
+
+  it('sends one email covering every open invoice, routed at the shop\'s own payment page', () => {
+    openInvoice('01-9301', 'jane@example.com', 500, { paymentLink: 'https://pos.example.com/pay/aaa' });
+    openInvoice('01-9302', 'jane@example.com', 250, { paymentLink: 'https://pos.example.com/pay/bbb' });
+
+    const result = backend.fn('sendCustomerStatement', adminToken, 'jane@example.com');
+    expect(result.emailed).toBe(true);
+    expect(result.invoiceCount).toBe(2);
+    expect(backend.sentMail).toHaveLength(1);
+
+    const html = backend.sentMail[0].opts.htmlBody;
+    expect(html).toContain('01-9301');
+    expect(html).toContain('01-9302');
+    expect(html).toContain('$500.00');
+    expect(html).toContain('$250.00');
+    expect(html).toContain('$750.00');
+    // The generic page, never either job's own individualized link.
+    expect(html).toContain('https://pay.pospluslogin.com/questws');
+    expect(html).not.toContain('pos.example.com/pay/aaa');
+    expect(html).not.toContain('pos.example.com/pay/bbb');
+    // Cooperative, not a collections notice.
+    expect(html).toMatch(/noticed/i);
+    expect(html).toMatch(/let us know/i);
+    expect(html).toMatch(/already/i);
+  });
+
+  it('attaches the statement summary and every open invoice PDF', () => {
+    openInvoice('01-9401', 'jane@example.com', 500);
+    openInvoice('01-9402', 'jane@example.com', 250);
+    backend.fn('sendCustomerStatement', adminToken, 'jane@example.com');
+
+    const attachments = backend.sentMail[0].opts.attachments;
+    expect(attachments).toHaveLength(3);
+    const statement = attachments.find((blob) => blob.getName().startsWith('Statement-'));
+    expect(statement).toBeTruthy();
+    expect(statement.getDataAsString()).toContain('01-9401');
+    expect(statement.getDataAsString()).toContain('01-9402');
+    expect(statement.getDataAsString()).toContain('$750.00');
+    const names = attachments.map((blob) => blob.getName());
+    expect(names).toContain('Invoice-01-9401.pdf');
+    expect(names).toContain('Invoice-01-9402.pdf');
+  });
+
+  it('logs the send against every invoice it covered, not just one', () => {
+    openInvoice('01-9501', 'jane@example.com', 500);
+    openInvoice('01-9502', 'jane@example.com', 250);
+    backend.fn('sendCustomerStatement', adminToken, 'jane@example.com');
+
+    const logA = backend.fn('getJob', adminToken, '01-9501').emails.find((m) => m.kind === 'statement_test');
+    const logB = backend.fn('getJob', adminToken, '01-9502').emails.find((m) => m.kind === 'statement_test');
+    expect(logA).toBeTruthy();
+    expect(logB).toBeTruthy();
+    expect(logA.status).toBe('held (test mode)');
+  });
+
+  it('re-checks the balance at send time — a payment ticked since the list was fetched drops off', () => {
+    openInvoice('01-9601', 'jane@example.com', 500);
+    const settled = openInvoice('01-9602', 'jane@example.com', 250);
+
+    expect(backend.fn('listOpenStatements', adminToken).customers[0].invoices).toHaveLength(2);
+    backend.fn('setJobFlag', adminToken, settled, 'paid', true);
+
+    backend.fn('sendCustomerStatement', adminToken, 'jane@example.com');
+    const html = backend.sentMail[0].opts.htmlBody;
+    expect(html).toContain('01-9601');
+    expect(html).not.toContain('01-9602');
+    expect(html).toContain('$500.00');
+  });
+
+  it('holds the send in test mode, the same as the invoice email', () => {
+    openInvoice('01-9701', 'jane@example.com', 500);
+    const result = backend.fn('sendCustomerStatement', adminToken, 'jane@example.com');
+    expect(result.testMode).toBe(true);
+    expect(result.sentTo).toBe('service@questwatersports.com');
+    expect(backend.sentMail[0].to).toBe('service@questwatersports.com');
+    expect(backend.sentMail[0].subject).toMatch(/^\[TEST /);
+    expect(backend.sentMail[0].opts.htmlBody).toContain('TEST MODE');
+  });
+
+  it('sends for real once the shop goes live', () => {
+    goLive();
+    openInvoice('01-9801', 'jane@example.com', 500);
+    const result = backend.fn('sendCustomerStatement', adminToken, 'jane@example.com');
+    expect(result.testMode).toBe(false);
+    expect(result.sentTo).toBe('jane@example.com');
+    expect(backend.sentMail[0].to).toBe('jane@example.com');
+    expect(backend.sentMail[0].opts.cc).toBe('service@questwatersports.com');
+  });
+
+  it('refuses a customer with nothing open', () => {
+    expect(() => backend.fn('sendCustomerStatement', adminToken, 'nobody@example.com')).toThrow(/no open invoices/);
+    openInvoice('01-9901', 'jane@example.com', 500);
+    backend.fn('setJobFlag', adminToken, '01-9901', 'paid', true);
+    expect(() => backend.fn('sendCustomerStatement', adminToken, 'jane@example.com')).toThrow(/no open invoices/);
+  });
+
+  it('only an admin can list or send statements', () => {
+    openInvoice('01-9951', 'jane@example.com', 500);
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => backend.fn('listOpenStatements', mech)).toThrow(/Sign in/);
+    expect(() => backend.fn('sendCustomerStatement', mech, 'jane@example.com')).toThrow(/Sign in/);
+    expect(backend.sentMail).toHaveLength(0);
+  });
+});
+
 describe('a voice note coming back with its words', () => {
   // AssemblyAI: upload the audio, ask for a transcript, then it calls back.
   function assemblyBackend(options = {}) {

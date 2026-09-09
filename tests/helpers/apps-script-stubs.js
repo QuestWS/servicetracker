@@ -192,6 +192,26 @@ export function loadBackend(options = {}) {
     GmailApp: {
       sendEmail: (to, subject, body, opts) => sentMail.push({ to, subject, body, opts }),
     },
+    // The statement PDF is the one document this backend builds instead of
+    // just storing. Real Apps Script renders the HTML to an actual PDF;
+    // the stub keeps the markup reachable instead, so a test can assert an
+    // invoice number or a total landed in it without a PDF parser.
+    HtmlService: {
+      createHtmlOutput: (html) => ({
+        getAs: (mime) => ({
+          getBytes: () => Buffer.from(html, 'utf8'),
+          getName: () => 'statement.pdf',
+          getContentType: () => mime,
+          getDataAsString: () => html,
+          setName: (n) => ({
+            getBytes: () => Buffer.from(html, 'utf8'),
+            getName: () => n,
+            getContentType: () => mime,
+            getDataAsString: () => html,
+          }),
+        }),
+      }),
+    },
     // Programmable, because the transcription path is all UrlFetch and a stub
     // that only ever answers 500 cannot tell a working webhook from a broken
     // one. Tests hand in `fetch: (url, opts) => ({code, body})`.
