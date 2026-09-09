@@ -2005,9 +2005,11 @@ function newStatementDraft() {
   };
 }
 
-/** Both the invoice number/balance and the customer contact block: a BiT
+/** The invoice number/balance and the customer contact block: a BiT
  * invoice carries the same "Sold To:" header as the work order it came
- * from, so the same parser reads both off it. */
+ * from, so the same parser reads both off it. Not the unit off that same
+ * header, though — a statement's description is written by the writer, not
+ * read off an old PDF, so it always starts blank. */
 async function readStatementInvoice(file) {
   if (file.type !== 'application/pdf') throw new Error('That does not look like a PDF.');
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -2018,7 +2020,7 @@ async function readStatementInvoice(file) {
     filename: file.name,
     bytes,
     invoiceNumber: info.invoiceNumber || '',
-    boatInfo: info.boatInfo || '',
+    boatInfo: '',
     customerName: info.customerName || '',
     customerPhone: info.customerPhone || '',
     customerEmail: info.customerEmail || '',
@@ -2194,9 +2196,9 @@ function statementInvoiceRow(inv) {
           ${inv.status === 'created' ? 'disabled' : ''}>
       </div>
     </div>
-    <label class="fld" for="inv-boat-${inv.key}">Boat / unit</label>
+    <label class="fld" for="inv-boat-${inv.key}">Description (optional)</label>
     <input class="txt" id="inv-boat-${inv.key}" data-invfield="boatInfo" data-inv="${inv.key}"
-      value="${esc(inv.boatInfo)}" ${inv.status === 'created' ? 'disabled' : ''}>
+      placeholder="What this invoice was for" value="${esc(inv.boatInfo)}" ${inv.status === 'created' ? 'disabled' : ''}>
     ${missing.length && inv.status === 'ready' ? `<p class="hint" style="color:var(--warn)">
       Could not read ${missing.join(' or ')} off this PDF — fill it in above.</p>` : ''}
     ${inv.status === 'failed' ? `<p class="msg err">${esc(inv.error)}</p>` : ''}

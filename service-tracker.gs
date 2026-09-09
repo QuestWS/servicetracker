@@ -3373,7 +3373,7 @@ function statementPdf_(group) {
     '<table style="width:100%;border-collapse:collapse">' +
       '<tr>' +
         '<th style="text-align:left;padding:6px 10px;border-bottom:2px solid #14293E">Invoice #</th>' +
-        '<th style="text-align:left;padding:6px 10px;border-bottom:2px solid #14293E">Unit</th>' +
+        '<th style="text-align:left;padding:6px 10px;border-bottom:2px solid #14293E">Description</th>' +
         '<th style="text-align:right;padding:6px 10px;border-bottom:2px solid #14293E">Amount due</th>' +
       '</tr>' + rows +
       '<tr><td colspan="2" style="padding:10px;text-align:right;font-weight:bold">Total due</td>' +

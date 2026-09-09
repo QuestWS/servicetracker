@@ -1461,6 +1461,13 @@ check('flags that the uploaded invoices disagree on the customer email',
 check('offers both emails as options to pick between',
   reviewBody.includes('riley.old@example.com') && reviewBody.includes('riley@example.com'));
 
+// A statement's line description is the writer's own words, not the unit
+// off an old PDF — even though this one has "2017 Tracker 175 TXW" printed
+// on it, the field starts blank rather than guessing.
+check('calls it a Description, not a Boat / unit', /description/i.test(reviewBody) && !/Boat\s*\/\s*unit/i.test(reviewBody));
+check('and leaves it blank rather than filling it from the PDF',
+  (await admin.locator('[data-invfield="boatInfo"]').first().inputValue()) === '');
+
 await admin.check('input[name="customerEmailopt"][value="riley@example.com"]');
 check('picking one fills the editable field with it',
   (await admin.inputValue('#stmtcustomerEmail')) === 'riley@example.com');
