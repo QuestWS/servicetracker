@@ -169,3 +169,14 @@ export function downloadBytes(base64, mime, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
   return url;
 }
+
+/** Opens base64 bytes in a new tab to print or read, rather than saving
+ * them to disk — a document checked without anything being sent. */
+export function openBytes(base64, mime) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  window.open(url, '_blank');
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}

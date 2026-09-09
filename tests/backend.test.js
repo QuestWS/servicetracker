@@ -1692,6 +1692,19 @@ describe('backfilling a historical invoice', () => {
     expect(() => backfill()).toThrow(/already exists/);
   });
 
+  it('takes a Drive file id instead of fresh bytes, without a second upload', () => {
+    // What a resumed draft hands over: the PDF is already sitting in Drive
+    // from when the draft was saved, so backfilling should not need it
+    // re-encoded through the browser a second time.
+    const uploaded = backend.fn('saveFile_', 'some-folder', 'invoice-01-6003.pdf', 'application/pdf', 'JVBERi0=');
+    const { job } = backfill({ invoiceNumber: '01-6003', invoicePdf: undefined, driveFile: uploaded });
+    expect(job.invoiceFile).toBe(uploaded);
+  });
+
+  it('requires one or the other', () => {
+    expect(() => backfill({ invoicePdf: undefined, invoiceNumber: '01-6004' })).toThrow(/invoice PDF is required/);
+  });
+
   it('only an admin can backfill one', () => {
     const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
     expect(() => backend.fn('backfillInvoice', mech, {
@@ -1756,6 +1769,207 @@ describe('sent statements', () => {
     backend.fn('sendCustomerStatement', adminToken, 'jane@example.com');
     const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
     expect(() => backend.fn('listSentStatements', mech)).toThrow(/Sign in/);
+  });
+});
+
+describe('previewing a statement', () => {
+  it('shows the exact words a customer would read, without sending anything', () => {
+    openInvoice('01-6701', 'jane@example.com', 500);
+    openInvoice('01-6702', 'jane@example.com', 250);
+    const preview = backend.fn('previewCustomerStatement', adminToken, 'jane@example.com');
+    expect(backend.sentMail).toHaveLength(0);
+    expect(backend.fn('listSentStatements', adminToken).sends).toHaveLength(0);
+    expect(preview.html).toContain('01-6701');
+    expect(preview.html).toContain('01-6702');
+    expect(preview.html).toContain('$750.00');
+    expect(preview.invoiceCount).toBe(2);
+    expect(preview.testMode).toBe(true);
+    expect(preview.to).toBe('service@questwatersports.com');
+  });
+
+  it('reads as a follow-up when asked for one, same as the real send would', () => {
+    openInvoice('01-6703', 'jane@example.com', 500);
+    const preview = backend.fn('previewCustomerStatement', adminToken, 'jane@example.com', true);
+    expect(preview.subject).toMatch(/Following up/);
+  });
+
+  it('previews the customer\'s real address even though test mode holds the actual send', () => {
+    openInvoice('01-6704', 'jane@example.com', 500);
+    const preview = backend.fn('previewCustomerStatement', adminToken, 'jane@example.com');
+    expect(preview.to).toBe('service@questwatersports.com');
+    expect(preview.html).toContain('jane@example.com');
+  });
+
+  it('previews a not-yet-created statement from the wizard\'s own draft, with no jobs behind it', () => {
+    const preview = backend.fn('previewCustomerStatement', adminToken, 'new.customer@example.com', false, {
+      customerName: 'Pat Newcomer',
+      customerEmail: 'new.customer@example.com',
+      invoices: [
+        { invoiceNumber: '02-5001', boatInfo: '2016 Bayliner', amountDue: 340.5 },
+        { invoiceNumber: '02-5002', boatInfo: '2016 Bayliner', amountDue: 120 },
+      ],
+    });
+    expect(preview.html).toContain('02-5001');
+    expect(preview.html).toContain('02-5002');
+    expect(preview.html).toContain('$460.50');
+    expect(preview.invoiceCount).toBe(2);
+    // Nothing was created — this customer does not exist as a job yet.
+    expect(backend.fn('jobRow_', '02-5001')).toBeNull();
+  });
+
+  it('refuses a real customer with nothing open and no draft to fall back on', () => {
+    expect(() => backend.fn('previewCustomerStatement', adminToken, 'nobody@example.com')).toThrow(/no open invoices/);
+  });
+
+  it('only an admin can preview one', () => {
+    openInvoice('01-6705', 'jane@example.com', 500);
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => backend.fn('previewCustomerStatement', mech, 'jane@example.com')).toThrow(/Sign in/);
+  });
+});
+
+describe('printing a statement', () => {
+  it('hands back the same summary PDF the email would carry, without sending anything', () => {
+    openInvoice('01-6801', 'jane@example.com', 500);
+    openInvoice('01-6802', 'jane@example.com', 250);
+    const printed = backend.fn('statementSummaryPdf', adminToken, 'jane@example.com');
+    expect(backend.sentMail).toHaveLength(0);
+    expect(printed.filename).toMatch(/^Statement-/);
+    const html = Buffer.from(printed.base64, 'base64').toString('utf8');
+    expect(html).toContain('01-6801');
+    expect(html).toContain('01-6802');
+    expect(html).toContain('$750.00');
+  });
+
+  it('prints a not-yet-created statement from the wizard\'s own draft too', () => {
+    const printed = backend.fn('statementSummaryPdf', adminToken, 'new.customer@example.com', {
+      customerName: 'Pat Newcomer',
+      customerEmail: 'new.customer@example.com',
+      invoices: [{ invoiceNumber: '02-5101', boatInfo: '2016 Bayliner', amountDue: 340.5 }],
+    });
+    const html = Buffer.from(printed.base64, 'base64').toString('utf8');
+    expect(html).toContain('02-5101');
+    expect(html).toContain('$340.50');
+    expect(backend.fn('jobRow_', '02-5101')).toBeNull();
+  });
+
+  it('refuses a real customer with nothing open and no draft to fall back on', () => {
+    expect(() => backend.fn('statementSummaryPdf', adminToken, 'nobody@example.com')).toThrow(/no open invoices/);
+  });
+
+  it('only an admin can print one', () => {
+    openInvoice('01-6803', 'jane@example.com', 500);
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => backend.fn('statementSummaryPdf', mech, 'jane@example.com')).toThrow(/Sign in/);
+  });
+});
+
+describe('statement drafts', () => {
+  function draftPayload(overrides = {}) {
+    return {
+      customerName: 'Pat Newcomer',
+      customerPhone: '(815) 555-0177',
+      customerEmail: 'pat@example.com',
+      invoices: [
+        { invoiceNumber: '02-7001', boatInfo: '2016 Bayliner', amountDue: 340.5, grandTotal: 340.5, deposits: 0, invoicePdf: 'JVBERi0=', filename: 'a.pdf' },
+        { invoiceNumber: '02-7002', boatInfo: '2016 Bayliner', amountDue: 120, grandTotal: 120, deposits: 0, invoicePdf: 'JVBERi0=', filename: 'b.pdf' },
+      ],
+      ...overrides,
+    };
+  }
+
+  it('saves every invoice\'s PDF to Drive and lists the draft back', () => {
+    const { draft } = backend.fn('saveStatementDraft', adminToken, draftPayload());
+    expect(draft.id).toBeTruthy();
+    expect(draft.invoices).toHaveLength(2);
+    expect(draft.invoices.every((inv) => inv.driveFile)).toBe(true);
+    expect(draft.totalDue).toBe(460.5);
+
+    const { drafts } = backend.fn('listStatementDrafts', adminToken);
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0].customerEmail).toBe('pat@example.com');
+    // Nothing about saving a draft touches Jobs.
+    expect(backend.fn('jobRow_', '02-7001')).toBeNull();
+  });
+
+  it('updates the same draft in place when given its id, rather than creating a second one', () => {
+    const { draft } = backend.fn('saveStatementDraft', adminToken, draftPayload());
+    const updated = backend.fn('saveStatementDraft', adminToken, draftPayload({
+      id: draft.id,
+      customerPhone: '(815) 555-9999',
+    })).draft;
+    expect(updated.id).toBe(draft.id);
+    expect(updated.customerPhone).toBe('(815) 555-9999');
+    expect(backend.fn('listStatementDrafts', adminToken).drafts).toHaveLength(1);
+  });
+
+  it('does not re-upload an invoice whose PDF was already saved', () => {
+    const { draft } = backend.fn('saveStatementDraft', adminToken, draftPayload());
+    const firstFile = draft.invoices[0].driveFile;
+    // The second save carries the SAME driveFile back and no fresh bytes —
+    // exactly what the wizard sends when nothing about that invoice changed.
+    const resaved = backend.fn('saveStatementDraft', adminToken, {
+      id: draft.id,
+      customerName: draft.customerName,
+      customerEmail: draft.customerEmail,
+      invoices: [
+        { invoiceNumber: '02-7001', boatInfo: '2016 Bayliner', amountDue: 340.5, driveFile: firstFile, filename: 'a.pdf' },
+        draftPayload().invoices[1],
+      ],
+    }).draft;
+    expect(resaved.invoices[0].driveFile).toBe(firstFile);
+  });
+
+  it('refuses an invoice with no PDF and no prior upload to fall back on', () => {
+    expect(() => backend.fn('saveStatementDraft', adminToken, {
+      customerEmail: 'pat@example.com',
+      invoices: [{ invoiceNumber: '02-7003', amountDue: 100 }],
+    })).toThrow(/needs a PDF/);
+  });
+
+  it('refuses an empty draft', () => {
+    expect(() => backend.fn('saveStatementDraft', adminToken, { customerEmail: 'pat@example.com', invoices: [] }))
+      .toThrow(/at least one invoice/);
+  });
+
+  it('a saved draft can be sent straight from its Drive files, with no re-upload', () => {
+    const { draft } = backend.fn('saveStatementDraft', adminToken, draftPayload());
+    draft.invoices.forEach((inv) => {
+      backend.fn('backfillInvoice', adminToken, {
+        invoiceNumber: inv.invoiceNumber,
+        customerName: draft.customerName,
+        customerPhone: draft.customerPhone,
+        customerEmail: draft.customerEmail,
+        boatInfo: inv.boatInfo,
+        grandTotal: inv.grandTotal,
+        deposits: inv.deposits,
+        amountDue: inv.amountDue,
+        driveFile: inv.driveFile,
+      });
+    });
+    const result = backend.fn('sendCustomerStatement', adminToken, draft.customerEmail);
+    expect(result.invoiceCount).toBe(2);
+    expect(backend.fn('jobRow_', '02-7001').invoice_file).toBe(draft.invoices[0].driveFile);
+  });
+
+  it('deletes a draft, and only that one', () => {
+    const a = backend.fn('saveStatementDraft', adminToken, draftPayload()).draft;
+    const b = backend.fn('saveStatementDraft', adminToken, draftPayload({ customerEmail: 'other@example.com' })).draft;
+    backend.fn('deleteStatementDraft', adminToken, a.id);
+    const { drafts } = backend.fn('listStatementDrafts', adminToken);
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0].id).toBe(b.id);
+  });
+
+  it('refuses to delete a draft that does not exist', () => {
+    expect(() => backend.fn('deleteStatementDraft', adminToken, 'nope')).toThrow(/No such draft/);
+  });
+
+  it('only an admin can touch drafts', () => {
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => backend.fn('saveStatementDraft', mech, draftPayload())).toThrow(/Sign in/);
+    expect(() => backend.fn('listStatementDrafts', mech)).toThrow(/Sign in/);
+    expect(() => backend.fn('deleteStatementDraft', mech, 'x')).toThrow(/Sign in/);
   });
 });
 

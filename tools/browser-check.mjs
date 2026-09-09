@@ -1344,13 +1344,6 @@ check('the suggested list groups both open invoices under one customer, with the
   suggestedBody.slice(0, 400));
 await admin.screenshot({ path: `${SHOTS}/62-statements-suggested.png`, fullPage: true });
 
-admin.once('dialog', (dialog) => dialog.accept());
-await admin.click(`[data-send="${STMT_EMAIL}"]`);
-await admin.waitForFunction((email) => {
-  const button = document.querySelector(`[data-send="${email}"]`);
-  return button && button.textContent.trim() !== 'Sending…';
-}, STMT_EMAIL, { timeout: 20000 });
-
 const readSends = async () => admin.evaluate(async (base) => {
   const shop = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
   const res = await fetch(`${base}/exec`, {
@@ -1360,6 +1353,38 @@ const readSends = async () => admin.evaluate(async (base) => {
   });
   return (await res.json()).sends;
 }, BASE);
+
+// Print, without sending anything.
+const printPopup = admin.waitForEvent('popup');
+await admin.click(`[data-print="${STMT_EMAIL}"]`);
+const printed = await printPopup;
+check('Print opens the statement summary in a new tab, without sending it',
+  printed.url().startsWith('blob:'), printed.url());
+await printed.close();
+check('and nothing went out because of it', (await readSends()).length === 0);
+
+// Send — previewed in a popup first, and cancellable from it.
+await admin.click(`[data-send="${STMT_EMAIL}"]`);
+await admin.waitForSelector('.modal-card', { timeout: 20000 });
+const modalText = await admin.evaluate(() => document.querySelector('.modal-card').innerText);
+check('the preview names it as a rehearsal before anything sends', /test mode/i.test(modalText), modalText.slice(0, 200));
+const previewBody = await admin.frameLocator('.modal-body iframe').locator('body').innerText();
+check('the preview iframe carries the real invoice lines, total and who it is for',
+  previewBody.includes(STMT_A) && previewBody.includes(STMT_B) && previewBody.includes('$675.50') &&
+  previewBody.includes(STMT_EMAIL), previewBody.slice(0, 400));
+await admin.screenshot({ path: `${SHOTS}/64-statement-preview.png`, fullPage: true });
+
+await admin.click('#modalcancel');
+check('Cancel closes the preview without sending anything', (await readSends()).length === 0);
+
+await admin.click(`[data-send="${STMT_EMAIL}"]`);
+await admin.waitForSelector('.modal-card', { timeout: 20000 });
+await admin.click('#modalgo');
+await admin.waitForFunction((email) => {
+  const button = document.querySelector(`[data-send="${email}"]`);
+  return button && button.textContent.trim() !== 'Sending…';
+}, STMT_EMAIL, { timeout: 20000 });
+
 const firstSend = (await readSends()).find((s) => s.customerEmail === STMT_EMAIL);
 check('sending a suggested statement covers every invoice it listed',
   Boolean(firstSend) && firstSend.invoices.length === 2, JSON.stringify(firstSend));
@@ -1375,8 +1400,19 @@ check('the Sent tab shows the statement that just went out',
   sentBody.includes(STMT_EMAIL) && sentBody.includes(STMT_A) && sentBody.includes(STMT_B), sentBody.slice(0, 400));
 await admin.screenshot({ path: `${SHOTS}/63-statements-sent.png`, fullPage: true });
 
-admin.once('dialog', (dialog) => dialog.accept());
+// Print is offered here too, on a statement already sent.
+const sentPrintPopup = admin.waitForEvent('popup');
+await admin.click(`[data-print="${STMT_EMAIL}"]`);
+const sentPrinted = await sentPrintPopup;
+check('Print is offered on the Sent tab too', sentPrinted.url().startsWith('blob:'), sentPrinted.url());
+await sentPrinted.close();
+
 await admin.click(`[data-followup="${STMT_EMAIL}"]`);
+await admin.waitForSelector('.modal-card', { timeout: 20000 });
+const followupPreview = await admin.frameLocator('.modal-body iframe').locator('body').innerText();
+check('the follow-up preview reads as one, not the first notice repeated',
+  /Just following up/.test(followupPreview), followupPreview.slice(0, 200));
+await admin.click('#modalgo');
 await admin.waitForFunction((email) => {
   const button = document.querySelector(`[data-followup="${email}"]`);
   return button && button.textContent.trim() !== 'Sending…';
@@ -1434,7 +1470,20 @@ const amountFields = await admin.locator('[data-invfield="amountDue"]').all();
 await amountFields[1].fill('125');
 await admin.screenshot({ path: `${SHOTS}/71-statement-review.png`, fullPage: true });
 
+// Print works before anything has even been backfilled yet — the wizard's
+// own not-yet-created draft, not a real job.
+const wizPrintPopup = admin.waitForEvent('popup');
+await admin.click('#stmtprint');
+const wizPrinted = await wizPrintPopup;
+check('a not-yet-sent statement can still be printed', wizPrinted.url().startsWith('blob:'), wizPrinted.url());
+await wizPrinted.close();
+
 await admin.click('#stmtsend');
+await admin.waitForSelector('.modal-card', { timeout: 20000 });
+const wizPreview = await admin.frameLocator('.modal-body iframe').locator('body').innerText();
+check('the send preview reflects the edited balance, not what was first read off the PDF',
+  wizPreview.includes('$125.00') && !wizPreview.includes('$120.00'), wizPreview.slice(0, 300));
+await admin.click('#modalgo');
 await admin.waitForSelector('text=View sent statements', { timeout: 30000 });
 const doneBody = await admin.evaluate(() => document.getElementById('stmtcard').innerText);
 check('confirms the statement went out, covering both backfilled invoices', /covering 2 open invoice/.test(doneBody), doneBody);
@@ -1447,6 +1496,62 @@ check('the backfilled job lands in the system already done, with the edited bala
   /Done/.test(backfilledBody) && /125\.00/.test(backfilledBody), backfilledBody.slice(0, 300));
 check('and explains itself in the shop log, so a writer opening it later is not confused',
   /predates the tracker/.test(backfilledBody));
+
+/* ------------------------------------------------------- saving a draft --- */
+console.log('\n== saving a statement as a draft ==');
+// The point of a draft is surviving a walk-away — build it, leave, come
+// back later (with a mechanic, say) and send only once it checks out.
+const DRAFT_INVOICE = `02-${String(Math.floor(1000 + Math.random() * 8999))}`;
+const DRAFT_PDF = 'scratch/browser-check-stmt-draft.pdf';
+fs.writeFileSync(DRAFT_PDF, await makeInvoicePdf({
+  invoice: DRAFT_INVOICE,
+  workOrder: {
+    name: 'MORGAN LAKE', phone: '815-555-0122', email: 'morgan@example.com',
+    unit: { year: '2019', make: 'Bennington', model: '20SSBX' },
+  },
+  amountDue: 275, grandTotal: 275, deposits: 0,
+}));
+
+await admin.goto(`${BASE}/admin/?view=statements&tab=new`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('#stmtpdf', { state: 'attached', timeout: 20000 });
+await admin.setInputFiles('#stmtpdf', [DRAFT_PDF]);
+await admin.waitForFunction(() => document.querySelectorAll('#stmtcard .kv').length >= 1, null, { timeout: 20000 });
+await admin.click('#stmtreview');
+await admin.waitForSelector('#stmtsavedraft', { timeout: 20000 });
+
+await admin.click('#stmtsavedraft');
+await admin.waitForSelector('text=Saved as a draft', { timeout: 20000 });
+check('saving as a draft sends nothing',
+  (await readSends()).filter((s) => s.customerEmail === 'morgan@example.com').length === 0);
+
+// A real navigation, not a soft reset — the draft has to survive it being
+// read back from the backend, not merely surviving in memory.
+await admin.goto(`${BASE}/admin/?view=statements`, { waitUntil: 'networkidle' });
+await admin.goto(`${BASE}/admin/?view=statements&tab=new`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('[data-resumedraft]', { timeout: 20000 });
+const draftsListBody = await admin.evaluate(() => document.body.innerText);
+check('the draft is listed for later, with what it covers',
+  draftsListBody.includes('MORGAN LAKE') && draftsListBody.includes(DRAFT_INVOICE) && draftsListBody.includes('$275.00'),
+  draftsListBody.slice(0, 400));
+await admin.screenshot({ path: `${SHOTS}/73-statement-drafts.png`, fullPage: true });
+
+await admin.click('[data-resumedraft]');
+await admin.waitForSelector('#stmtsend', { timeout: 20000 });
+check('resuming a draft goes straight to review, with the customer and invoice already filled in',
+  (await admin.inputValue('#stmtcustomerEmail')) === 'morgan@example.com' &&
+  (await admin.inputValue('[data-invfield="invoiceNumber"]')) === DRAFT_INVOICE);
+
+await admin.click('#stmtsend');
+await admin.waitForSelector('.modal-card', { timeout: 20000 });
+await admin.click('#modalgo');
+await admin.waitForSelector('text=View sent statements', { timeout: 30000 });
+check('sending a resumed draft creates the job without re-uploading the file',
+  (await admin.evaluate(() => document.getElementById('stmtcard').innerText)).includes('covering 1 open invoice'));
+
+await admin.click('#stmtagain');
+await admin.waitForSelector('.page-title', { timeout: 20000 });
+check('a sent draft is gone from the drafts list',
+  !(await admin.evaluate(() => document.body.innerText)).includes('MORGAN LAKE'));
 
 /* ------------------------------------------------------ the QR on the paper */
 console.log('\n== what a customer scanning the work order gets ==');

@@ -48,7 +48,7 @@ import { parseWorkOrder, FIELD_LABELS } from '../assets/lib/parse-work-order.js'
 import { parseInvoiceTotals, formatMoney } from '../assets/lib/parse-invoice.js';
 import { stampWorkOrder, qrSvg } from '../assets/lib/stamp.js';
 import { trackingUrl } from '../assets/lib/tracking.js';
-import { $, esc, toast, formatDate, formatDateTime, relativeDays, driveImageUrl, driveFileUrl, bytesToBase64, formatBytes } from '../assets/lib/ui.js';
+import { $, esc, toast, formatDate, formatDateTime, relativeDays, driveImageUrl, driveFileUrl, bytesToBase64, formatBytes, openBytes } from '../assets/lib/ui.js';
 
 const view = $('view');
 const params = new URLSearchParams(location.search);
@@ -1766,6 +1766,60 @@ async function renderStatements() {
   return renderSuggestedStatements();
 }
 
+/**
+ * A popup preview of an email before it sends — the exact subject and body
+ * a customer would read, in an iframe so the email's own table-based
+ * styling can never fight this page's. Resolves true if the writer pressed
+ * the action button, false for Cancel, the X, or clicking outside it.
+ */
+function previewEmailModal(preview, actionLabel) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal';
+    overlay.innerHTML = `
+      <div class="modal-card">
+        <div class="modal-head">
+          <div>
+            <div style="font-weight:700;color:var(--navy)">Preview</div>
+            <div class="sub">To ${esc(preview.to)}${preview.testMode ? ' — test mode, so that is the shop, not the customer' : ''}</div>
+            <div class="sub">Subject: ${esc(preview.subject)}</div>
+          </div>
+          <button type="button" id="modalclose" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body"><iframe sandbox=""></iframe></div>
+        <div class="modal-foot">
+          <button class="btn ghost" type="button" id="modalcancel">Cancel</button>
+          <button class="btn gold" type="button" id="modalgo">${esc(actionLabel || 'Send now')}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector('iframe').srcdoc = preview.html;
+
+    const close = (result) => { overlay.remove(); resolve(result); };
+    overlay.querySelector('#modalclose').onclick = () => close(false);
+    overlay.querySelector('#modalcancel').onclick = () => close(false);
+    overlay.querySelector('#modalgo').onclick = () => close(true);
+    overlay.onclick = (event) => { if (event.target === overlay) close(false); };
+  });
+}
+
+/**
+ * Opens the statement summary PDF in a new tab to print or read — the same
+ * document the email would carry, handed back on its own with nothing sent.
+ * `draft` is the wizard's own not-yet-created invoices, for printing one
+ * before it has ever been backfilled.
+ */
+async function printStatement(customerEmail, draft, button) {
+  const original = button ? button.textContent : null;
+  if (button) { button.disabled = true; button.textContent = 'Preparing…'; }
+  try {
+    const { base64 } = await api('statementSummaryPdf', [customerEmail, draft]);
+    openBytes(base64, 'application/pdf');
+  } finally {
+    if (button) { button.disabled = false; button.textContent = original; }
+  }
+}
+
 async function renderSuggestedStatements() {
   view.innerHTML = `<p class="loading">Loading open invoices…</p>`;
   const { customers, missingEmail, testMode: mode } = await api('listOpenStatements', []);
@@ -1805,6 +1859,7 @@ async function renderSuggestedStatements() {
           </div>
           <div class="row tight jobmeta">
             <span class="pill gold">${formatMoney(c.totalDue)}</span>
+            <button class="btn ghost sm" type="button" data-print="${esc(c.customerEmail)}">Print</button>
             <button class="btn ${c.lastSentAt ? 'ghost' : 'navy'} sm" type="button" data-send="${esc(c.customerEmail)}">
               ${c.lastSentAt ? 'Send again' : 'Send statement'}
             </button>
@@ -1835,10 +1890,18 @@ async function renderSuggestedStatements() {
     }
   };
 
+  view.querySelectorAll('[data-print]').forEach((button) => {
+    button.onclick = () => printStatement(button.dataset.print, null, button).catch(fail);
+  });
+
   const rows = Array.from(view.querySelectorAll('[data-send]'));
   rows.forEach((button) => {
     button.onclick = async () => {
-      if (!confirm(`Email a statement to ${button.dataset.send}?`)) return;
+      let preview;
+      try {
+        preview = await api('previewCustomerStatement', [button.dataset.send, false]);
+      } catch (error) { return fail(error); }
+      if (!(await previewEmailModal(preview, 'Send statement'))) return;
       if (await sendOne(button.dataset.send, button)) renderSuggestedStatements();
     };
   });
@@ -1876,6 +1939,7 @@ async function renderSentStatements() {
           </div>
         </div>
         <div class="row tight jobmeta">
+          <button class="btn ghost sm" type="button" data-print="${esc(s.customerEmail)}">Print</button>
           <button class="btn ghost sm" type="button" data-followup="${esc(s.customerEmail)}" data-idx="${i}">
             Send follow-up
           </button>
@@ -1885,10 +1949,23 @@ async function renderSentStatements() {
 
   const fail = (error) => { $('notice').innerHTML = `<div class="banner warn">${esc(error.message)}</div>`; };
 
+  view.querySelectorAll('[data-print]').forEach((button) => {
+    button.onclick = () => printStatement(button.dataset.print, null, button).catch(fail);
+  });
+
   view.querySelectorAll('[data-followup]').forEach((button) => {
     button.onclick = async () => {
       const email = button.dataset.followup;
-      if (!confirm(`Send a follow-up statement to ${email}?`)) return;
+      let preview;
+      try {
+        preview = await api('previewCustomerStatement', [email, true]);
+      } catch (error) {
+        return fail(/no open invoices/.test(error.message)
+          ? new Error('Nothing left to follow up on — every invoice on this statement is settled.')
+          : error);
+      }
+      if (!(await previewEmailModal(preview, 'Send follow-up'))) return;
+
       const original = button.textContent;
       button.disabled = true;
       button.textContent = 'Sending…';
@@ -1901,9 +1978,7 @@ async function renderSentStatements() {
       } catch (error) {
         button.disabled = false;
         button.textContent = original;
-        fail(/no open invoices/.test(error.message)
-          ? new Error('Nothing left to follow up on — every invoice on this statement is settled.')
-          : error);
+        fail(error);
       }
     };
   });
@@ -1923,6 +1998,7 @@ function newStatementDraft() {
   return {
     stage: 'draft', // 'draft' | 'sending' | 'done'
     reviewing: false,
+    draftId: null,
     invoices: [],
     customerName: '', customerPhone: '', customerEmail: '',
     result: null,
@@ -1953,7 +2029,12 @@ async function readStatementInvoice(file) {
 }
 
 async function renderNewStatement() {
-  if (!statementDraft) statementDraft = newStatementDraft();
+  if (!statementDraft) {
+    view.innerHTML = statementsTabBar('new') + `<p class="loading">Loading…</p>`;
+    const { drafts } = await api('listStatementDrafts', []);
+    if (drafts.length) return renderStatementDraftsList(drafts);
+    statementDraft = newStatementDraft();
+  }
   view.innerHTML = statementsTabBar('new') + `
     <h1 class="page-title">Create new statement</h1>
     <p class="lead">
@@ -1963,6 +2044,74 @@ async function renderNewStatement() {
     </p>
     <section class="card" id="stmtcard"></section>`;
   renderStatementStage();
+}
+
+/** A statement's own PDFs, without its bytes — everything needed to resume
+ * it lives in Drive already, from when it was saved. */
+function resumeStatementDraft(draft) {
+  statementDraft = {
+    stage: 'draft',
+    reviewing: true,
+    draftId: draft.id,
+    invoices: draft.invoices.map((inv) => ({
+      key: newStatementInvoiceKey(),
+      filename: inv.filename || (inv.invoiceNumber ? `${inv.invoiceNumber}.pdf` : 'invoice.pdf'),
+      bytes: null,
+      driveFile: inv.driveFile,
+      invoiceNumber: inv.invoiceNumber || '',
+      boatInfo: inv.boatInfo || '',
+      grandTotal: inv.grandTotal,
+      deposits: inv.deposits,
+      amountDue: inv.amountDue,
+      status: 'ready', error: null, jobId: null,
+    })),
+    customerName: draft.customerName || '',
+    customerPhone: draft.customerPhone || '',
+    customerEmail: draft.customerEmail || '',
+    result: null,
+  };
+  renderNewStatement();
+}
+
+function renderStatementDraftsList(drafts) {
+  view.innerHTML = statementsTabBar('new') + `
+    <h1 class="page-title">Create new statement</h1>
+    <p class="lead">Pick up a statement started earlier, or start a new one.</p>
+    <div id="notice"></div>
+    <div class="joblist">${drafts.map((d) => `
+      <div class="jobrow" style="cursor:default;align-items:flex-start">
+        <div class="grow">
+          <div class="who">${esc(d.customerName || d.customerEmail || '(no customer yet)')}</div>
+          <div class="sub">${esc(d.customerEmail || '')}</div>
+          <div class="sub" style="margin-top:4px">${d.invoices.map((inv) =>
+            `${esc(inv.invoiceNumber || '(no number)')} (${inv.amountDue === null ? '—' : formatMoney(inv.amountDue)})`).join(', ')}</div>
+          <div class="sub">Last touched ${formatDateTime(d.updatedAt)}</div>
+        </div>
+        <div class="row tight jobmeta">
+          <span class="pill gold">${formatMoney(d.totalDue)}</span>
+          <button class="btn ghost sm" type="button" data-deletedraft="${esc(d.id)}">Delete</button>
+          <button class="btn navy sm" type="button" data-resumedraft="${esc(d.id)}">Resume</button>
+        </div>
+      </div>`).join('')}</div>
+    <button class="btn ghost block" type="button" id="stmtnewdraft" style="margin-top:14px">+ Start a new statement</button>`;
+
+  const fail = (error) => { $('notice').innerHTML = `<div class="banner warn">${esc(error.message)}</div>`; };
+
+  view.querySelectorAll('[data-resumedraft]').forEach((button) => {
+    button.onclick = () => resumeStatementDraft(drafts.find((d) => d.id === button.dataset.resumedraft));
+  });
+
+  view.querySelectorAll('[data-deletedraft]').forEach((button) => {
+    button.onclick = async () => {
+      if (!confirm('Delete this draft? This cannot be undone.')) return;
+      try {
+        await api('deleteStatementDraft', [button.dataset.deletedraft]);
+        renderNewStatement();
+      } catch (error) { fail(error); }
+    };
+  });
+
+  $('stmtnewdraft').onclick = () => { statementDraft = newStatementDraft(); renderNewStatement(); };
 }
 
 /** Fills in only the fields nobody has chosen yet — a value the writer has
@@ -2062,7 +2211,13 @@ function statementReviewHtml() {
     ${customerFieldHtml('customerPhone', 'Phone', 'tel')}
     ${customerFieldHtml('customerEmail', 'Email — this is where the statement goes', 'email')}
     <div>${statementDraft.invoices.map(statementInvoiceRow).join('')}</div>
-    <button class="btn gold block" type="button" id="stmtsend" style="margin-top:16px">Send statement</button>
+    <div class="row" style="margin-top:16px;flex-wrap:wrap">
+      <button class="btn ghost" type="button" id="stmtprint">Print, without sending</button>
+      <button class="btn ghost" type="button" id="stmtsavedraft">Save as draft</button>
+      <button class="btn gold" type="button" id="stmtsend">Send statement</button>
+    </div>
+    <p class="hint" style="margin-top:8px">Saving as a draft uploads each invoice to the shop's files but sends
+      nothing — come back to it any time from New statement, review it with a mechanic, and send when ready.</p>
     <p class="msg" id="stmtsendmsg"></p>`;
 }
 
@@ -2199,6 +2354,64 @@ function wireStatementReview() {
   });
 
   $('stmtsend').onclick = sendStatementDraft;
+  $('stmtsavedraft').onclick = saveStatementDraftClick;
+  $('stmtprint').onclick = () => {
+    printStatement(statementDraft.customerEmail, statementDraftForPreview(), $('stmtprint'))
+      .catch((error) => { $('stmtsendmsg').className = 'msg err'; $('stmtsendmsg').textContent = error.message; });
+  };
+}
+
+/** What previewCustomerStatement and statementSummaryPdf both need for a
+ * not-yet-created statement: the wizard's own invoices, not real jobs. */
+function statementDraftForPreview() {
+  return {
+    customerName: statementDraft.customerName,
+    customerEmail: statementDraft.customerEmail,
+    invoices: statementDraft.invoices.map((inv) => ({
+      invoiceNumber: inv.invoiceNumber, boatInfo: inv.boatInfo, amountDue: inv.amountDue,
+    })),
+  };
+}
+
+/**
+ * Uploads whatever has not already been uploaded and stages the rest.
+ * Callable more than once on the same draft: an invoice that already
+ * carries a driveFile from an earlier save is passed straight through
+ * rather than re-uploaded, so touching up one figure and saving again
+ * costs one Drive write, not a full re-upload of everything.
+ */
+async function saveStatementDraftClick() {
+  const msg = $('stmtsendmsg');
+  msg.className = 'msg';
+  msg.textContent = 'Saving…';
+  try {
+    const payload = {
+      customerName: statementDraft.customerName,
+      customerPhone: statementDraft.customerPhone,
+      customerEmail: statementDraft.customerEmail,
+      invoices: statementDraft.invoices.map((inv) => ({
+        invoiceNumber: inv.invoiceNumber,
+        boatInfo: inv.boatInfo,
+        grandTotal: inv.grandTotal,
+        deposits: inv.deposits,
+        amountDue: inv.amountDue,
+        filename: inv.filename,
+        ...(inv.driveFile ? { driveFile: inv.driveFile } : { invoicePdf: bytesToBase64(inv.bytes) }),
+      })),
+    };
+    if (statementDraft.draftId) payload.id = statementDraft.draftId;
+    const { draft } = await api('saveStatementDraft', [payload]);
+    statementDraft.draftId = draft.id;
+    // Remember what got uploaded, so saving again — or finally sending —
+    // never re-uploads the same bytes twice.
+    draft.invoices.forEach((saved, i) => { statementDraft.invoices[i].driveFile = saved.driveFile; });
+    msg.className = 'msg ok';
+    msg.textContent = 'Saved as a draft. Come back to it any time from New statement.';
+    toast('Statement saved as a draft.');
+  } catch (error) {
+    msg.className = 'msg err';
+    msg.textContent = error.message;
+  }
 }
 
 async function sendStatementDraft() {
@@ -2223,6 +2436,16 @@ async function sendStatementDraft() {
   }
   statementDraft.customerEmail = email;
 
+  let preview;
+  try {
+    preview = await api('previewCustomerStatement', [email, false, statementDraftForPreview()]);
+  } catch (error) {
+    msg.className = 'msg err';
+    msg.textContent = error.message;
+    return;
+  }
+  if (!(await previewEmailModal(preview, 'Send statement'))) return;
+
   statementDraft.stage = 'sending';
   renderStatementStage();
 
@@ -2240,7 +2463,7 @@ async function sendStatementDraft() {
         grandTotal: inv.grandTotal,
         deposits: inv.deposits,
         amountDue: inv.amountDue,
-        invoicePdf: bytesToBase64(inv.bytes),
+        ...(inv.driveFile ? { driveFile: inv.driveFile } : { invoicePdf: bytesToBase64(inv.bytes) }),
       }]);
       inv.status = 'created';
       inv.jobId = job.id;
@@ -2261,6 +2484,12 @@ async function sendStatementDraft() {
     failMsg.className = 'msg err';
     failMsg.textContent = 'Nothing could be created — fix the invoice(s) above and try again.';
     return;
+  }
+
+  // Sent, so a draft behind this session has done its job — it should not
+  // linger as something still waiting to be actioned.
+  if (statementDraft.draftId) {
+    try { await api('deleteStatementDraft', [statementDraft.draftId]); } catch { /* not fatal */ }
   }
 
   try {

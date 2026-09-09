@@ -224,7 +224,18 @@ const SHEETS = {
              'added_by', 'created_at', 'size'],
   Mechanics: ['id', 'name', 'active', 'created_at'],
   StatusEvents: ['id', 'job_id', 'from_status', 'to_status', 'actor_type', 'actor', 'note', 'created_at'],
-  EmailLog: ['id', 'job_id', 'kind', 'recipient', 'subject', 'status', 'error', 'created_at']
+  EmailLog: ['id', 'job_id', 'kind', 'recipient', 'subject', 'status', 'error', 'created_at'],
+  // A statement being built but not yet sent — the whole point is to let a
+  // writer stage every invoice, then come back later (with a mechanic, say)
+  // and double-check before anything goes to the customer. One row per
+  // customer's in-progress statement; `invoices_json` is the only place a
+  // list this shape needs to live, so it is a JSON blob rather than a tab of
+  // its own — never queried by field, only read and written whole. Each
+  // invoice's PDF is uploaded to Drive at save time (not kept as bytes in the
+  // browser), because the whole point is surviving a reload or a different
+  // session before it is finally sent.
+  StatementDrafts: ['id', 'customer_name', 'customer_phone', 'customer_email',
+                     'invoices_json', 'created_at', 'updated_at']
 };
 
 /* ============================== plumbing =============================== */
@@ -568,8 +579,13 @@ function doPost(e) {
     sendInvoiceEmail: function (a) { return sendInvoiceEmail(data.token, a[0]); },
     listOpenStatements: function (a) { return listOpenStatements(data.token); },
     sendCustomerStatement: function (a) { return sendCustomerStatement(data.token, a[0], a[1]); },
+    previewCustomerStatement: function (a) { return previewCustomerStatement(data.token, a[0], a[1], a[2]); },
+    statementSummaryPdf: function (a) { return statementSummaryPdf(data.token, a[0], a[1]); },
     listSentStatements: function (a) { return listSentStatements(data.token); },
     backfillInvoice: function (a) { return backfillInvoice(data.token, a[0]); },
+    saveStatementDraft: function (a) { return saveStatementDraft(data.token, a[0]); },
+    listStatementDrafts: function (a) { return listStatementDrafts(data.token); },
+    deleteStatementDraft: function (a) { return deleteStatementDraft(data.token, a[0]); },
     setStatus:        function (a) { return setStatusByWriter(data.token, a[0], a[1]); },
     markLogged:       function (a) { return markEntriesLogged(data.token, a[0]); },
     addWriterNote:    function (a) { return addWriterNote(data.token, a[0], a[1]); },
@@ -802,10 +818,18 @@ function createJob(token, payload) {
  * wrong before this is ever called. Once created, a backfilled job is an
  * ordinary job — it shows up in the jobs list, can be opened, and can be
  * marked paid like any other.
+ *
+ * Takes the invoice PDF either fresh (`invoicePdf`, base64, straight off the
+ * wizard) or already sitting in Drive (`driveFile`, an id) — a statement
+ * saved as a draft has already uploaded it once, and re-encoding it through
+ * the browser a second time to send the same bytes back would be wasted
+ * work. Either way it becomes the job's own invoice_file by id; it is never
+ * copied into the job's folder, because nothing reads it any differently
+ * for living in the draft's folder instead — filing, not access.
  */
 function backfillInvoice(token, payload) {
   requireAdmin_(token);
-  if (!payload.invoicePdf) throw new Error('The invoice PDF is required.');
+  if (!payload.invoicePdf && !payload.driveFile) throw new Error('The invoice PDF is required.');
   const amountDue = numberOrNull_(payload.amountDue);
   if (amountDue === null || amountDue <= 0) {
     throw new Error('A balance greater than zero is required for ' + (payload.invoiceNumber || 'this invoice') + '.');
@@ -818,9 +842,13 @@ function backfillInvoice(token, payload) {
     customerEmail: payload.customerEmail,
     boatInfo: payload.boatInfo
   });
-  saveInvoice(token, id, '', payload.invoicePdf, {
+  saveInvoice(token, id, '', payload.invoicePdf || '', {
     grandTotal: payload.grandTotal, deposits: payload.deposits, amountDue: amountDue
   });
+  if (!payload.invoicePdf && payload.driveFile) {
+    const job = jobRow_(id);
+    updateRow_('Jobs', job._row, { invoice_file: payload.driveFile, updated_at: nowIso_() });
+  }
   markDone(token, id);
   // The status trail already says the row was created and immediately
   // marked done, which is honest but says nothing about why. A writer
@@ -828,6 +856,109 @@ function backfillInvoice(token, payload) {
   // shop-floor history.
   addWriterNote(token, id, 'Backfilled from an invoice that predates the tracker — no shop-floor history to show.');
   return { job: jobSummary_(jobRow_(id)) };
+}
+
+/* ------------------------------------------------- statement drafts ---- */
+
+function statementDraftRow_(id) {
+  const all = rows_('StatementDrafts');
+  for (let i = 0; i < all.length; i++) {
+    if (String(all[i].id) === String(id)) return all[i];
+  }
+  return null;
+}
+
+function statementDraftView_(row) {
+  const invoices = JSON.parse(row.invoices_json || '[]');
+  return {
+    id: row.id,
+    customerName: row.customer_name || '',
+    customerPhone: row.customer_phone || '',
+    customerEmail: row.customer_email || '',
+    invoices: invoices,
+    totalDue: Math.round(invoices.reduce(function (sum, inv) {
+      return sum + (Number(inv.amountDue) || 0);
+    }, 0) * 100) / 100,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+/**
+ * A statement staged but not yet sent. Every open invoice for one customer,
+ * with each PDF already sitting in Drive by the time this returns — a draft
+ * exists so a writer can build the whole thing, walk away, and come back
+ * with a mechanic to double-check it later, possibly in a different session
+ * entirely, so nothing about it can live only in the browser.
+ *
+ * `id` given means update the existing draft in place — a writer coming
+ * back to add one more invoice or fix a figure, not create a second draft
+ * for the same customer. An invoice that already has a `driveFile` (kept
+ * from an earlier save, untouched since) is not re-uploaded; only ones
+ * carrying fresh `invoicePdf` bytes cost a Drive write here.
+ */
+function saveStatementDraft(token, payload) {
+  requireAdmin_(token);
+  const invoices = Array.isArray(payload.invoices) ? payload.invoices : [];
+  if (!invoices.length) throw new Error('Add at least one invoice before saving a draft.');
+
+  const id = String(payload.id || '').trim() || newId_('stmtdraft');
+  const stored = invoices.map(function (inv) {
+    const number = String(inv.invoiceNumber || '').trim().toUpperCase();
+    let driveFile = inv.driveFile || '';
+    if (inv.invoicePdf) {
+      driveFile = saveFile_(id, 'invoice-' + (number || 'unnumbered') + '.pdf', 'application/pdf', inv.invoicePdf);
+    }
+    if (!driveFile) throw new Error('Every invoice needs a PDF before it can be saved to a draft.');
+    return {
+      invoiceNumber: number,
+      boatInfo: inv.boatInfo || '',
+      grandTotal: numberOrNull_(inv.grandTotal),
+      deposits: numberOrNull_(inv.deposits),
+      amountDue: numberOrNull_(inv.amountDue),
+      driveFile: driveFile,
+      filename: inv.filename || ''
+    };
+  });
+
+  const existing = payload.id ? statementDraftRow_(id) : null;
+  const at = nowIso_();
+  const row = {
+    id: id,
+    customer_name: payload.customerName || '',
+    customer_phone: payload.customerPhone || '',
+    customer_email: payload.customerEmail || '',
+    invoices_json: JSON.stringify(stored),
+    created_at: existing ? existing.created_at : at,
+    updated_at: at
+  };
+  if (existing) updateRow_('StatementDrafts', existing._row, row);
+  else appendRow_('StatementDrafts', row);
+  return { draft: statementDraftView_(row) };
+}
+
+/** Every staged statement, most recently touched first. */
+function listStatementDrafts(token) {
+  requireAdmin_(token);
+  return {
+    drafts: rows_('StatementDrafts').map(statementDraftView_)
+      .sort(function (a, b) { return String(b.updatedAt).localeCompare(String(a.updatedAt)); })
+  };
+}
+
+/**
+ * Drops the row only. The Drive files it pointed at are left where they
+ * are — an abandoned draft is rare enough that cleaning up after it is not
+ * worth a round trip per invoice, and nothing else in this backend chases
+ * down orphaned Drive files either.
+ */
+function deleteStatementDraft(token, id) {
+  requireAdmin_(token);
+  const row = statementDraftRow_(id);
+  if (!row) throw new Error('No such draft.');
+  sheet_('StatementDrafts').deleteRow(row._row);
+  forget_('StatementDrafts');
+  return { deleted: id };
 }
 
 /**
@@ -989,7 +1120,7 @@ function listSentStatements(token) {
   const order = [];
   rows_('EmailLog').forEach(function (mail) {
     if (mail.kind !== 'statement' && mail.kind !== 'statement_test') return;
-    const key = mail.recipient + ' ' + mail.subject + ' ' + mail.created_at;
+    const key = mail.recipient + '|' + mail.subject + '|' + mail.created_at;
     if (!groups[key]) {
       groups[key] = {
         recipient: mail.recipient,
@@ -3269,38 +3400,25 @@ function statementPdf_(group) {
  * same way and carrying the same attachments, because it is the same
  * request said again, not a different email.
  */
-function sendCustomerStatementMail_(group, followup) {
+/**
+ * Just the subject, HTML and text of a statement email — no attachments, no
+ * Drive access, no send. Split out from sendCustomerStatementMail_ so a
+ * preview can build the exact words a customer would read without touching
+ * Gmail, and so it can run against a group of invoices that are not real
+ * jobs yet — the "Create new statement" wizard, before anything is
+ * backfilled. `linked` is the "too large to attach" note; the wizard has no
+ * way to know a PDF's real size before the job exists, so it is always
+ * empty there, and the preview simply says nothing about it rather than
+ * guessing.
+ */
+function statementEmailContent_(group, followup, linked) {
   const rehearsal = testMode_();
-  const attachments = [statementPdf_(group)];
-  let budget = MAIL_ATTACHMENT_BUDGET - attachments[0].getBytes().length;
+  const plural = group.invoices.length > 1;
 
-  // Each invoice's own PDF rides along too, same as the single-invoice email
-  // — a customer should never have to click through to read a bill. One
-  // that does not fit what is left of the budget goes in as a Drive link
-  // instead of bouncing the whole message.
-  const linked = [];
-  group.invoices.forEach(function (inv) {
-    const job = jobRow_(inv.id);
-    if (!job || !job.invoice_file) return;
-    try {
-      const blob = DriveApp.getFileById(job.invoice_file).getBlob().setName('Invoice-' + job.id + '.pdf');
-      const bytes = blob.getBytes().length;
-      if (bytes > budget) {
-        linked.push({ id: job.id, driveFile: job.invoice_file });
-        return;
-      }
-      attachments.push(blob);
-      budget -= bytes;
-    } catch (err) {
-      /* Binned out of Drive by hand. The statement still goes; that one invoice just isn't attached. */
-    }
-  });
-
-  const linkList = linked.map(function (file) {
+  const linkList = (linked || []).map(function (file) {
     return '<a href="' + driveViewUrl_(file.driveFile) + '" style="color:#1F5C8B">Invoice ' + esc_(file.id) + '</a>';
   }).join('<br>');
 
-  const plural = group.invoices.length > 1;
   const lineRows = group.invoices.map(function (inv) {
     return '<tr>' +
       '<td style="' + MAIL_FONT + ';padding:4px 10px 4px 0;color:#1D2B38;font-size:14px">' + esc_(inv.id) +
@@ -3329,12 +3447,10 @@ function sendCustomerStatementMail_(group, followup) {
 
   const to = rehearsal ? testEmail_() : group.customerEmail;
   const first = String(group.customerName || '').split(' ')[0];
-  const jobIds = group.invoices.map(function (inv) { return inv.id; });
 
-  return sendStatement_({
+  return {
     to: to,
     cc: to === SERVICE_EMAIL ? '' : SERVICE_EMAIL,
-    jobIds: jobIds,
     kind: rehearsal ? 'statement_test' : 'statement',
     suppressed: rehearsal,
     intendedFor: group.customerEmail,
@@ -3354,7 +3470,7 @@ function sendCustomerStatementMail_(group, followup) {
         'recording the payment, though that would be unusual on our part. If you have not had a chance yet, ' +
         'you can settle your balance any time using the button below, rather than any older payment link we ' +
         'may have sent you.</div>' +
-        (linked.length ? '<div style="' + MAIL_FONT + ';margin-top:8px">' +
+        (linked && linked.length ? '<div style="' + MAIL_FONT + ';margin-top:8px">' +
           (linked.length === 1 ? 'One invoice is too large to attach, so it is here to download instead:'
             : 'A couple of these are too large to attach, so they are here to download instead:') +
           '<br>' + linkList + '</div>' : ''),
@@ -3365,9 +3481,108 @@ function sendCustomerStatementMail_(group, followup) {
       '\n\nTotal balance: ' + money_(group.totalDue) +
       '\n\nAlready paid? Please let us know, in case we missed recording it.' +
       '\nNot yet? Pay online any time: ' + STATEMENT_PAYMENT_URL +
-      '\n\n' + SHOP_NAME,
-    attachments: attachments
+      '\n\n' + SHOP_NAME
+  };
+}
+
+function sendCustomerStatementMail_(group, followup) {
+  const attachments = [statementPdf_(group)];
+  let budget = MAIL_ATTACHMENT_BUDGET - attachments[0].getBytes().length;
+
+  // Each invoice's own PDF rides along too, same as the single-invoice email
+  // — a customer should never have to click through to read a bill. One
+  // that does not fit what is left of the budget goes in as a Drive link
+  // instead of bouncing the whole message.
+  const linked = [];
+  group.invoices.forEach(function (inv) {
+    const job = jobRow_(inv.id);
+    if (!job || !job.invoice_file) return;
+    try {
+      const blob = DriveApp.getFileById(job.invoice_file).getBlob().setName('Invoice-' + job.id + '.pdf');
+      const bytes = blob.getBytes().length;
+      if (bytes > budget) {
+        linked.push({ id: job.id, driveFile: job.invoice_file });
+        return;
+      }
+      attachments.push(blob);
+      budget -= bytes;
+    } catch (err) {
+      /* Binned out of Drive by hand. The statement still goes; that one invoice just isn't attached. */
+    }
   });
+
+  const jobIds = group.invoices.map(function (inv) { return inv.id; });
+  const content = statementEmailContent_(group, followup, linked);
+  return sendStatement_(Object.assign({ jobIds: jobIds, attachments: attachments }, content));
+}
+
+/**
+ * The group statementEmailContent_ and statementPdf_ both work from —
+ * either a real customer's current open invoices, or the "Create new
+ * statement" wizard's own not-yet-created ones, handed over as `draft`:
+ * {customerName, customerEmail, invoices: [{invoiceNumber, boatInfo,
+ * amountDue}]}. A draft wins when given one, because before anything is
+ * backfilled there are no jobs yet for a real lookup to find.
+ */
+function resolveStatementGroup_(customerEmail, draft) {
+  if (draft && Array.isArray(draft.invoices) && draft.invoices.length) {
+    return draftStatementGroup_(draft);
+  }
+  const wanted = String(customerEmail || '').trim().toLowerCase();
+  const group = openInvoicesByCustomer_().find(function (g) { return g.customerEmail.toLowerCase() === wanted; });
+  if (!group) {
+    throw new Error('That customer has no open invoices right now — the list may be out of date. Refresh and try again.');
+  }
+  return group;
+}
+
+/** The group shape statementEmailContent_ needs, built from the wizard's own state rather than real Jobs rows. */
+function draftStatementGroup_(draft) {
+  const invoices = draft.invoices.map(function (inv) {
+    return {
+      id: String(inv.invoiceNumber || '').trim().toUpperCase() || '(new invoice)',
+      boatInfo: inv.boatInfo || '',
+      amountDue: numberOrNull_(inv.amountDue) || 0
+    };
+  });
+  return {
+    customerName: draft.customerName || '',
+    customerEmail: String(draft.customerEmail || '').trim(),
+    invoices: invoices,
+    totalDue: Math.round(invoices.reduce(function (sum, inv) { return sum + inv.amountDue; }, 0) * 100) / 100
+  };
+}
+
+/**
+ * The words a customer would read, without sending anything — the popup the
+ * writer checks before a statement (or a follow-up) actually goes out.
+ */
+function previewCustomerStatement(token, customerEmail, followup, draft) {
+  requireAdmin_(token);
+  const group = resolveStatementGroup_(customerEmail, draft);
+  const content = statementEmailContent_(group, !!followup, []);
+  return {
+    subject: content.subject,
+    html: content.html,
+    to: content.to,
+    testMode: testMode_(),
+    invoiceCount: group.invoices.length,
+    totalDue: group.totalDue
+  };
+}
+
+/**
+ * The statement summary as a standalone PDF — the same document that
+ * otherwise only ever rides along with the email — handed back on its own
+ * so a writer can print or read it without anything going to a customer.
+ * Works from a draft exactly the way the preview does: printing a
+ * statement before it is ever sent is the whole point of saving one.
+ */
+function statementSummaryPdf(token, customerEmail, draft) {
+  requireAdmin_(token);
+  const group = resolveStatementGroup_(customerEmail, draft);
+  const pdf = statementPdf_(group);
+  return { base64: Utilities.base64Encode(pdf.getBytes()), filename: pdf.getName() };
 }
 
 /**
