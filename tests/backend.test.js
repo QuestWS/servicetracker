@@ -40,6 +40,22 @@ function seedJob(id = '01-8886', { seedLabor = true } = {}) {
   return { id, token, mech };
 }
 
+/** A finished, unpaid job with a real balance — what makes an invoice "open". */
+function openInvoice(id, email, amountDue, fields = {}) {
+  backend.fn('createJob', adminToken, {
+    invoiceNumber: id,
+    customerName: fields.customerName || 'Jane Rivers',
+    customerPhone: fields.customerPhone || '',
+    customerEmail: email,
+    boatInfo: fields.boatInfo || '2019 Yamaha 242X',
+  });
+  backend.fn('saveInvoice', adminToken, id, fields.paymentLink || '', 'JVBERi0=', {
+    grandTotal: amountDue, deposits: 0, amountDue,
+  });
+  backend.fn('markDone', adminToken, id);
+  return id;
+}
+
 beforeEach(() => {
   backend = loadBackend({ properties: { ADMIN_PASSWORD: 'shop-password' } });
   adminToken = backend.fn('adminSignIn', 'shop-password').token;
@@ -1476,22 +1492,6 @@ describe('the customer email', () => {
 });
 
 describe('customer statements', () => {
-  /** A finished, unpaid job with a real balance — what makes an invoice "open". */
-  function openInvoice(id, email, amountDue, fields = {}) {
-    backend.fn('createJob', adminToken, {
-      invoiceNumber: id,
-      customerName: fields.customerName || 'Jane Rivers',
-      customerPhone: fields.customerPhone || '',
-      customerEmail: email,
-      boatInfo: fields.boatInfo || '2019 Yamaha 242X',
-    });
-    backend.fn('saveInvoice', adminToken, id, fields.paymentLink || '', 'JVBERi0=', {
-      grandTotal: amountDue, deposits: 0, amountDue,
-    });
-    backend.fn('markDone', adminToken, id);
-    return id;
-  }
-
   it('groups open invoices by customer, and only ones with a real balance still owed', () => {
     openInvoice('01-9101', 'jane@example.com', 500);
     openInvoice('01-9102', 'jane@example.com', 250);
@@ -1609,6 +1609,22 @@ describe('customer statements', () => {
     expect(backend.sentMail[0].opts.cc).toBe('service@questwatersports.com');
   });
 
+  it('reads as a follow-up, not a fresh notice, when asked for one', () => {
+    goLive();
+    openInvoice('01-9802', 'jane@example.com', 500);
+    backend.fn('sendCustomerStatement', adminToken, 'jane@example.com');
+    backend.fn('sendCustomerStatement', adminToken, 'jane@example.com', true);
+
+    expect(backend.sentMail).toHaveLength(2);
+    expect(backend.sentMail[0].subject).toBe('A note about your account with Quest Watersports');
+    expect(backend.sentMail[1].subject).toBe('Following up on your account with Quest Watersports');
+    expect(backend.sentMail[1].opts.htmlBody).toMatch(/Just following up/);
+    // Still the same request underneath — same invoice, same total, same
+    // generic payment page.
+    expect(backend.sentMail[1].opts.htmlBody).toContain('01-9802');
+    expect(backend.sentMail[1].opts.htmlBody).toContain('https://pay.pospluslogin.com/questws');
+  });
+
   it('refuses a customer with nothing open', () => {
     expect(() => backend.fn('sendCustomerStatement', adminToken, 'nobody@example.com')).toThrow(/no open invoices/);
     openInvoice('01-9901', 'jane@example.com', 500);
@@ -1622,6 +1638,124 @@ describe('customer statements', () => {
     expect(() => backend.fn('listOpenStatements', mech)).toThrow(/Sign in/);
     expect(() => backend.fn('sendCustomerStatement', mech, 'jane@example.com')).toThrow(/Sign in/);
     expect(backend.sentMail).toHaveLength(0);
+  });
+});
+
+describe('backfilling a historical invoice', () => {
+  function backfill(payload = {}) {
+    return backend.fn('backfillInvoice', adminToken, {
+      invoiceNumber: '01-6001',
+      customerName: 'Old Customer',
+      customerPhone: '(815) 555-0100',
+      customerEmail: 'old@example.com',
+      boatInfo: '2015 Bayliner 175',
+      grandTotal: 400,
+      deposits: 0,
+      amountDue: 400,
+      invoicePdf: 'JVBERi0=',
+      ...payload,
+    });
+  }
+
+  it('creates a job already done, with nothing walked through the floor', () => {
+    const { job } = backfill();
+    expect(job.status).toBe('done');
+    expect(job.amountDue).toBe(400);
+    expect(job.invoiceFile).toBeTruthy();
+    expect(job.customerEmail).toBe('old@example.com');
+  });
+
+  it('says plainly, in the shop log, that this is a backfill and not real history', () => {
+    backfill();
+    // No mechanic ever touched it — the only entry is the note explaining why.
+    const entries = backend.fn('getJob', adminToken, '01-6001').entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].entryType).toBe('writer_note');
+    expect(entries[0].text).toMatch(/predates the tracker|backfill/i);
+  });
+
+  it('behaves exactly like any other job afterward — findable, payable, statementable', () => {
+    backfill();
+    expect(backend.fn('listOpenStatements', adminToken).customers[0].invoices[0].id).toBe('01-6001');
+    backend.fn('setJobFlag', adminToken, '01-6001', 'paid', true);
+    expect(backend.fn('jobRow_', '01-6001').paid_at).toBeTruthy();
+  });
+
+  it('requires the invoice PDF and a real balance', () => {
+    expect(() => backfill({ invoicePdf: '' })).toThrow(/invoice PDF is required/);
+    expect(() => backfill({ amountDue: 0 })).toThrow(/balance greater than zero/);
+    expect(() => backfill({ amountDue: null })).toThrow(/balance greater than zero/);
+  });
+
+  it('refuses a number that already belongs to a job in the system', () => {
+    openInvoice('01-6001', 'someone-else@example.com', 100);
+    expect(() => backfill()).toThrow(/already exists/);
+  });
+
+  it('only an admin can backfill one', () => {
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => backend.fn('backfillInvoice', mech, {
+      invoiceNumber: '01-6002', amountDue: 100, invoicePdf: 'JVBERi0=',
+    })).toThrow(/Sign in/);
+    expect(backend.fn('jobRow_', '01-6002')).toBeNull();
+  });
+});
+
+describe('sent statements', () => {
+  it('regroups one statement send into one entry, covering every invoice it carried', () => {
+    goLive();
+    openInvoice('01-6101', 'jane@example.com', 500);
+    openInvoice('01-6102', 'jane@example.com', 250);
+    backend.fn('sendCustomerStatement', adminToken, 'jane@example.com');
+
+    const { sends } = backend.fn('listSentStatements', adminToken);
+    expect(sends).toHaveLength(1);
+    expect(sends[0].customerEmail).toBe('jane@example.com');
+    expect(sends[0].customerName).toBe('Jane Rivers');
+    expect(sends[0].testMode).toBe(false);
+    expect(sends[0].invoices.map((inv) => inv.id).sort()).toEqual(['01-6101', '01-6102']);
+  });
+
+  it('keeps two different customers\' sends apart rather than merging them', () => {
+    goLive();
+    openInvoice('01-6201', 'jane@example.com', 500);
+    openInvoice('01-6301', 'ada@example.com', 900, { customerName: 'Ada Trail' });
+    backend.fn('sendCustomerStatement', adminToken, 'jane@example.com');
+    backend.fn('sendCustomerStatement', adminToken, 'ada@example.com');
+
+    const { sends } = backend.fn('listSentStatements', adminToken);
+    expect(sends).toHaveLength(2);
+    expect(sends.map((s) => s.customerEmail).sort()).toEqual(['ada@example.com', 'jane@example.com']);
+  });
+
+  it('shows what is owed right now, not what was owed the day it was sent', () => {
+    goLive();
+    openInvoice('01-6401', 'jane@example.com', 500);
+    const other = openInvoice('01-6402', 'jane@example.com', 250);
+    backend.fn('sendCustomerStatement', adminToken, 'jane@example.com');
+    backend.fn('setJobFlag', adminToken, other, 'paid', true);
+
+    const sent = backend.fn('listSentStatements', adminToken).sends[0];
+    const a = sent.invoices.find((inv) => inv.id === '01-6401');
+    const b = sent.invoices.find((inv) => inv.id === '01-6402');
+    expect(a.stillOpen).toBe(true);
+    expect(b.stillOpen).toBe(false);
+  });
+
+  it('marks a held rehearsal as such, same as any other test-mode send', () => {
+    openInvoice('01-6501', 'jane@example.com', 500);
+    backend.fn('sendCustomerStatement', adminToken, 'jane@example.com');
+    const sent = backend.fn('listSentStatements', adminToken).sends[0];
+    expect(sent.testMode).toBe(true);
+    expect(sent.status).toBe('held (test mode)');
+  });
+
+  it('only an admin can see what has gone out', () => {
+    goLive();
+    openInvoice('01-6601', 'jane@example.com', 500);
+    backend.fn('sendCustomerStatement', adminToken, 'jane@example.com');
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => backend.fn('listSentStatements', mech)).toThrow(/Sign in/);
   });
 });
 

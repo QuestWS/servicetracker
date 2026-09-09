@@ -567,7 +567,9 @@ function doPost(e) {
     markDone:         function (a) { return markDone(data.token, a[0]); },
     sendInvoiceEmail: function (a) { return sendInvoiceEmail(data.token, a[0]); },
     listOpenStatements: function (a) { return listOpenStatements(data.token); },
-    sendCustomerStatement: function (a) { return sendCustomerStatement(data.token, a[0]); },
+    sendCustomerStatement: function (a) { return sendCustomerStatement(data.token, a[0], a[1]); },
+    listSentStatements: function (a) { return listSentStatements(data.token); },
+    backfillInvoice: function (a) { return backfillInvoice(data.token, a[0]); },
     setStatus:        function (a) { return setStatusByWriter(data.token, a[0], a[1]); },
     markLogged:       function (a) { return markEntriesLogged(data.token, a[0]); },
     addWriterNote:    function (a) { return addWriterNote(data.token, a[0], a[1]); },
@@ -788,6 +790,47 @@ function createJob(token, payload) {
 }
 
 /**
+ * A job for an invoice that predates this tracker — already finished and
+ * already billed before the first row was ever written here, with nothing
+ * on the shop floor left to record. Built out of the same three calls
+ * intake already makes — createJob, saveInvoice, markDone, run back to
+ * back — rather than a second copy of what a job row looks like.
+ *
+ * Exists for the "Create new statement" wizard on the Statements page,
+ * which reads invoice number, balance and customer contact off an uploaded
+ * BiT invoice PDF in the browser and lets the writer fix anything read
+ * wrong before this is ever called. Once created, a backfilled job is an
+ * ordinary job — it shows up in the jobs list, can be opened, and can be
+ * marked paid like any other.
+ */
+function backfillInvoice(token, payload) {
+  requireAdmin_(token);
+  if (!payload.invoicePdf) throw new Error('The invoice PDF is required.');
+  const amountDue = numberOrNull_(payload.amountDue);
+  if (amountDue === null || amountDue <= 0) {
+    throw new Error('A balance greater than zero is required for ' + (payload.invoiceNumber || 'this invoice') + '.');
+  }
+  const id = String(payload.invoiceNumber || '').trim().toUpperCase();
+  createJob(token, {
+    invoiceNumber: id,
+    customerName: payload.customerName,
+    customerPhone: payload.customerPhone,
+    customerEmail: payload.customerEmail,
+    boatInfo: payload.boatInfo
+  });
+  saveInvoice(token, id, '', payload.invoicePdf, {
+    grandTotal: payload.grandTotal, deposits: payload.deposits, amountDue: amountDue
+  });
+  markDone(token, id);
+  // The status trail already says the row was created and immediately
+  // marked done, which is honest but says nothing about why. A writer
+  // opening this job in six months should not have to guess why it has no
+  // shop-floor history.
+  addWriterNote(token, id, 'Backfilled from an invoice that predates the tracker — no shop-floor history to show.');
+  return { job: jobSummary_(jobRow_(id)) };
+}
+
+/**
  * The stamped work order, uploaded a moment after the job is created.
  *
  * It cannot come with createJob: the QR code has to point at a tracking token
@@ -927,6 +970,62 @@ function listOpenStatements(token) {
     group.lastSentAt = sent.length ? sent[sent.length - 1] : null;
   });
   return { customers: groups, missingEmail: openInvoicesMissingEmail_(), testMode: testMode_() };
+}
+
+/**
+ * Statement sends, newest first — reconstructed from EmailLog rather than
+ * kept in a table of their own. sendStatement_ stamps every invoice's row
+ * from one send with the exact same recipient, subject and timestamp, which
+ * is what makes that triple a reliable key to regroup them by.
+ *
+ * Each invoice is reported with its CURRENT balance and open/paid state
+ * rather than a frozen figure from the day the statement went out — a
+ * customer who paid one of three since is more useful shown as paid than
+ * repeated back at whatever they owed when the email was sent.
+ */
+function listSentStatements(token) {
+  requireAdmin_(token);
+  const groups = {};
+  const order = [];
+  rows_('EmailLog').forEach(function (mail) {
+    if (mail.kind !== 'statement' && mail.kind !== 'statement_test') return;
+    const key = mail.recipient + ' ' + mail.subject + ' ' + mail.created_at;
+    if (!groups[key]) {
+      groups[key] = {
+        recipient: mail.recipient,
+        subject: mail.subject,
+        sentAt: mail.created_at,
+        status: mail.status,
+        testMode: mail.kind === 'statement_test',
+        jobIds: []
+      };
+      order.push(key);
+    }
+    groups[key].jobIds.push(mail.job_id);
+    // A batch either all sent, all held or all failed together; a failed
+    // row anywhere in it means the send itself failed.
+    if (mail.status === 'failed') groups[key].status = 'failed';
+  });
+
+  const sends = order.map(function (key) {
+    const group = groups[key];
+    const jobs = group.jobIds.map(function (id) { return jobRow_(id); }).filter(Boolean);
+    const first = jobs[0];
+    return {
+      customerEmail: first ? first.customer_email : String(group.recipient).split(' (cc')[0],
+      customerName: first ? first.customer_name : '',
+      sentAt: group.sentAt,
+      subject: group.subject,
+      status: group.status,
+      testMode: group.testMode,
+      invoices: jobs.map(function (job) {
+        const due = numberOrNull_(job.amount_due);
+        return { id: job.id, amountDue: due, stillOpen: isOpenJob_(job) && due !== null && due > 0 };
+      })
+    };
+  }).sort(function (a, b) { return String(b.sentAt).localeCompare(String(a.sentAt)); });
+
+  return { sends: sends };
 }
 
 function getJob(token, id) {
@@ -2613,7 +2712,7 @@ function noticeHtml_(parts) {
       '</td></tr></table>';
 }
 
-function logEmail_(jobId, kind, recipient, subject, status, error) {
+function logEmail_(jobId, kind, recipient, subject, status, error, at) {
   appendRow_('EmailLog', {
     id: newId_('mail'),
     job_id: jobId || '',
@@ -2622,7 +2721,7 @@ function logEmail_(jobId, kind, recipient, subject, status, error) {
     subject: subject,
     status: status,
     error: error ? String(error).substr(0, 400) : '',
-    created_at: nowIso_()
+    created_at: at || nowIso_()
   });
 }
 
@@ -2665,20 +2764,29 @@ function send_(options) {
  * message — a statement is one email about several invoices, and each job's
  * own mail log (what the job page reads to know what has gone out about it)
  * needs its own row to show it.
+ *
+ * Every one of those rows is stamped with the SAME timestamp, computed once
+ * here rather than left to logEmail_'s own default. Rows come from a loop
+ * over appendRow_ calls — real Sheets writes, not free — so two calls to
+ * nowIso_() a few of those apart can land in different seconds. The Sent
+ * statements list regroups these rows by (recipient, subject, created_at)
+ * with no table of its own to hold a batch id, and that only works if one
+ * send leaves one timestamp behind.
  */
 function sendStatement_(options) {
   const recipientLog = options.cc ? options.to + ' (cc ' + options.cc + ')' : options.to;
+  const at = nowIso_();
   try {
     deliverMail_(options);
     options.jobIds.forEach(function (jobId) {
       logEmail_(jobId, options.kind, recipientLog, options.subject,
         options.suppressed ? 'held (test mode)' : 'sent',
-        options.suppressed ? 'would have gone to ' + options.intendedFor : '');
+        options.suppressed ? 'would have gone to ' + options.intendedFor : '', at);
     });
     return true;
   } catch (err) {
     options.jobIds.forEach(function (jobId) {
-      logEmail_(jobId, options.kind, options.to, options.subject, 'failed', err);
+      logEmail_(jobId, options.kind, options.to, options.subject, 'failed', err, at);
     });
     return false;
   }
@@ -3155,8 +3263,13 @@ function statementPdf_(group) {
  * Never carries an individual job's payment_link. A statement can straddle
  * several jobs and no single one's link is right for all of them, so it
  * always points at the shop's own payment page instead.
+ *
+ * `followup` only changes the subject and the opening line — everything
+ * else about a follow-up is identical to a first statement, recomputed the
+ * same way and carrying the same attachments, because it is the same
+ * request said again, not a different email.
  */
-function sendCustomerStatementMail_(group) {
+function sendCustomerStatementMail_(group, followup) {
   const rehearsal = testMode_();
   const attachments = [statementPdf_(group)];
   let budget = MAIL_ATTACHMENT_BUDGET - attachments[0].getBytes().length;
@@ -3226,13 +3339,16 @@ function sendCustomerStatementMail_(group) {
     suppressed: rehearsal,
     intendedFor: group.customerEmail,
     subject: (rehearsal ? '[TEST ' + rehearsalStamp_() + '] ' : '') +
-      'A note about your account with ' + SHOP_NAME,
+      (followup ? 'Following up on your account with ' + SHOP_NAME : 'A note about your account with ' + SHOP_NAME),
     html: noticeHtml_({
       banner: banner,
       greeting: first,
-      intro: 'While going through our records, we noticed the invoice' + (plural ? 's' : '') + ' below ' +
-        (plural ? 'still show' : 'still shows') + ' an open balance, and wanted to check in — it is entirely ' +
-        'possible something slipped past us on our end.' + lineTable + totalBox +
+      intro: (followup
+        ? 'Just following up on the invoice' + (plural ? 's' : '') + ' below, which ' +
+          (plural ? 'still show' : 'still shows') + ' an open balance.'
+        : 'While going through our records, we noticed the invoice' + (plural ? 's' : '') + ' below ' +
+          (plural ? 'still show' : 'still shows') + ' an open balance, and wanted to check in — it is entirely ' +
+          'possible something slipped past us on our end.') + lineTable + totalBox +
         '<div style="' + MAIL_FONT + ';margin-top:14px">If you have already taken care of ' +
         (plural ? 'one or more of these' : 'this') + ', please let us know — it is possible we simply missed ' +
         'recording the payment, though that would be unusual on our part. If you have not had a chance yet, ' +
@@ -3263,7 +3379,7 @@ function sendCustomerStatementMail_(group) {
  * whatever the portal had on screen: a payment ticked in the last few
  * minutes must never go out on a statement anyway.
  */
-function sendCustomerStatement(token, customerEmail) {
+function sendCustomerStatement(token, customerEmail, followup) {
   requireAdmin_(token);
   const wanted = String(customerEmail || '').trim().toLowerCase();
   if (!wanted) throw new Error('No customer given.');
@@ -3272,7 +3388,7 @@ function sendCustomerStatement(token, customerEmail) {
     throw new Error('That customer has no open invoices right now — the list may be out of date. Refresh and try again.');
   }
   return {
-    emailed: sendCustomerStatementMail_(group),
+    emailed: sendCustomerStatementMail_(group, !!followup),
     testMode: testMode_(),
     sentTo: testMode_() ? testEmail_() : group.customerEmail,
     invoiceCount: group.invoices.length

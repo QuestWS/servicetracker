@@ -1746,15 +1746,34 @@ function propLine(prop, options) {
 
 /* --------------------------------------------------------- statements --- */
 
+const STATEMENT_TABS = [
+  ['suggested', 'Suggested'],
+  ['new', 'New statement'],
+  ['sent', 'Sent'],
+];
+
+function statementsTabBar(active) {
+  return `<div class="row tight" style="margin-bottom:16px">${STATEMENT_TABS.map(([value, label]) =>
+    `<a class="chip${active === value ? ' on' : ''}" href="?view=statements${value === 'suggested' ? '' : `&tab=${value}`}">${label}</a>`
+  ).join('')}</div>`;
+}
+
 async function renderStatements() {
   view.className = 'wrap';
+  const tab = params.get('tab') || 'suggested';
+  if (tab === 'new') return renderNewStatement();
+  if (tab === 'sent') return renderSentStatements();
+  return renderSuggestedStatements();
+}
+
+async function renderSuggestedStatements() {
   view.innerHTML = `<p class="loading">Loading open invoices…</p>`;
   const { customers, missingEmail, testMode: mode } = await api('listOpenStatements', []);
   showTestBanner(mode);
 
   const totalDue = customers.reduce((sum, c) => sum + c.totalDue, 0);
 
-  view.innerHTML = `
+  view.innerHTML = statementsTabBar('suggested') + `
     <h1 class="page-title">Statements</h1>
     <p class="lead">
       Customers with a finished job that still shows a balance. A statement bundles every open invoice
@@ -1797,12 +1816,12 @@ async function renderStatements() {
     $('notice').innerHTML = `<div class="banner warn">${esc(error.message)}</div>`;
   };
 
-  const sendOne = async (email, button) => {
+  const sendOne = async (email, button, followup) => {
     const original = button.textContent;
     button.disabled = true;
     button.textContent = 'Sending…';
     try {
-      const result = await api('sendCustomerStatement', [email]);
+      const result = await api('sendCustomerStatement', [email, !!followup]);
       toast(!result.emailed ? 'That statement did not send — check the log.'
         : result.testMode ? `Test mode: it went to ${result.sentTo}, not the customer.`
         : `Statement emailed to ${result.sentTo}.`);
@@ -1820,7 +1839,7 @@ async function renderStatements() {
   rows.forEach((button) => {
     button.onclick = async () => {
       if (!confirm(`Email a statement to ${button.dataset.send}?`)) return;
-      if (await sendOne(button.dataset.send, button)) renderStatements();
+      if (await sendOne(button.dataset.send, button)) renderSuggestedStatements();
     };
   });
 
@@ -1830,8 +1849,427 @@ async function renderStatements() {
     sendall.disabled = true;
     for (const button of rows) await sendOne(button.dataset.send, button);
     sendall.disabled = false;
-    renderStatements();
+    renderSuggestedStatements();
   };
+}
+
+/* ---------------------------------------------------- sent statements --- */
+
+async function renderSentStatements() {
+  view.innerHTML = `<p class="loading">Loading sent statements…</p>`;
+  const { sends } = await api('listSentStatements', []);
+
+  view.innerHTML = statementsTabBar('sent') + `
+    <h1 class="page-title">Statements</h1>
+    <p class="lead">Every statement that has gone out, newest first, with what each invoice on it still owes
+      right now — not what it owed the day it was sent.</p>
+    <div id="notice"></div>
+    ${sends.length ? `<div class="joblist">${sends.map((s, i) => `
+      <div class="jobrow" style="cursor:default;align-items:flex-start">
+        <div class="grow">
+          <div class="who">${esc(s.customerName || s.customerEmail)}</div>
+          <div class="sub">${esc(s.customerEmail)}</div>
+          <div class="sub" style="margin-top:4px">${s.invoices.map((inv) =>
+            `${esc(inv.id)} (${formatMoney(inv.amountDue)}${inv.stillOpen ? '' : ' — settled'})`).join(', ')}</div>
+          <div class="sub" style="margin-top:4px">
+            Sent ${formatDateTime(s.sentAt)}${s.testMode ? ' — test mode' : ''}${s.status === 'failed' ? ' — failed to send' : ''}
+          </div>
+        </div>
+        <div class="row tight jobmeta">
+          <button class="btn ghost sm" type="button" data-followup="${esc(s.customerEmail)}" data-idx="${i}">
+            Send follow-up
+          </button>
+        </div>
+      </div>`).join('')}</div>`
+      : `<div class="empty">No statements have been sent yet.</div>`}`;
+
+  const fail = (error) => { $('notice').innerHTML = `<div class="banner warn">${esc(error.message)}</div>`; };
+
+  view.querySelectorAll('[data-followup]').forEach((button) => {
+    button.onclick = async () => {
+      const email = button.dataset.followup;
+      if (!confirm(`Send a follow-up statement to ${email}?`)) return;
+      const original = button.textContent;
+      button.disabled = true;
+      button.textContent = 'Sending…';
+      try {
+        const result = await api('sendCustomerStatement', [email, true]);
+        toast(!result.emailed ? 'That follow-up did not send — check the log.'
+          : result.testMode ? `Test mode: it went to ${result.sentTo}, not the customer.`
+          : `Follow-up emailed to ${result.sentTo}.`);
+        renderSentStatements();
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = original;
+        fail(/no open invoices/.test(error.message)
+          ? new Error('Nothing left to follow up on — every invoice on this statement is settled.')
+          : error);
+      }
+    };
+  });
+}
+
+/* ----------------------------------------------------- new statement --- */
+
+/**
+ * A statement built by hand from uploaded invoice PDFs, for a customer whose
+ * open invoices predate this tracker. Held in one draft object across the
+ * whole wizard rather than in the DOM, the same way `intake` holds one job
+ * being created — nothing is written to the backend until "Send statement".
+ */
+let statementDraft = null;
+
+function newStatementDraft() {
+  return {
+    stage: 'draft', // 'draft' | 'sending' | 'done'
+    reviewing: false,
+    invoices: [],
+    customerName: '', customerPhone: '', customerEmail: '',
+    result: null,
+  };
+}
+
+/** Both the invoice number/balance and the customer contact block: a BiT
+ * invoice carries the same "Sold To:" header as the work order it came
+ * from, so the same parser reads both off it. */
+async function readStatementInvoice(file) {
+  if (file.type !== 'application/pdf') throw new Error('That does not look like a PDF.');
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const extracted = await extractPdf(bytes);
+  const info = parseWorkOrder(extracted);
+  const totals = parseInvoiceTotals(extracted);
+  return {
+    filename: file.name,
+    bytes,
+    invoiceNumber: info.invoiceNumber || '',
+    boatInfo: info.boatInfo || '',
+    customerName: info.customerName || '',
+    customerPhone: info.customerPhone || '',
+    customerEmail: info.customerEmail || '',
+    grandTotal: totals.grandTotal,
+    deposits: totals.deposits,
+    amountDue: totals.amountDue,
+  };
+}
+
+async function renderNewStatement() {
+  if (!statementDraft) statementDraft = newStatementDraft();
+  view.innerHTML = statementsTabBar('new') + `
+    <h1 class="page-title">Create new statement</h1>
+    <p class="lead">
+      For invoices from before this system — upload the BiT invoice PDFs for one customer's open balance.
+      Your browser reads the invoice number, balance and contact details off each one; nothing is created
+      until you review and send.
+    </p>
+    <section class="card" id="stmtcard"></section>`;
+  renderStatementStage();
+}
+
+/** Fills in only the fields nobody has chosen yet — a value the writer has
+ * already picked or typed is never overwritten by a later upload. */
+function initStatementCustomerFields() {
+  ['customerName', 'customerPhone', 'customerEmail'].forEach((field) => {
+    if (statementDraft[field]) return;
+    const found = statementDraft.invoices.map((inv) => inv[field]).find(Boolean);
+    if (found) statementDraft[field] = field === 'customerEmail' ? found.toLowerCase() : found;
+  });
+}
+
+function statementUploadHtml() {
+  const list = statementDraft.invoices;
+  return `<h2>Upload invoices</h2>
+    <p class="hint" style="margin-top:0">${statementDraft.reviewing
+      ? 'Drop another invoice PDF here to add it to this statement.'
+      : 'Upload every open invoice for one customer — one at a time or several together.'}</p>
+    <div class="dropzone" id="stmtdrop">
+      <b>Choose invoice PDF${statementDraft.reviewing ? '' : 's'}</b>
+      <span>or drop ${statementDraft.reviewing ? 'it' : 'them'} here</span>
+    </div>
+    <input type="file" id="stmtpdf" accept="application/pdf" multiple class="hidden">
+    <p class="msg" id="stmtreadmsg"></p>
+    ${!statementDraft.reviewing && list.length ? `<div class="stack" style="margin-top:12px">${list.map((inv) => `
+      <div class="kv">
+        <span class="k">${esc(inv.filename)}${inv.invoiceNumber ? ` — ${esc(inv.invoiceNumber)}` : ' — number not read'}</span>
+        <span class="row tight" style="gap:8px">
+          <b>${inv.amountDue === null ? 'balance not read' : formatMoney(inv.amountDue)}</b>
+          <button class="btn ghost sm" type="button" data-removeinv="${inv.key}">Remove</button>
+        </span>
+      </div>`).join('')}</div>
+      <button class="btn navy block" type="button" id="stmtreview" style="margin-top:14px">Review statement →</button>`
+      : ''}`;
+}
+
+function statementFieldOptions(field) {
+  const values = statementDraft.invoices.map((inv) => String(inv[field] || '').trim()).filter(Boolean);
+  return [...new Set(values)];
+}
+
+function customerFieldHtml(field, label, type) {
+  const options = statementFieldOptions(field);
+  const current = statementDraft[field];
+  const picker = options.length > 1 ? `
+    <div class="stack" style="margin:4px 0 8px">
+      ${options.map((opt) => `<label class="row tight" style="gap:6px;font-size:13.5px">
+        <input type="radio" name="${field}opt" value="${esc(opt)}" ${current === opt ? 'checked' : ''}> ${esc(opt)}
+      </label>`).join('')}
+    </div>
+    <p class="hint" style="margin:-2px 0 6px">These invoices don't agree — pick one, or type your own below.</p>`
+    : '';
+  return `<label class="fld" for="stmt${field}">${label}</label>
+    ${picker}
+    <input class="txt" id="stmt${field}" ${type ? `type="${type}"` : ''} value="${esc(current)}">`;
+}
+
+function statementInvoiceRow(inv) {
+  const missing = [];
+  if (!inv.invoiceNumber) missing.push('an invoice number');
+  if (inv.amountDue === null || inv.amountDue === undefined) missing.push('a balance');
+  return `<div class="card flat" style="margin-top:10px;background:#fafcfe">
+    <div class="row tight" style="justify-content:space-between;align-items:baseline">
+      <b style="font-size:13px;color:var(--muted)">${esc(inv.filename)}</b>
+      ${inv.status === 'created' ? `<span class="pill green">Created — ${esc(inv.jobId)}</span>`
+        : inv.status === 'creating' ? `<span class="pill frost">Creating…</span>`
+        : inv.status === 'failed' ? `<span class="pill red">Failed</span>`
+        : `<button class="btn ghost sm" type="button" data-removeinv="${inv.key}">Remove</button>`}
+    </div>
+    <div class="grid2" style="margin-top:8px">
+      <div>
+        <label class="fld" for="inv-number-${inv.key}">Invoice #</label>
+        <input class="txt mono" id="inv-number-${inv.key}" data-invfield="invoiceNumber" data-inv="${inv.key}"
+          value="${esc(inv.invoiceNumber)}" ${inv.status === 'created' ? 'disabled' : ''}>
+      </div>
+      <div>
+        <label class="fld" for="inv-amount-${inv.key}">Amount due</label>
+        <input class="txt mono" id="inv-amount-${inv.key}" data-invfield="amountDue" data-inv="${inv.key}"
+          inputmode="decimal" value="${inv.amountDue === null || inv.amountDue === undefined ? '' : inv.amountDue}"
+          ${inv.status === 'created' ? 'disabled' : ''}>
+      </div>
+    </div>
+    <label class="fld" for="inv-boat-${inv.key}">Boat / unit</label>
+    <input class="txt" id="inv-boat-${inv.key}" data-invfield="boatInfo" data-inv="${inv.key}"
+      value="${esc(inv.boatInfo)}" ${inv.status === 'created' ? 'disabled' : ''}>
+    ${missing.length && inv.status === 'ready' ? `<p class="hint" style="color:var(--warn)">
+      Could not read ${missing.join(' or ')} off this PDF — fill it in above.</p>` : ''}
+    ${inv.status === 'failed' ? `<p class="msg err">${esc(inv.error)}</p>` : ''}
+  </div>`;
+}
+
+function statementReviewHtml() {
+  return `<h2 style="margin-top:20px">Review before sending</h2>
+    <p class="hint" style="margin-top:0">Nothing is created until you send. Check what came off each invoice
+      and fix anything that reads wrong.</p>
+    ${customerFieldHtml('customerName', 'Customer name')}
+    ${customerFieldHtml('customerPhone', 'Phone', 'tel')}
+    ${customerFieldHtml('customerEmail', 'Email — this is where the statement goes', 'email')}
+    <div>${statementDraft.invoices.map(statementInvoiceRow).join('')}</div>
+    <button class="btn gold block" type="button" id="stmtsend" style="margin-top:16px">Send statement</button>
+    <p class="msg" id="stmtsendmsg"></p>`;
+}
+
+function statementSendingHtml() {
+  return `<h2>Creating and sending…</h2>
+    <div class="stack">${statementDraft.invoices.map((inv) => `
+      <div class="kv">
+        <span class="k">${esc(inv.invoiceNumber || inv.filename)}</span>
+        <b>${{ ready: 'Queued', creating: 'Creating…', created: 'Created', failed: 'Failed' }[inv.status] || inv.status}</b>
+      </div>`).join('')}</div>`;
+}
+
+function statementDoneHtml() {
+  const created = statementDraft.invoices.filter((inv) => inv.status === 'created');
+  const failed = statementDraft.invoices.filter((inv) => inv.status === 'failed');
+  const { result } = statementDraft;
+  return `<h2>${esc(statementDraft.customerName || statementDraft.customerEmail)}</h2>
+    <div class="banner ${result.sendError ? 'warn' : 'ok'}" style="margin:12px 0">
+      ${result.sendError
+        ? `${created.length} invoice${created.length === 1 ? '' : 's'} created, but the statement email did not
+           send: ${esc(result.sendError)} — open ${created.length === 1 ? 'it' : 'one of them'} from the jobs
+           list and send from there.`
+        : result.sendResult.testMode
+          ? `Test mode: the statement went to ${esc(result.sendResult.sentTo)}, not the customer — covering
+             ${result.sendResult.invoiceCount} open invoice${result.sendResult.invoiceCount === 1 ? '' : 's'}
+             for this customer.`
+          : `Statement emailed to ${esc(result.sendResult.sentTo)}, covering
+             ${result.sendResult.invoiceCount} open invoice${result.sendResult.invoiceCount === 1 ? '' : 's'}
+             for this customer.`}
+    </div>
+    ${failed.length ? `<div class="banner warn" style="margin-bottom:12px">
+      ${failed.length} invoice${failed.length === 1 ? '' : 's'} could not be created:
+      ${failed.map((inv) => `${esc(inv.invoiceNumber || inv.filename)} (${esc(inv.error)})`).join('; ')}.
+      Fix and create ${failed.length === 1 ? 'it' : 'them'} as a separate statement.</div>` : ''}
+    <div class="row">
+      <a class="btn ghost" href="?view=statements&tab=sent">View sent statements</a>
+      <button class="btn navy" type="button" id="stmtagain">Create another statement</button>
+    </div>`;
+}
+
+function renderStatementStage() {
+  const card = $('stmtcard');
+  if (statementDraft.stage === 'sending') { card.innerHTML = statementSendingHtml(); return; }
+  if (statementDraft.stage === 'done') {
+    card.innerHTML = statementDoneHtml();
+    $('stmtagain').onclick = () => { statementDraft = null; renderNewStatement(); };
+    return;
+  }
+
+  card.innerHTML = statementUploadHtml() + (statementDraft.reviewing ? statementReviewHtml() : '');
+  wireStatementUpload();
+  if (statementDraft.reviewing) wireStatementReview();
+}
+
+function newStatementInvoiceKey() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+async function addStatementFiles(files) {
+  const msg = $('stmtreadmsg');
+  for (const file of files) {
+    msg.className = 'msg';
+    msg.textContent = `Reading ${file.name}…`;
+    try {
+      const draft = await readStatementInvoice(file);
+      // Re-uploading the same invoice number replaces the earlier draft
+      // instead of duplicating the row.
+      const existing = draft.invoiceNumber
+        ? statementDraft.invoices.findIndex((inv) => inv.invoiceNumber === draft.invoiceNumber)
+        : -1;
+      const entry = { key: newStatementInvoiceKey(), status: 'ready', error: null, jobId: null, ...draft };
+      if (existing !== -1) statementDraft.invoices[existing] = entry;
+      else statementDraft.invoices.push(entry);
+    } catch (error) {
+      msg.className = 'msg err';
+      msg.textContent = `${file.name}: ${error.message}`;
+      renderStatementStage();
+      return;
+    }
+  }
+  msg.textContent = '';
+  if (statementDraft.reviewing) initStatementCustomerFields();
+  renderStatementStage();
+}
+
+function wireStatementUpload() {
+  const drop = $('stmtdrop');
+  const input = $('stmtpdf');
+  drop.onclick = () => input.click();
+  drop.ondragover = (event) => { event.preventDefault(); drop.classList.add('hot'); };
+  drop.ondragleave = () => drop.classList.remove('hot');
+  drop.ondrop = (event) => {
+    event.preventDefault();
+    drop.classList.remove('hot');
+    if (event.dataTransfer.files.length) addStatementFiles(Array.from(event.dataTransfer.files));
+  };
+  input.onchange = () => {
+    if (input.files.length) addStatementFiles(Array.from(input.files));
+    input.value = '';
+  };
+
+  view.querySelectorAll('[data-removeinv]').forEach((button) => {
+    button.onclick = () => {
+      statementDraft.invoices = statementDraft.invoices.filter((inv) => inv.key !== button.dataset.removeinv);
+      if (!statementDraft.invoices.length) statementDraft.reviewing = false;
+      renderStatementStage();
+    };
+  });
+
+  const reviewButton = $('stmtreview');
+  if (reviewButton) reviewButton.onclick = () => {
+    statementDraft.reviewing = true;
+    initStatementCustomerFields();
+    renderStatementStage();
+  };
+}
+
+function wireStatementReview() {
+  ['customerName', 'customerPhone', 'customerEmail'].forEach((field) => {
+    const box = $(`stmt${field}`);
+    box.oninput = () => { statementDraft[field] = box.value; };
+    view.querySelectorAll(`input[name="${field}opt"]`).forEach((radio) => {
+      radio.onchange = () => { statementDraft[field] = radio.value; box.value = radio.value; };
+    });
+  });
+
+  view.querySelectorAll('[data-invfield]').forEach((input) => {
+    input.oninput = () => {
+      const inv = statementDraft.invoices.find((i) => i.key === input.dataset.inv);
+      if (!inv) return;
+      const field = input.dataset.invfield;
+      inv[field] = field === 'amountDue' ? (input.value === '' ? null : Number(input.value)) : input.value;
+    };
+  });
+
+  $('stmtsend').onclick = sendStatementDraft;
+}
+
+async function sendStatementDraft() {
+  const msg = $('stmtsendmsg');
+  const email = statementDraft.customerEmail.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    msg.className = 'msg err';
+    msg.textContent = 'A valid customer email is required — it is where the statement goes.';
+    return;
+  }
+  const noNumber = statementDraft.invoices.find((inv) => !inv.invoiceNumber.trim());
+  if (noNumber) {
+    msg.className = 'msg err';
+    msg.textContent = `${noNumber.filename} has no invoice number — fill it in before sending.`;
+    return;
+  }
+  const badAmount = statementDraft.invoices.find((inv) => !(Number(inv.amountDue) > 0));
+  if (badAmount) {
+    msg.className = 'msg err';
+    msg.textContent = `${badAmount.invoiceNumber || badAmount.filename} needs a balance greater than zero.`;
+    return;
+  }
+  statementDraft.customerEmail = email;
+
+  statementDraft.stage = 'sending';
+  renderStatementStage();
+
+  for (const inv of statementDraft.invoices) {
+    if (inv.status === 'created') continue;
+    inv.status = 'creating';
+    renderStatementStage();
+    try {
+      const { job } = await api('backfillInvoice', [{
+        invoiceNumber: inv.invoiceNumber.trim().toUpperCase(),
+        customerName: statementDraft.customerName,
+        customerPhone: statementDraft.customerPhone,
+        customerEmail: email,
+        boatInfo: inv.boatInfo,
+        grandTotal: inv.grandTotal,
+        deposits: inv.deposits,
+        amountDue: inv.amountDue,
+        invoicePdf: bytesToBase64(inv.bytes),
+      }]);
+      inv.status = 'created';
+      inv.jobId = job.id;
+    } catch (error) {
+      inv.status = 'failed';
+      inv.error = error.message;
+    }
+    renderStatementStage();
+  }
+
+  const anyCreated = statementDraft.invoices.some((inv) => inv.status === 'created');
+  const anyFailed = statementDraft.invoices.some((inv) => inv.status === 'failed');
+
+  if (!anyCreated) {
+    statementDraft.stage = 'draft';
+    renderStatementStage();
+    const failMsg = $('stmtsendmsg');
+    failMsg.className = 'msg err';
+    failMsg.textContent = 'Nothing could be created — fix the invoice(s) above and try again.';
+    return;
+  }
+
+  try {
+    statementDraft.result = { sendResult: await api('sendCustomerStatement', [email]), anyFailed };
+  } catch (error) {
+    statementDraft.result = { sendError: error.message, anyFailed };
+  }
+  statementDraft.stage = 'done';
+  renderStatementStage();
 }
 
 async function renderProps() {

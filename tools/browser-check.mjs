@@ -1313,6 +1313,141 @@ check('and it survives changing which jobs are shown',
   await admin.inputValue('#sortby') === 'customer', await admin.inputValue('#sortby'));
 await admin.screenshot({ path: `${SHOTS}/61-jobs-by-customer.png`, fullPage: true });
 
+/* ------------------------------------------------------------- statements */
+console.log('\n== statements ==');
+// Two open invoices for one customer, seeded through the writer's own API —
+// this section is about the Statements page, not re-proving intake.
+const STMT_A = `01-${String(Math.floor(1000 + Math.random() * 8999))}`;
+const STMT_B = `01-${String(Math.floor(1000 + Math.random() * 8999))}`;
+const STMT_EMAIL = `casey.statement.${Date.now()}@example.com`;
+await admin.evaluate(async ({ base, a, b, email }) => {
+  const shop = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const post = (fn, args) => fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn, token: shop, args }),
+  }).then((res) => res.json());
+  for (const [id, amount] of [[a, 500], [b, 175.5]]) {
+    await post('createJob', [{ invoiceNumber: id, customerName: 'Casey Statement', customerEmail: email, boatInfo: '2018 Sea-Doo GTX' }]);
+    await post('saveInvoice', [id, '', 'JVBERi0=', { grandTotal: amount, deposits: 0, amountDue: amount }]);
+    await post('markDone', [id]);
+  }
+}, { base: BASE, a: STMT_A, b: STMT_B, email: STMT_EMAIL });
+
+await admin.goto(`${BASE}/admin/?view=statements`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.chip', { timeout: 20000 });
+const suggestedBody = await admin.evaluate(() => document.body.innerText);
+check('the tab bar offers Suggested, New statement and Sent',
+  /Suggested/.test(suggestedBody) && /New statement/.test(suggestedBody) && /Sent/.test(suggestedBody));
+check('the suggested list groups both open invoices under one customer, with the combined total',
+  suggestedBody.includes(STMT_A) && suggestedBody.includes(STMT_B) && /\$675\.50/.test(suggestedBody),
+  suggestedBody.slice(0, 400));
+await admin.screenshot({ path: `${SHOTS}/62-statements-suggested.png`, fullPage: true });
+
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click(`[data-send="${STMT_EMAIL}"]`);
+await admin.waitForFunction((email) => {
+  const button = document.querySelector(`[data-send="${email}"]`);
+  return button && button.textContent.trim() !== 'Sending…';
+}, STMT_EMAIL, { timeout: 20000 });
+
+const readSends = async () => admin.evaluate(async (base) => {
+  const shop = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const res = await fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn: 'listSentStatements', token: shop, args: [] }),
+  });
+  return (await res.json()).sends;
+}, BASE);
+const firstSend = (await readSends()).find((s) => s.customerEmail === STMT_EMAIL);
+check('sending a suggested statement covers every invoice it listed',
+  Boolean(firstSend) && firstSend.invoices.length === 2, JSON.stringify(firstSend));
+// A rehearsal subject carries a [TEST ...] timestamp prefix — this section
+// runs before "going live", so that prefix is expected here.
+check('the first send reads as a fresh notice, not a follow-up',
+  firstSend && /A note about your account with Quest Watersports$/.test(firstSend.subject), firstSend && firstSend.subject);
+
+await admin.goto(`${BASE}/admin/?view=statements&tab=sent`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.jobrow, .empty', { timeout: 20000 });
+const sentBody = await admin.evaluate(() => document.body.innerText);
+check('the Sent tab shows the statement that just went out',
+  sentBody.includes(STMT_EMAIL) && sentBody.includes(STMT_A) && sentBody.includes(STMT_B), sentBody.slice(0, 400));
+await admin.screenshot({ path: `${SHOTS}/63-statements-sent.png`, fullPage: true });
+
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click(`[data-followup="${STMT_EMAIL}"]`);
+await admin.waitForFunction((email) => {
+  const button = document.querySelector(`[data-followup="${email}"]`);
+  return button && button.textContent.trim() !== 'Sending…';
+}, STMT_EMAIL, { timeout: 20000 });
+const bothSends = (await readSends()).filter((s) => s.customerEmail === STMT_EMAIL);
+check('the Sent tab\'s follow-up button leaves both the original and the follow-up on record',
+  bothSends.length === 2, JSON.stringify(bothSends.map((s) => s.subject)));
+check('a follow-up reads as one, not a repeat of the first notice',
+  bothSends.some((s) => /Following up/.test(s.subject)), JSON.stringify(bothSends.map((s) => s.subject)));
+
+/* ------------------------------------------------- creating one by hand --- */
+// For an invoice that predates the tracker: upload the PDFs, let the browser
+// read what it can, and prove the review step can fix what it could not —
+// here, two invoices for the same customer that disagree on the email.
+const WIZ_A = `02-${String(Math.floor(1000 + Math.random() * 8999))}`;
+const WIZ_B = `02-${String(Math.floor(1000 + Math.random() * 8999))}`;
+const WIZ_UNIT = { year: '2017', make: 'Tracker', model: '175 TXW' };
+const WIZ_PDF_A = 'scratch/browser-check-stmt-a.pdf';
+const WIZ_PDF_B = 'scratch/browser-check-stmt-b.pdf';
+fs.writeFileSync(WIZ_PDF_A, await makeInvoicePdf({
+  invoice: WIZ_A,
+  workOrder: { name: 'RILEY CHASE', phone: '815-555-0111', email: 'riley.old@example.com', unit: WIZ_UNIT },
+  amountDue: 340.5, grandTotal: 340.5, deposits: 0,
+}));
+fs.writeFileSync(WIZ_PDF_B, await makeInvoicePdf({
+  invoice: WIZ_B,
+  workOrder: { name: 'RILEY CHASE', phone: '815-555-0111', email: 'riley@example.com', unit: WIZ_UNIT },
+  amountDue: 120, grandTotal: 120, deposits: 0,
+}));
+
+await admin.goto(`${BASE}/admin/?view=statements&tab=new`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('#stmtpdf', { state: 'attached', timeout: 20000 });
+await admin.setInputFiles('#stmtpdf', [WIZ_PDF_A, WIZ_PDF_B]);
+await admin.waitForFunction(() => document.querySelectorAll('#stmtcard .kv').length >= 2, null, { timeout: 20000 });
+const uploadedBody = await admin.evaluate(() => document.getElementById('stmtcard').innerText);
+check('reads both invoice numbers off the uploaded PDFs',
+  uploadedBody.includes(WIZ_A) && uploadedBody.includes(WIZ_B), uploadedBody.slice(0, 300));
+check('reads the balance off each one', /\$340\.50/.test(uploadedBody) && /\$120\.00/.test(uploadedBody));
+await admin.screenshot({ path: `${SHOTS}/70-statement-upload.png`, fullPage: true });
+
+await admin.click('#stmtreview');
+await admin.waitForSelector('#stmtsend', { timeout: 20000 });
+const reviewBody = await admin.evaluate(() => document.getElementById('stmtcard').innerText);
+check('flags that the uploaded invoices disagree on the customer email',
+  /don't agree/.test(reviewBody), reviewBody.slice(0, 400));
+check('offers both emails as options to pick between',
+  reviewBody.includes('riley.old@example.com') && reviewBody.includes('riley@example.com'));
+
+await admin.check('input[name="customerEmailopt"][value="riley@example.com"]');
+check('picking one fills the editable field with it',
+  (await admin.inputValue('#stmtcustomerEmail')) === 'riley@example.com');
+
+// The brief: something read wrong should be fixable right here.
+const amountFields = await admin.locator('[data-invfield="amountDue"]').all();
+await amountFields[1].fill('125');
+await admin.screenshot({ path: `${SHOTS}/71-statement-review.png`, fullPage: true });
+
+await admin.click('#stmtsend');
+await admin.waitForSelector('text=View sent statements', { timeout: 30000 });
+const doneBody = await admin.evaluate(() => document.getElementById('stmtcard').innerText);
+check('confirms the statement went out, covering both backfilled invoices', /covering 2 open invoice/.test(doneBody), doneBody);
+await admin.screenshot({ path: `${SHOTS}/72-statement-done.png`, fullPage: true });
+
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(WIZ_B)}`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.page-title', { timeout: 20000 });
+const backfilledBody = await admin.evaluate(() => document.body.innerText);
+check('the backfilled job lands in the system already done, with the edited balance',
+  /Done/.test(backfilledBody) && /125\.00/.test(backfilledBody), backfilledBody.slice(0, 300));
+check('and explains itself in the shop log, so a writer opening it later is not confused',
+  /predates the tracker/.test(backfilledBody));
+
 /* ------------------------------------------------------ the QR on the paper */
 console.log('\n== what a customer scanning the work order gets ==');
 // The QR stamped on every work order points at /t/, and that paper cannot be
