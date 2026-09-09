@@ -80,3 +80,15 @@ mirrors the parts list and differs in the two ways that matter.
   out all the way to done and asserts the customer page says nothing about it.
 - **A new tab needs `setup()` run once.** `sheet_` fails with "Run setup()." if
   it is missing, and the App setup page has the button.
+
+## Doing the work
+
+This skill is the reference for the area, and the job runs end to end: make
+the change the shop asked for, cover it with tests, and take it all the way
+out. **Do not stop at a working diff** — an unshipped change helps nobody on
+the floor.
+
+When it is done, follow **[the ship procedure](../../commands/ship.md)**:
+verify, browser-check if a page was touched, commit, push to the feature
+branch *and* `main`, deploy only if `service-tracker.gs` changed, then report —
+flagging clearly if `setup()` now has to be run.

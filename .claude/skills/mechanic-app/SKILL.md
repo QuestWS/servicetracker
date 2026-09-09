@@ -168,3 +168,15 @@ There is a watchdog behind the boot and an always-present way to throw the
 caches away, living outside the screen that redraws. The network wins over the
 cache, so a stale module planted by an old deploy cannot stop the app starting.
 `browser-check.mjs` plants one deliberately and asserts it still boots.
+
+## Doing the work
+
+This skill is the reference for the area, and the job runs end to end: make
+the change the shop asked for, cover it with tests, and take it all the way
+out. **Do not stop at a working diff** — an unshipped change helps nobody on
+the floor.
+
+When it is done, follow **[the ship procedure](../../commands/ship.md)**:
+verify, browser-check if a page was touched, commit, push to the feature
+branch *and* `main`, deploy only if `service-tracker.gs` changed, then report —
+flagging clearly if `setup()` now has to be run.

@@ -112,6 +112,11 @@ carries the reasoning, the traps, and how to test that area.
 | `deploy-setup` | deploying, `setup()`, the two switches, script properties, sign-in and the magic link, triggers, quotas |
 | `bit-forms` | the BiT PDF shape and the parsers in `assets/lib` |
 
+**When the change is done, run `/ship`** — verify, browser-check, commit, push
+to the feature branch *and* `main`, deploy only if the backend changed, and say
+whether `setup()` now has to be run. The skills point at it too, so naming an
+area is a whole job rather than a reading list.
+
 Longer-form documents, for when a skill points at one:
 
 - [docs/DEPLOY.md](docs/DEPLOY.md) — first-time setup and the deploy workflow
