@@ -233,19 +233,30 @@ export function loadBackend(options = {}) {
     },
     // Records what setup() actually schedules. A trigger nobody installs is
     // a feature that silently never runs.
+    //
+    // The list is readable and deletable, not just appendable, because a
+    // one-off `after()` trigger is how a request hands slow work to another
+    // execution: the backend checks whether one is already booked and clears
+    // it when the run happens, and neither can be tested against a stub that
+    // always answers "no triggers".
     ScriptApp: {
-      getProjectTriggers: () => [],
+      getProjectTriggers: () => triggers.map((spec) => spec.trigger),
       newTrigger: (handler) => {
         const spec = { handler };
+        spec.trigger = { getHandlerFunction: () => handler, _spec: spec };
         const timed = {
           everyHours: (n) => { spec.everyHours = n; return timed; },
           atHour: (n) => { spec.atHour = n; return timed; },
           everyDays: (n) => { spec.everyDays = n; return timed; },
+          after: (ms) => { spec.after = ms; return timed; },
           create: () => { triggers.push(spec); },
         };
         return { timeBased: () => timed };
       },
-      deleteTrigger: () => {},
+      deleteTrigger: (trigger) => {
+        const at = triggers.indexOf(trigger && trigger._spec);
+        if (at >= 0) triggers.splice(at, 1);
+      },
     },
     ContentService: {
       MimeType: { JSON: 'JSON' },

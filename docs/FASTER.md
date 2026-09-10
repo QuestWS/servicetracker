@@ -135,6 +135,39 @@ dozen calls. If the round trip is four seconds and the sheet's share is half a
 second, the remaining work is not in this file — it is the decision about
 Apps Script.
 
+## The one that was not about reading at all (10 Sep 2026)
+
+The shop reported a save on one job taking **minutes** — long enough to walk
+to a desk, sit down and type the complaint out while it was still going. None
+of the numbers above explain that, and chasing them would not have found it.
+
+`addEntry` was calling `submitTranscript_` in the request. That is a Drive read
+pulling the whole recording back out, then two uploads of those bytes to
+AssemblyAI — all after the row was already safely written, and all while the
+phone held the connection open waiting to be told the entry had saved.
+
+It had been moved out of the script lock in the pass above, which was right and
+fixed a real problem: one mechanic's voice note no longer held up everybody
+else's save. The reasoning then stopped one step short. **Outside the lock is
+still inside the request.** Apps Script has no way to start work and answer
+before it finishes, so `submitTranscript_`'s own docstring — "returns
+immediately, the mechanic never waits on it" — described something the code
+could not do. Every voice note paid for it, and how much depended entirely on
+the wifi and on AssemblyAI's mood.
+
+It now books a one-off `after()` trigger and returns. The upload happens
+seconds later in an execution nobody is waiting on. `sweepTranscripts_` picks
+up anything whose trigger never ran — pending with no transcript id is the
+queue — so a lost trigger costs an hour's delay rather than a lost recording.
+
+Two things worth carrying forward:
+
+- **The lock is not the only thing that makes a caller wait.** Anything slow
+  between the row being written and the answer going back is paid by the
+  person who tapped save. Drive and any third party belong in a trigger.
+- **A comment claiming something is asynchronous is worth checking against
+  the language.** This one read as settled fact for a fortnight.
+
 ## Where it got to (27 Aug 2026)
 
 Steps 1, 2 and most of 3 are done. Measured the same way, 400 jobs / 3,200

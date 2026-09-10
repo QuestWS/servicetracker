@@ -35,6 +35,10 @@
     <a href="./" class="topname" style="text-decoration:none;color:#fff"><div class="t">Quest Shop</div></a>
     <button type="button" id="navhome" class="navbtn">Home</button>
   </div>
+  <!-- Outside #view, like the nav above it, and directly under the two
+       buttons that leave the job: a mechanic who taps Back mid-save is
+       looking at this exact spot when it tells them to wait. -->
+  <div id="saving" class="saving" role="status" aria-live="polite" hidden></div>
   <main id="view"><p class="loading" style="color:#9fc3dc">Starting up…</p></main>
   <!-- Sits outside #view on purpose: every screen redraws that, and the one
        time this is needed most is the time a screen did not draw. A phone
@@ -100,8 +104,11 @@ import { $, esc, toast, formatDateTime, fileToBase64, preparePhoto, driveImageUr
 // The module evaluated, so the watchdog above has nothing to recover from.
 window.__questBooted = true;
 
-$('navback').onclick = () => { if (state.back) state.back(); };
-$('navhome').onclick = () => { state.job = null; state.jobFrom = null; renderHome(); };
+$('navback').onclick = () => { if (state.back && mayLeave()) state.back(); };
+$('navhome').onclick = () => {
+  if (!mayLeave()) return;
+  state.job = null; state.jobFrom = null; renderHome();
+};
 
 /**
  * The last call's timing, in the footer where it is out of the way.
@@ -1530,9 +1537,78 @@ async function saveEntry() {
  * tabs are in.
  */
 let sendChain = Promise.resolve();
+let sending = 0;
+let leaveArmedUntil = 0;
+
 function queueSend(run) {
-  sendChain = sendChain.then(run).catch(() => {});
+  sending += 1;
+  drawSaving();
+  sendChain = sendChain.then(run).catch(() => {}).then(() => {
+    sending -= 1;
+    drawSaving();
+  });
 }
+
+/**
+ * How many saves are still in the air, and the band at the top that says so.
+ *
+ * Every save on this screen — entries and props both — is queued through
+ * queueSend, so counting there covers all of them and cannot drift out of
+ * step with what is actually outstanding.
+ *
+ * The band is deliberately not a modal. A save the mechanic has to watch is
+ * the thing this app was built not to have; what they needed was to be able
+ * to SEE one still going, so that walking off or closing the app is a choice
+ * rather than an accident. Nothing here is ever queued past the app closing.
+ */
+function drawSaving() {
+  const band = $('saving');
+  if (!band) return;
+  if (!sending) {
+    band.hidden = true;
+    band.classList.remove('holding');
+    leaveArmedUntil = 0;
+    return;
+  }
+  const holding = Date.now() < leaveArmedUntil;
+  band.hidden = false;
+  band.classList.toggle('holding', holding);
+  band.innerHTML = `<span class="spinner"></span><span>${
+    holding
+      ? 'Still saving — tap again to leave anyway.'
+      : `Saving${sending > 1 ? ` ${sending} entries` : ''}… keep the app open.`
+  }</span>`;
+}
+
+/**
+ * Back and Home, with a save still going, take two taps.
+ *
+ * The first one arms and says why, in the band directly beneath the button
+ * that was just tapped — a warning rendered anywhere else on this screen is
+ * a warning the mechanic scrolls past without seeing. The second goes.
+ * Leaving the job screen does not itself abandon a save, but it takes away
+ * the only place a failed one can be retried, and the tap after it is
+ * usually the one that closes the app.
+ */
+function mayLeave() {
+  if (!sending) return true;
+  if (Date.now() < leaveArmedUntil) return true;
+  leaveArmedUntil = Date.now() + 5000;
+  drawSaving();
+  // And as a toast as well, for a thumb already halfway down the screen.
+  toast('Still saving. Tap again to leave anyway.');
+  setTimeout(drawSaving, 5100);
+  return false;
+}
+
+// The one case that genuinely loses a note: the app closed with a save in
+// the air. The phone's own "leave site?" prompt is the only thing that can
+// stand in front of that.
+window.addEventListener('beforeunload', (event) => {
+  if (!sending) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
 
 async function sendEntry(pending) {
   try {
@@ -1563,7 +1639,9 @@ function retryEntry(pending) {
   pending.saveState = 'saving';
   pending.saveError = '';
   drawFeed();
-  sendEntry(pending);
+  // Through the queue, so a retry counts in the band at the top like any
+  // other save — it is the one most worth not walking away from.
+  queueSend(() => sendEntry(pending));
 }
 
 /**

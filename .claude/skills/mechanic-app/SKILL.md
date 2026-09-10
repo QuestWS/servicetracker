@@ -67,6 +67,19 @@ the time, the empty note — without a round trip. The backend is still the
 authority and still checks; this is the same short list said instantly, and it
 is what keeps the optimistic entry honest.
 
+**A save still in the air is said in a band at the top of the screen** — the
+spinner, and how many. It is not a modal and never blocks the form: making the
+mechanic wait is the thing this whole path exists to avoid. What it prevents is
+the other half of that bargain — walking off, or closing the app, without
+knowing anything was still going. `sending` is counted in `queueSend`, which
+every save on this screen goes through, so it cannot drift from what is
+actually outstanding.
+
+**Back and Home take two taps while one is in the air.** The first arms and
+says so in the band, which sits directly beneath both buttons — the rule about
+where a warning renders relative to its control, applied. `beforeunload` covers
+the case that actually loses a note: the app closed mid-save.
+
 ## No confirmation dialogs on this screen
 
 **Work finished takes one tap.** There used to be a "Mark finished? Yes / Not

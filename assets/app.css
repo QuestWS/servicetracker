@@ -632,6 +632,37 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
 @media (max-width: 340px) {
   .mech .mech-top .topname { display: none; }
 }
+/* A save in flight, said where nobody can miss it.
+   Sticky rather than fixed: it holds under the header while the mechanic
+   scrolls the log, and takes no room from the form when there is nothing
+   saving. It never covers the page or blocks a tap — the whole point of an
+   optimistic save is that the next entry can be typed while this one goes. */
+.mech .saving {
+  position: sticky;
+  top: 0;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 11px 16px;
+  background: var(--frost-soft);
+  color: var(--navy);
+  font-size: 14.5px;
+  font-weight: 600;
+  border-bottom: 1px solid #b6ccdd;
+}
+.mech .saving[hidden] { display: none; }
+.mech .saving .spinner { border-color: #b6ccdd; border-top-color: var(--navy); flex: none; }
+/* Tapped Back or Home with a save still going. Same information, turned up:
+   the answer to "why did nothing happen" has to be at the button. */
+.mech .saving.holding {
+  background: var(--alert);
+  color: #fff;
+  border-bottom-color: var(--alert);
+}
+.mech .saving.holding .spinner { border-color: rgba(255, 255, 255, 0.4); border-top-color: #fff; }
+
 .mech main { flex: 1; padding: 16px; max-width: 680px; width: 100%; margin: 0 auto; }
 .mech .card { background: #fff; color: var(--ink); }
 .mech a { color: #9fc3dc; }

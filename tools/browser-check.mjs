@@ -505,7 +505,26 @@ check('the entry is in the log before the backend has answered',
 check('and the form is already clear for the next one',
   (await mech.inputValue('#text')) === '' && (await mech.inputValue('#part')) === '',
   `${await mech.inputValue('#text')} / ${await mech.inputValue('#part')}`);
+
+// A save in flight says so at the top, where a mechanic about to walk off
+// with the job half-written can see it.
+check('a save in flight is said at the top of the screen',
+  await mech.isVisible('#saving') && /Saving/.test(await mech.textContent('#saving')),
+  await mech.textContent('#saving'));
+check('and it does not block the next entry being typed',
+  await mech.isEditable('#text'));
+// Tapping Back mid-save holds, and says why in the band directly under the
+// button that was just tapped rather than somewhere further down the screen.
+await mech.click('#navback');
+check('tapping Back mid-save does not leave the job',
+  await mech.locator('#save').count() === 1);
+check('and the band says another tap will',
+  /tap again/i.test(await mech.textContent('#saving')), await mech.textContent('#saving'));
+check('and turns itself up to say it',
+  await mech.locator('#saving.holding').count() === 1);
+
 await settled();
+check('the band goes when the last save lands', !(await mech.isVisible('#saving')));
 check('and it settles into a real entry when the answer lands',
   (await mech.textContent('.feed')).includes('SLOW-1')
   && await mech.locator('.entry.failed').count() === 0);
@@ -652,8 +671,28 @@ check('and the button is gone once everything is there',
 check('with what was already on screen kept, not duplicated',
   (await mech.textContent('.feed')).split('Logged without reading the log first.').length === 2);
 
+// The second tap goes. The guard makes leaving mid-save a decision, not an
+// impossibility — and the band follows the mechanic off the job screen,
+// because it lives outside the part of the page that redraws.
+await mech.route('**/exec', async (route) => {
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await route.continue();
+});
+await mech.fill('#minutes', '5');
+await mech.fill('#text', 'Walked off with this one still going.');
+await mech.click('#save');
+await mech.waitForSelector('#saving', { state: 'visible', timeout: 10000 });
+await mech.click('#navback');
+await mech.click('#navback');
+await mech.waitForSelector('#scan', { timeout: 20000 });
+check('a second tap does leave, mid-save', true);
+check('and the band comes with them off the job screen',
+  await mech.isVisible('#saving'), await mech.textContent('#saving'));
+await mech.waitForSelector('#saving', { state: 'hidden', timeout: 20000 });
+check('then clears when the save it was holding lands', true);
+await mech.unroute('**/exec');
+
 // And a stock request with no job behind it.
-await mech.click('a:has-text("Scan another work order")');
 await mech.waitForSelector('#reqpart');
 await mech.click('#reqpart');
 await mech.waitForSelector('#pdesc');

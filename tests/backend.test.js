@@ -2000,7 +2000,9 @@ describe('a voice note coming back with its words', () => {
     const mech = back.fn('mechanicSignIn', 'Dale', true).token;
     back.fn('addEntry', mech, jobToken,
       options.entry || { entryType: 'labor', hours: 0.25, audio: 'YXVkaW8=' });
-    return { back, admin };
+    // What the booked trigger does a few seconds later, out of the request.
+    if (!options.leaveQueued) back.fn('processTranscriptQueue');
+    return { back, admin, mech, jobToken };
   }
 
   it('submits the recording and waits, rather than making the mechanic wait', () => {
@@ -2008,6 +2010,49 @@ describe('a voice note coming back with its words', () => {
     const entry = back.fn('getJob', admin, '01-8891').entries[0];
     expect(entry.transcriptStatus).toBe('pending');
     expect(back.fetched.some((f) => f.url.endsWith('/v2/upload'))).toBe(true);
+  });
+
+  it('sends nothing over the wire while the mechanic is waiting on the save', () => {
+    // The whole recording has to be read back out of Drive and pushed to a
+    // third party twice. Doing that in the request is minutes of a mechanic
+    // standing at a boat watching a spinner, for work whose answer arrives
+    // by webhook long after the save is done. The row goes down pending and
+    // a trigger takes it from there.
+    const { back } = assemblyBackend({ leaveQueued: true });
+    expect(back.fetched.filter((f) => f.url.includes('assemblyai'))).toEqual([]);
+    expect(back.triggers.some((t) => t.handler === 'processTranscriptQueue')).toBe(true);
+  });
+
+  it('books one run for two recordings, not one each', () => {
+    // Trigger quota is small and shared with the housekeeping ones. Two
+    // mechanics recording at once want one run that picks up both rows.
+    const { back, mech, jobToken } = assemblyBackend({ leaveQueued: true });
+    back.fn('addEntry', mech, jobToken, { entryType: 'internal_note', audio: 'YXVkaW8=' });
+    expect(back.triggers.filter((t) => t.handler === 'processTranscriptQueue')).toHaveLength(1);
+
+    back.fn('processTranscriptQueue');
+    expect(back.fetched.filter((f) => f.url.endsWith('/v2/upload'))).toHaveLength(2);
+    // And it clears up after itself, so the next recording books a fresh one.
+    expect(back.triggers.some((t) => t.handler === 'processTranscriptQueue')).toBe(false);
+  });
+
+  it('picks up a recording whose trigger never ran, in the hourly sweep', () => {
+    // A queued run can be lost — a deploy, a trigger that would not install,
+    // an execution Google dropped. Without this the entry has no transcript
+    // id to poll and sits on "transcribing…" forever.
+    const { back, admin } = assemblyBackend({ leaveQueued: true });
+    back.fn('sweepTranscripts_');
+    expect(back.fetched.some((f) => f.url.endsWith('/v2/upload'))).toBe(true);
+    // Submitted and then polled in the one pass, so a recording the queue
+    // lost is not left waiting another hour for its words.
+    expect(back.fn('getJob', admin, '01-8891').entries[0].transcript)
+      .toBe('Impeller was shot, swapped it out.');
+  });
+
+  it('does not hand the same recording up twice', () => {
+    const { back } = assemblyBackend();
+    back.fn('processTranscriptQueue');
+    expect(back.fetched.filter((f) => f.url.endsWith('/v2/upload'))).toHaveLength(1);
   });
 
   it('tells AssemblyAI where to call back', () => {

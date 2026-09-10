@@ -1614,15 +1614,25 @@ function addEntry(token, jobToken, payload) {
     };
   });
 
-  // Sending the audio to AssemblyAI means a Drive read and two calls over
-  // the wire. Doing it inside the lock held every other mechanic on the
-  // shop floor behind one person's voice note; doing it before answering
-  // made them all wait to be told their note had saved. The row is already
-  // written and marked pending — the hourly sweep would pick it up even if
-  // this fell over.
+  // Sending the audio to AssemblyAI means reading the whole recording back
+  // out of Drive and pushing those bytes over the wire twice. That cannot
+  // happen anywhere in this request.
+  //
+  // It used to be a plain call right here, on the reasoning that being
+  // outside the lock meant nobody waited on it. Outside the lock only means
+  // the REST of the floor is not waiting: this execution is what the phone
+  // is holding a connection open for, and Apps Script has no way to leave a
+  // call running after the answer goes back. So the mechanic who recorded
+  // the note stood and watched a Drive read and two uploads to a third party
+  // — minutes of it, when the shop's wifi or AssemblyAI was having a bad
+  // afternoon — after the entry was already safely in the sheet.
+  //
+  // The row is written and marked pending, which is all the phone needs.
+  // Handing off to a trigger puts the upload in its own execution, seconds
+  // later, where slow costs nobody anything.
   const queued = saved.transcribe;
   delete saved.transcribe;
-  if (queued) submitTranscript_(queued.entryId, queued.audioFile);
+  if (queued) queueTranscriptRun_();
   return saved;
 }
 
@@ -3815,9 +3825,12 @@ function webhookUrl_() {
 }
 
 /**
- * Hands the recording to AssemblyAI and returns immediately - the mechanic
- * never waits on it. The audio stays in Drive either way; the words are
- * filled in underneath the entry when the webhook comes back.
+ * Hands one recording to AssemblyAI. Slow by nature — a Drive read of the
+ * whole file and two uploads — so it must only ever run from a trigger,
+ * never from a request a mechanic is waiting on. See queueTranscriptRun_.
+ *
+ * The audio stays in Drive either way; the words are filled in underneath
+ * the entry when the webhook comes back.
  */
 function submitTranscript_(entryId, audioFileId) {
   const key = assemblyKey_();
@@ -3853,6 +3866,62 @@ function submitTranscript_(entryId, audioFileId) {
   } catch (err) {
     markTranscript_(entryId, 'failed', '', err);
   }
+}
+
+/**
+ * Books a run of the transcript queue a few seconds out.
+ *
+ * A one-off time trigger is the only way an Apps Script request can start
+ * work it does not then wait for: the handler runs in its own execution,
+ * after this one has already answered the phone.
+ *
+ * One trigger is booked at a time. Two mechanics recording at once want one
+ * run that picks up both rows, not two runs and two entries against the
+ * trigger quota. If a save lands while a run is already reading, that entry
+ * can miss the run it booked — which is what the hourly sweep is for.
+ */
+function queueTranscriptRun_() {
+  try {
+    const pending = ScriptApp.getProjectTriggers().some(function (trigger) {
+      return trigger.getHandlerFunction() === 'processTranscriptQueue';
+    });
+    if (pending) return;
+    ScriptApp.newTrigger('processTranscriptQueue').timeBased().after(5000).create();
+  } catch (err) {
+    // Out of triggers, or the deployment cannot install one. The row is
+    // already marked pending, so the hourly sweep still gets there — late
+    // words beat a save that hangs.
+  }
+}
+
+/** The queued run. Installed by queueTranscriptRun_, and it clears up after itself. */
+function processTranscriptQueue() {
+  ScriptApp.getProjectTriggers().forEach(function (trigger) {
+    if (trigger.getHandlerFunction() === 'processTranscriptQueue') ScriptApp.deleteTrigger(trigger);
+  });
+  submitQueuedTranscripts_();
+}
+
+/**
+ * Every recording that has been stored but never handed to AssemblyAI.
+ *
+ * `pending` with no transcript id is the queue: addEntry writes the row that
+ * way and books a run. Nothing else distinguishes a recording waiting to go
+ * up from one already up and waiting to come back.
+ */
+function submitQueuedTranscripts_() {
+  if (!assemblyKey_()) return;
+  rows_('LogEntries')
+    .filter(function (entry) {
+      return entry.transcript_status === 'pending' && !entry.transcript_id && entry.audio_file;
+    })
+    .forEach(function (entry) {
+      try {
+        submitTranscript_(entry.id, entry.audio_file);
+      } catch (err) {
+        /* submitTranscript_ marks its own failures; the next run tries again. */
+      }
+    });
 }
 
 function markTranscript_(entryId, status, transcriptId, error) {
@@ -3927,9 +3996,13 @@ function transcriptWebhook_(params) {
 /**
  * Safety net for a webhook that never arrived - a deploy in the middle of a
  * transcription, or a delivery Google dropped. Runs alongside the digest.
+ *
+ * Also the net under the queue itself: a recording whose trigger never ran
+ * has no transcript id to poll, and would otherwise sit pending forever.
  */
 function sweepTranscripts_() {
   if (!assemblyKey_()) return;
+  submitQueuedTranscripts_();
   rows_('LogEntries')
     .filter(function (entry) { return entry.transcript_status === 'pending' && entry.transcript_id; })
     .forEach(function (entry) {

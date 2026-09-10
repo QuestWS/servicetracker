@@ -76,10 +76,17 @@ Other things already paid for, which will come back if undone:
 - `jobFolder_` is memoised, and the **folder** is link-shared once rather than
   every file inside it. Drive gives a file its parent's permissions;
   `setSharing` is slow and a photo stores two files.
-- The AssemblyAI submission happens **after** the lock is released and after
-  the row is written. It is a Drive read plus two calls over the wire; inside
-  the lock it held up every mechanic on the floor. The row is marked `pending`,
-  so the hourly sweep catches it if the submission fails.
+- The AssemblyAI submission happens in **its own execution**, booked by
+  `queueTranscriptRun_` and run by `processTranscriptQueue`. It is a Drive
+  read of the whole recording plus two uploads over the wire. It was moved
+  out of the lock first, which stopped it holding up the rest of the floor —
+  but *outside the lock is still inside the request*, and Apps Script cannot
+  leave a call running after the answer goes back, so the mechanic who made
+  the recording still stood and watched all three. On a bad afternoon that
+  was minutes, for work whose result arrives by webhook long afterwards
+  anyway. **Nothing slow may sit between the row being written and the
+  answer going back.** The row is marked `pending` with no transcript id,
+  which is the queue; `sweepTranscripts_` is the net under it.
 
 ## Derived totals
 
