@@ -101,6 +101,34 @@ function reviewUrl_() {
  * sentence is attached to the link that needs it rather than written into the
  * template for good.
  */
+/**
+ * The URL the review button actually carries: a hop through the shop's own
+ * /r/ page rather than the Google link itself.
+ *
+ * WHY, because this looks like pointless indirection and is not. Gmail
+ * rewrites every link it renders as google.com/url?q=..., and that redirector
+ * refuses to silently forward to a google.com destination — it shows the
+ * reader a "Redirect Notice" warning page first. Two different Google review
+ * URLs were tried in front of a real inbox and both hit it; the destination
+ * being on google.com IS the trigger, so no third Google URL fixes it.
+ *
+ * questws.github.io is not google.com, so Gmail forwards it silently, and the
+ * hop from that page to Google is an ordinary navigation nothing wraps.
+ *
+ * The query string is left off when the link is the built-in one, which is
+ * the normal case: /r/ already knows it, and a bare URL is what somebody
+ * reading the plain-text part of the email should see. An overridden link
+ * travels as ?u=, and /r/ checks it against the shapes a Google review box is
+ * served at before following it — an unchecked redirector on the shop's own
+ * domain is a phishing link with the shop's name on it.
+ */
+function reviewLinkUrl_() {
+  const url = reviewUrl_();
+  if (!url) return '';
+  if (url === GOOGLE_REVIEW_URL) return SITE_URL + '/r/';
+  return SITE_URL + '/r/?u=' + encodeURIComponent(url);
+}
+
 function directReviewLink_(url) {
   return /^https:\/\/(g\.page\/r\/|search\.google\.com\/local\/writereview)/i.test(String(url || ''));
 }
@@ -3391,7 +3419,11 @@ function paymentEmailContent_(job, options) {
   const paidTotal = money2_(options.paidTotal || 0);
   const balance = options.balance;
   const full = Boolean(options.paidInFull);
+  // Two different things: `review` is the Google link, and decides whether
+  // there is an ask at all and whether it needs explaining. `reviewHref` is
+  // what the button carries — see reviewLinkUrl_ for why they differ.
   const review = options.requestReview ? reviewUrl_() : '';
+  const reviewHref = review ? reviewLinkUrl_() : '';
   const note = String(options.note || '').trim();
   const linked = options.linked || [];
 
@@ -3509,7 +3541,7 @@ function paymentEmailContent_(job, options) {
         // is not reading a shorter version of somebody else's email.
         feedbackHtml_(),
       meta: 'INVOICE# ' + job.id + (job.boat_info ? ' · ' + job.boat_info : ''),
-      buttons: (review ? button_(review, 'Leave us a Google review', '#C08A22') : '') +
+      buttons: (review ? button_(reviewHref, 'Leave us a Google review', '#C08A22') : '') +
         // Never on a paid-in-full receipt, whatever link is on the job: a Pay
         // button under the words "nothing further owed" is how a customer
         // pays twice.
@@ -3532,7 +3564,7 @@ function paymentEmailContent_(job, options) {
       (options.attached && options.attached.length ? '\n\nAttached: ' + options.attached.join(', ') : '') +
       (linked.length ? '\n\nToo large to email, so here to download:\n' +
         linked.map(function (file) { return file.name + ': ' + driveViewUrl_(file.driveFile); }).join('\n') : '') +
-      (review ? '\n\nA short Google review helps other boaters find us: ' + review +
+      (review ? '\n\nA short Google review helps other boaters find us: ' + reviewHref +
         (directReviewLink_(review) ? '' : '\n(Tap "Write a review" on the listing that opens.)') : '') +
       '\n\n' + FEEDBACK_LINE +
       '\n\nInvoice ' + job.id + '\n' + SHOP_NAME,
@@ -4259,7 +4291,9 @@ function config(token) {
     // pasted, or the listing fallback it falls back to — and offer the
     // fallback back if somebody clears the field and changes their mind.
     reviewUrlDefault: GOOGLE_REVIEW_URL,
-    reviewUrlDirect: directReviewLink_(reviewUrl_())
+    reviewUrlDirect: directReviewLink_(reviewUrl_()),
+    // What the button in the email carries, which is not the link above.
+    reviewLinkUrl: reviewLinkUrl_()
   };
 }
 

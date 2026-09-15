@@ -30,7 +30,7 @@ done
 # and the page rendered nothing — found three minutes into a browser run
 # rather than in the second this takes.
 echo "== page scripts =="
-for f in index.html admin/index.html m/index.html t/index.html; do
+for f in index.html admin/index.html m/index.html t/index.html r/index.html; do
   [ -f "$f" ] || continue
   python3 - "$f" > /tmp/page.mjs <<'PY'
 import re, sys
@@ -45,6 +45,30 @@ PY
     bad "$f: $(head -2 /tmp/js.err | tr '\n' ' ')"
   fi
 done
+
+echo "== the review redirect =="
+# /r/ hops the review button through the shop's own domain, because Gmail
+# will not silently forward to a google.com destination — it shows the
+# reader a "Redirect Notice" first. The page's script is a plain <script>,
+# so the module extractor above never sees it, and a redirect that does not
+# parse is a dead review button in every receipt the shop sends.
+python3 - r/index.html > /tmp/redirect.js <<'RJS'
+import re, sys
+src = open(sys.argv[1]).read()
+print('\n;\n'.join(re.findall(r'<script>(.*?)</script>', src, re.S)))
+RJS
+if [ -s /tmp/redirect.js ] && node --check /tmp/redirect.js 2>/tmp/js.err; then
+  note "r/index.html redirect script parses"
+else
+  bad "r/index.html: $(head -2 /tmp/js.err | tr '\n' ' ')"
+fi
+grep -q "location.replace" r/index.html \
+  && note "and it actually redirects" || bad "r/index.html no longer redirects anywhere"
+# An unchecked ?u= on the shop's own domain is a phishing link wearing the
+# shop's name, and this page is reachable by anybody who can type a URL.
+grep -q "ALLOWED" r/index.html \
+  && note "and only follows a ?u= link it recognises" \
+  || bad "r/index.html follows ?u= unchecked — that is an open redirect"
 
 echo "== the customer boundary =="
 # The filter that keeps hours, parts, internal notes and mechanic names off

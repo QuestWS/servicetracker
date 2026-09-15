@@ -3171,7 +3171,9 @@ describe('the payment receipt email', () => {
 
     const id = invoiced(500);
     pay(id, { payments: [{ amount: 500, method: 'card' }], paidInFull: true, requestReview: true });
-    expect(backend.sentMail[0].opts.htmlBody).toContain('https://g.page/r/quest/review');
+    // Carried as a parameter on the shop's own /r/, never as a bare link.
+    expect(backend.sentMail[0].opts.htmlBody)
+      .toContain('/r/?u=' + encodeURIComponent('https://g.page/r/quest/review'));
     expect(backend.sentMail[0].opts.htmlBody).toContain('Leave us a Google review');
 
     backend.sentMail.length = 0;
@@ -3189,22 +3191,56 @@ describe('the payment receipt email', () => {
       payments: [{ amount: 500, method: 'card' }], paidInFull: true, requestReview: true,
     });
     expect(result.reviewRequested).toBe(true);
-    const html = backend.sentMail[0].opts.htmlBody;
-    expect(html).toContain('search.google.com/local/writereview?placeid=ChIJfXEeU5lUCYgRinSXcUIjYX0');
+    expect(backend.fn('config', adminToken).reviewUrl)
+      .toContain('search.google.com/local/writereview?placeid=ChIJfXEeU5lUCYgRinSXcUIjYX0');
     expect(backend.fn('config', adminToken).reviewUrlDirect).toBe(true);
     // Nothing to explain: the tap lands on the stars.
-    expect(html).not.toContain('Write a review');
+    expect(backend.sentMail[0].opts.htmlBody).not.toContain('Write a review');
   });
 
-  it('never ships a link that lands on Google search results', () => {
-    // A knowledge-panel link went out once and arrived badly. Gmail rewrites
-    // every link as google.com/url?q=..., and Google will not silently bounce
-    // that wrapper into its own search — so the customer met a "Redirect
-    // Notice" warning, then search results, then had to find the review
-    // button. Three steps to leave a review nobody leaves by then.
-    const shipped = backend.call('GOOGLE_REVIEW_URL');
-    expect(shipped).not.toMatch(/google\.com\/search/);
-    expect(backend.call('directReviewLink_(GOOGLE_REVIEW_URL)')).toBe(true);
+  /**
+   * THE RULE THIS FILE EXISTS TO HOLD, learned the expensive way.
+   *
+   * Gmail rewrites every link it renders as google.com/url?q=..., and that
+   * redirector will not silently forward to a google.com destination — it
+   * shows the reader a "Redirect Notice" warning page first. Two different
+   * Google review URLs went out to a real inbox and both hit it. The
+   * destination being on google.com IS the trigger, so there is no third
+   * Google URL that fixes it; the link in the mail has to be somewhere else.
+   */
+  it('puts no google.com link in the email at all', () => {
+    goLive();
+    const id = invoiced(500);
+    pay(id, { payments: [{ amount: 500, method: 'card' }], paidInFull: true, requestReview: true });
+
+    const mail = backend.sentMail[0];
+    const hrefs = (mail.opts.htmlBody.match(/href="[^"]*"/g) || []).join(' ');
+    expect(hrefs).not.toMatch(/google\.com/);
+    expect(mail.body).not.toMatch(/https:\/\/[^\s]*google\.com/);
+  });
+
+  it('sends the review button through the shop\'s own domain instead', () => {
+    goLive();
+    const id = invoiced(500);
+    pay(id, { payments: [{ amount: 500, method: 'card' }], paidInFull: true, requestReview: true });
+
+    const mail = backend.sentMail[0];
+    // Bare, with no query string: /r/ already knows the built-in link, and a
+    // readable URL is what belongs in the plain-text part.
+    expect(mail.opts.htmlBody).toContain('href="https://questws.github.io/servicetracker/r/"');
+    expect(mail.body).toContain('https://questws.github.io/servicetracker/r/');
+  });
+
+  it('carries an overridden link through as a checked parameter', () => {
+    goLive();
+    backend.fn('setReviewUrl', adminToken, 'https://g.page/r/quest/review');
+    const id = invoiced(500);
+    pay(id, { payments: [{ amount: 500, method: 'card' }], paidInFull: true, requestReview: true });
+
+    const html = backend.sentMail[0].opts.htmlBody;
+    expect(html).toContain('/r/?u=' + encodeURIComponent('https://g.page/r/quest/review'));
+    // Still not a google.com link in the message.
+    expect((html.match(/href="[^"]*"/g) || []).join(' ')).not.toMatch(/google\.com/);
   });
 
   it('takes a g.page link as equally direct', () => {
@@ -3213,10 +3249,9 @@ describe('the payment receipt email', () => {
     const id = invoiced(500);
     pay(id, { payments: [{ amount: 500, method: 'card' }], paidInFull: true, requestReview: true });
 
-    const html = backend.sentMail[0].opts.htmlBody;
-    expect(html).toContain('https://g.page/r/quest/review');
-    expect(html).not.toContain('writereview');
-    expect(html).not.toContain('Write a review');
+    // Direct, so nothing to explain — even though it still travels via /r/.
+    expect(backend.fn('config', adminToken).reviewUrlDirect).toBe(true);
+    expect(backend.sentMail[0].opts.htmlBody).not.toContain('Write a review');
   });
 
   it('tells the customer where to look when the link only opens a page', () => {
@@ -3230,6 +3265,12 @@ describe('the payment receipt email', () => {
     pay(id, { payments: [{ amount: 500, method: 'card' }], paidInFull: true, requestReview: true });
     expect(backend.sentMail[0].opts.htmlBody).toContain('Write a review');
     expect(backend.sentMail[0].body).toContain('Tap "Write a review"');
+    // And even THAT one travels via /r/. The parameter names google.com,
+    // which is fine — what Gmail balks at is a link whose DESTINATION is
+    // google.com, and every href here still points at the shop's own domain.
+    (backend.sentMail[0].opts.htmlBody.match(/href="([^"]*)"/g) || []).forEach((href) => {
+      expect(href).toMatch(/href="https:\/\/(questws\.github\.io|pos\.example\.com|pay\.)/);
+    });
   });
 
   it('asks for nothing at all once the link is deliberately cleared', () => {
@@ -3246,7 +3287,7 @@ describe('the payment receipt email', () => {
     });
     expect(result.reviewRequested).toBe(false);
     expect(backend.sentMail[0].opts.htmlBody).not.toContain('Google review');
-    expect(backend.sentMail[0].opts.htmlBody).not.toContain('writereview');
+    expect(backend.sentMail[0].opts.htmlBody).not.toContain('/r/');
   });
 
   it('refuses a review link that is not a real https link', () => {
@@ -3364,7 +3405,7 @@ describe('the payment receipt email', () => {
     sized.forEach((tag) => expect(tag).toMatch(/font-family:/));
 
     // The review ask is a table too, for the same reason every other button is.
-    expect(html).toMatch(/<td[^>]*bgcolor="#C08A22"[^>]*>\s*<a href="https:\/\/g\.page/);
+    expect(html).toMatch(/<td[^>]*bgcolor="#C08A22"[^>]*>\s*<a href="https:\/\/questws\.github\.io\/servicetracker\/r\//);
   });
 
   it('never calls what came through the shop a boat', () => {

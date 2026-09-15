@@ -1799,6 +1799,54 @@ await admin.waitForFunction(() => /the ask is switched off/i.test(document.body.
 check('clearing it turns the ask off rather than falling back',
   /the ask is switched off/i.test(await admin.evaluate(() => document.body.innerText)));
 
+/* ------------------------------------------------- the review doorway ---- */
+// /r/ exists because Gmail will not silently forward to a google.com
+// destination — it shows the reader a "Redirect Notice" warning page first.
+// Two Google review URLs were tried in a real inbox and both hit it, so the
+// link in the mail now points here instead. This drives the real page.
+{
+  const hop = await shopContext();
+  const page = await hop.newPage();
+  const attempted = [];
+  // Nothing here should actually reach Google, and a sandbox cannot anyway.
+  //
+  // Matched on HOSTNAME, not on the URL as a string. The ?u= cases below put
+  // "g.page" inside the query of a localhost URL, and a substring pattern
+  // aborts the page load itself — so the page never runs, never redirects,
+  // and the check fails looking like the redirect is broken.
+  const OFFSITE = ['search.google.com', 'g.page', 'evil.example.com'];
+  await page.route((url) => OFFSITE.indexOf(url.hostname) !== -1, (route) => {
+    attempted.push(route.request().url());
+    route.abort();
+  });
+
+  await page.goto(`${BASE}/r/`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await page.waitForTimeout(400);
+  check('/r/ sends a visitor to the shop review box',
+    attempted.some((url) => url.includes('search.google.com/local/writereview?placeid=ChIJfXEeU5lUCYgRinSXcUIjYX0')),
+    attempted.join(', '));
+
+  attempted.length = 0;
+  const override = 'https://g.page/r/questbrowsercheck/review';
+  await page.goto(`${BASE}/r/?u=${encodeURIComponent(override)}`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await page.waitForTimeout(400);
+  check('and follows a review link handed to it on ?u=',
+    attempted.some((url) => url.startsWith(override)), attempted.join(', '));
+
+  // An unchecked ?u= on the shop's own domain is a phishing link wearing the
+  // shop's name, and this page is reachable by anybody who can type a URL.
+  attempted.length = 0;
+  await page.goto(`${BASE}/r/?u=${encodeURIComponent('https://evil.example.com/steal')}`,
+    { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await page.waitForTimeout(400);
+  check('but refuses a ?u= that is not a Google review link',
+    attempted.every((url) => !url.includes('evil.example.com')), attempted.join(', '));
+  check('and falls back to the shop review box instead',
+    attempted.some((url) => url.includes('search.google.com/local/writereview')), attempted.join(', '));
+
+  await hop.close();
+}
+
 // Where "it feels slow" turns into a figure somebody can quote back.
 check('the setup page lists what the backend is costing',
   await admin.locator('#speedlist .kv').count() > 0);
