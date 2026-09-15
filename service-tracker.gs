@@ -43,6 +43,39 @@ const SERVICE_EMAIL = 'service@questwatersports.com';
 const STATEMENT_PAYMENT_URL = 'https://pay.pospluslogin.com/questws';
 
 /**
+ * Where a customer is sent to leave a Google review, when a service writer
+ * ticks the box on a payment email.
+ *
+ * Deliberately EMPTY here rather than guessed at. The right value is the
+ * shop's own Google Business Profile "review us" short link (the
+ * https://g.page/r/... one the profile hands you), and a search URL that
+ * merely lands near the listing is worse than no link: somebody who meant to
+ * leave a review and could not find where gives up rather than hunting.
+ *
+ * Set it once from the App setup page, which writes GOOGLE_REVIEW_URL into
+ * script properties — so it survives a deploy and needs no code change. Until
+ * it is set, the review tick box on a payment email is disabled and says why.
+ * Not a credential: it is a public link, and it lives in properties because
+ * the shop owns it, not because it is secret.
+ */
+const GOOGLE_REVIEW_URL = '';
+
+function reviewUrl_() {
+  return String(props_().getProperty('GOOGLE_REVIEW_URL') || GOOGLE_REVIEW_URL || '').trim();
+}
+
+/**
+ * The line that goes on every customer email about finished work, review
+ * request or not.
+ *
+ * The shop's own words, and the point of them is that it is the same
+ * invitation for the customer who is delighted and the one who is not. A
+ * review request is a choice a writer makes per send; this is not.
+ */
+const FEEDBACK_LINE = 'If there was any part of your experience that wasn\u2019t up to your ' +
+  'expectations, please reply to this email and let us know!';
+
+/**
  * Optional: after adding a "Send mail as" alias in this Google account's
  * Gmail settings, put that address here so mail comes from a
  * questwatersports.com address instead of the Gmail one. '' sends as the
@@ -125,6 +158,24 @@ const PROP_STATUS_LABEL = {
   unfixable: 'Returned — unfixable'
 };
 
+/**
+ * How a payment came in. The list exists because a receipt that says
+ * "payment received" and nothing else is no use to a customer reconciling
+ * their own card statement — "Visa ending 4412" is.
+ *
+ * `card` is the only one that normally has a receipt of its own to attach;
+ * the rest are recorded for the shop's record and named on the email.
+ */
+const PAYMENT_METHODS = ['card', 'cash', 'check', 'transfer', 'other'];
+
+const PAYMENT_METHOD_LABEL = {
+  card: 'Card',
+  cash: 'Cash',
+  check: 'Check',
+  transfer: 'Bank transfer',
+  other: 'Other'
+};
+
 const PART_REASON_LABEL = {
   job: 'For this job',
   restock: 'Restock',
@@ -186,7 +237,14 @@ const SHEETS = {
          // Running totals, so the jobs list and a save never have to read
          // every log entry in the shop to count this job's. Repaired by
          // recountJobTotals_ from setup(), which is also what backfills them.
-         'entry_count', 'minutes_total'],
+         'entry_count', 'minutes_total',
+         // What has actually been collected against this invoice, summed off
+         // the Payments tab. Derived, exactly like entry_count above: the
+         // jobs list, the statements page and every balance shown to a
+         // customer need it, and none of them may pay for a read of every
+         // payment in the shop to get one job's. recountJobPayments_ backfills
+         // it and puts it right if it ever drifts.
+         'paid_total'],
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
                'transcript_id', 'transcript_error', 'notified_at', 'created_at',
@@ -222,6 +280,19 @@ const SHEETS = {
   // never downloaded to find that out.
   JobFiles: ['id', 'job_id', 'name', 'mime', 'drive_file', 'visibility',
              'added_by', 'created_at', 'size'],
+  // Money actually collected against an invoice, one row per payment.
+  //
+  // Its own tab rather than a column on Jobs because a boat is routinely paid
+  // down in pieces — a card at the counter and a check in the post is one
+  // afternoon here — and "how was it paid" is the question a customer asks
+  // back. `batch` is what ties the payments a writer recorded in one go, and
+  // emailed in one receipt, back together afterwards.
+  //
+  // `amount` is what was taken, never a running balance: a balance is derived
+  // from the invoice, and a stored one goes stale the moment anything else
+  // changes.
+  Payments: ['id', 'job_id', 'batch', 'amount', 'method', 'reference', 'received_at',
+             'note', 'recorded_by', 'created_at'],
   Mechanics: ['id', 'name', 'active', 'created_at'],
   StatusEvents: ['id', 'job_id', 'from_status', 'to_status', 'actor_type', 'actor', 'note', 'created_at'],
   EmailLog: ['id', 'job_id', 'kind', 'recipient', 'subject', 'status', 'error', 'created_at'],
@@ -577,6 +648,7 @@ function doPost(e) {
     saveInvoice:      function (a) { return saveInvoice(data.token, a[0], a[1], a[2], a[3]); },
     markDone:         function (a) { return markDone(data.token, a[0]); },
     sendInvoiceEmail: function (a) { return sendInvoiceEmail(data.token, a[0]); },
+    recordPayment:    function (a) { return recordPayment(data.token, a[0], a[1]); },
     listOpenStatements: function (a) { return listOpenStatements(data.token); },
     sendCustomerStatement: function (a) { return sendCustomerStatement(data.token, a[0], a[1]); },
     previewCustomerStatement: function (a) { return previewCustomerStatement(data.token, a[0], a[1], a[2]); },
@@ -639,6 +711,7 @@ function doPost(e) {
     publicJob:        function (a) { return publicJob(a[0], data.token); },
     setTestMode:      function (a) { return setTestMode(data.token, a[0]); },
     setCustomerTracking: function (a) { return setCustomerTracking(data.token, a[0]); },
+    setReviewUrl:     function (a) { return setReviewUrl(data.token, a[0]); },
     config:           function (a) { return config(data.token); }
   };
 
@@ -713,6 +786,75 @@ function trackingUrl_(job) {
   return SITE_URL + '/t/?j=' + job.token;
 }
 
+/** Money to the cent, so a sum of three payments is not 0.30000000000000004. */
+function money2_(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function paymentView_(row) {
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    // Which recording this came in on — the writer entered these together and
+    // one receipt went out covering the lot.
+    batch: row.batch || '',
+    amount: money2_(numberOrNull_(row.amount) || 0),
+    method: PAYMENT_METHODS.indexOf(row.method) === -1 ? 'other' : row.method,
+    methodLabel: PAYMENT_METHOD_LABEL[row.method] || PAYMENT_METHOD_LABEL.other,
+    // Last four, a check number, an auth code — whatever the writer wrote
+    // down so the customer can match it to their own statement.
+    reference: row.reference || '',
+    receivedAt: row.received_at || '',
+    note: row.note || '',
+    recordedBy: row.recorded_by || '',
+    createdAt: row.created_at
+  };
+}
+
+function paymentsForJob_(jobId) {
+  // A deployment that has not had setup() run yet has no Payments tab, and a
+  // job page must not go dark over it — a job with nowhere to record payments
+  // has no payments, which is true rather than a papered-over error. The App
+  // setup page is what says the sheet is behind, loudly; recordPayment
+  // refuses outright rather than writing into a tab that is not there.
+  let all;
+  try {
+    all = rows_('Payments');
+  } catch (err) {
+    return [];
+  }
+  return all
+    .filter(function (row) { return String(row.job_id) === String(jobId); })
+    .map(paymentView_)
+    .sort(function (a, b) {
+      return String(a.receivedAt || a.createdAt).localeCompare(String(b.receivedAt || b.createdAt))
+        || String(a.createdAt).localeCompare(String(b.createdAt));
+    });
+}
+
+/**
+ * What is still owed on a job: the invoice's own amount due, less everything
+ * collected against it since.
+ *
+ * `amount_due` is left exactly as the invoice read — it is what BiT said, and
+ * re-uploading the invoice reads it again. Payments are subtracted here
+ * instead, so the two numbers never fight and the shop can always see both.
+ *
+ * null when no invoice figure has been read yet, which is a different thing
+ * from zero: nothing is owed on a job nobody has priced, and nothing is
+ * settled on one either.
+ */
+function jobBalance_(job) {
+  const due = numberOrNull_(job.amount_due);
+  if (due === null) return null;
+  return money2_(due - (numberOrNull_(job.paid_total) || 0));
+}
+
+/** Close enough to zero that a customer is not chased for it. */
+function settled_(balance) {
+  return balance !== null && balance <= 0.005;
+}
+
 function jobSummary_(job) {
   return {
     id: job.id,
@@ -744,7 +886,12 @@ function jobSummary_(job) {
     // The running totals off the row, so a page can say how much log there is
     // without anything having read the log.
     entryCount: Number(job.entry_count || 0),
-    minutesTotal: Number(job.minutes_total || 0)
+    minutesTotal: Number(job.minutes_total || 0),
+    // Collected so far, and what that leaves. Both off the row, for the same
+    // reason as the totals above — the jobs list shows a balance and must not
+    // read the Payments tab to do it.
+    paidTotal: money2_(numberOrNull_(job.paid_total) || 0),
+    balance: jobBalance_(job)
   };
 }
 
@@ -1038,7 +1185,10 @@ function openInvoicesByCustomer_() {
   const groups = {};
   rows_('Jobs').forEach(function (job) {
     if (job.status !== 'done' || job.paid_at) return;
-    const due = numberOrNull_(job.amount_due);
+    // What is still owed, not what the invoice originally said. A customer
+    // who paid half last week must be asked for half, and a statement built
+    // off the invoice figure would bill them twice for the part they settled.
+    const due = jobBalance_(job);
     if (!due || due <= 0) return;
     const email = String(job.customer_email || '').trim();
     if (!email) return;
@@ -1078,10 +1228,10 @@ function openInvoicesByCustomer_() {
 /** Open invoices that would belong on a statement but have nowhere to send one. */
 function openInvoicesMissingEmail_() {
   return rows_('Jobs').filter(function (job) {
-    const due = numberOrNull_(job.amount_due);
+    const due = jobBalance_(job);
     return job.status === 'done' && !job.paid_at && due && due > 0 && !String(job.customer_email || '').trim();
   }).map(function (job) {
-    return { id: job.id, customerName: job.customer_name || '', amountDue: numberOrNull_(job.amount_due) };
+    return { id: job.id, customerName: job.customer_name || '', amountDue: jobBalance_(job) };
   });
 }
 
@@ -1173,6 +1323,13 @@ function getJob(token, id) {
     props: propsForJob_(id),
     parts: partsForJob_(id),
     files: filesForJob_(id),
+    // Money taken against this invoice, so the job page can show what is left
+    // to collect without a second call.
+    payments: paymentsForJob_(id),
+    // Whether the shop has a Google review link set at all. The payment form's
+    // review tick box hangs off it: an ask that links nowhere is worse than no
+    // ask, so the box is disabled and says where to set one.
+    reviewUrl: reviewUrl_(),
     // What the invoice email can carry in attachments, so the page can say
     // when a customer file will go as a Drive link instead of an attachment
     // rather than leaving the writer to find out from the customer.
@@ -2610,7 +2767,7 @@ function publicJob(trackingToken, shopToken) {
       // is not shop bookkeeping, and it is the thing they most want to know.
       invoiceFile: job.status === 'done' ? (job.invoice_file || null) : null,
       paymentLink: job.status === 'done' ? (job.payment_link || null) : null,
-      amountDue: job.status === 'done' ? numberOrNull_(job.amount_due) : null
+      amountDue: job.status === 'done' ? jobBalance_(job) : null
     },
     entries: customerView_(entriesForJob_(job.id)),
     shop: { name: SHOP_NAME, phone: SHOP_PHONE }
@@ -2798,6 +2955,60 @@ function driveViewUrl_(id) {
   return 'https://drive.google.com/file/d/' + encodeURIComponent(String(id)) + '/view';
 }
 
+/**
+ * Decides attach-or-link for a list of Drive files, against what is left of
+ * the message's attachment budget.
+ *
+ * The rule lives here rather than in each send path because it is subtle in
+ * exactly one place: a file whose size was never recorded is LINKED, not
+ * attached. What is being decided is whether to stake the whole email —
+ * invoice and all — on one file, and an unknown size is not something to
+ * gamble that on. A link always works.
+ *
+ * Files are taken in the order given and each is measured against what is
+ * left, so a small one behind a large one is still attached rather than
+ * punished for its neighbour. A file binned out of Drive by hand is dropped
+ * from both lists: the rest of the email still goes.
+ *
+ * Nothing is ever left off silently — everything is in `attached` or `linked`
+ * and every send path says which.
+ */
+function packAttachments_(budget, candidates) {
+  const out = { blobs: [], attached: [], linked: [], budget: budget };
+  (candidates || []).forEach(function (file) {
+    if (!file || !file.driveFile) return;
+    if (!file.size || file.size > out.budget) {
+      out.linked.push({ name: file.name, driveFile: file.driveFile });
+      return;
+    }
+    try {
+      out.blobs.push(DriveApp.getFileById(file.driveFile).getBlob().setName(file.name));
+      out.budget -= file.size;
+      out.attached.push(file.name);
+    } catch (err) {
+      /* Binned out of Drive by hand. Send the rest. */
+    }
+  });
+  return out;
+}
+
+/** The download list for whatever did not fit, as the email shows it. */
+function linkListHtml_(linked) {
+  return (linked || []).map(function (file) {
+    return '<a href="' + driveViewUrl_(file.driveFile) + '" style="color:#1F5C8B">' +
+      esc_(file.name) + '</a>';
+  }).join('<br>');
+}
+
+/**
+ * The feedback invitation, in the house style. On every customer email about
+ * finished work, whether or not a review was asked for — see FEEDBACK_LINE.
+ */
+function feedbackHtml_() {
+  return '<div style="' + MAIL_FONT + ';font-size:14.5px;line-height:22px;color:#1D2B38;' +
+    'margin:16px 0 0;padding:12px 0 0;border-top:1px solid #EBF1F6">' + esc_(FEEDBACK_LINE) + '</div>';
+}
+
 /** A coloured notice box: the test-mode banner, the balance. */
 function mailBox_(fill, edge, body, extra) {
   return '<div style="margin:0 0 16px">' +
@@ -2982,39 +3193,25 @@ function sendInvoiceEmail_(job) {
   // added and each is measured against what is left, so a small one added
   // after a large one is still attached rather than punished for its
   // neighbour.
-  const extras = [];
-  const linked = [];
-  filesForJob_(job.id).forEach(function (file) {
-    if (file.visibility !== 'customer') return;
-    // A file with no size recorded — a row from before the column, or one
-    // whose figure never landed — is linked rather than attached. What is
-    // being decided is whether to stake the whole email on it, invoice and
-    // all, and an unknown size is not something to gamble that on. A link
-    // always works.
-    if (!file.size || file.size > budget) {
-      linked.push(file);
-      return;
-    }
-    try {
-      attachments.push(DriveApp.getFileById(file.driveFile).getBlob().setName(file.name));
-      budget -= file.size;
-      extras.push(file.name);
-    } catch (err) {
-      /* Binned out of Drive by hand. Send the rest. */
-    }
-  });
-
-  const linkList = linked.map(function (file) {
-    return '<a href="' + driveViewUrl_(file.driveFile) + '" style="color:#1F5C8B">' +
-      esc_(file.name) + '</a>';
-  }).join('<br>');
+  const packed = packAttachments_(budget, filesForJob_(job.id).filter(function (file) {
+    return file.visibility === 'customer';
+  }));
+  packed.blobs.forEach(function (blob) { attachments.push(blob); });
+  const extras = packed.attached;
+  const linked = packed.linked;
+  const linkList = linkListHtml_(linked);
 
   // No tracking link while the page is switched off — a dead link in a
   // customer's invoice is worse than no link at all.
   const link = customerTracking_() ? trackingUrl_(job) : '';
   const first = String(job.customer_name || '').split(' ')[0];
-  const due = numberOrNull_(job.amount_due);
+  // The remaining balance, not the invoice's original figure. Normally the
+  // two are the same — this email goes out before anybody has paid — but a
+  // writer re-sending it after taking a payment must not ask again for money
+  // already in the till.
+  const due = jobBalance_(job);
   const deposits = numberOrNull_(job.deposits);
+  const paid = money2_(numberOrNull_(job.paid_total) || 0);
 
   // A job with a deposit against it owes nothing like its total, so the
   // balance gets said plainly rather than left for them to work out.
@@ -3024,6 +3221,10 @@ function sendInvoiceEmail_(job) {
         'Deposits already paid</td>' +
         '<td align="right" style="' + MAIL_FONT + ';padding:3px 0;color:#5C7185;font-size:13px;line-height:19px">' +
         money_(deposits) + '</td></tr>' : '') +
+      (paid ? '<tr><td style="' + MAIL_FONT + ';padding:3px 0;color:#5C7185;font-size:13px;line-height:19px">' +
+        'Payments received</td>' +
+        '<td align="right" style="' + MAIL_FONT + ';padding:3px 0;color:#5C7185;font-size:13px;line-height:19px">' +
+        money_(paid) + '</td></tr>' : '') +
       '<tr><td style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;font-size:15px;line-height:23px">' +
         'Amount due</td>' +
         '<td align="right" style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;' +
@@ -3083,12 +3284,13 @@ function sendInvoiceEmail_(job) {
         (linked.length ? '<div style="' + MAIL_FONT + ';margin-top:8px">' +
           (linked.length === 1 ? 'This is too large to email, so it is here to download:'
             : 'These are too large to email, so they are here to download:') +
-          '<br>' + linkList + '</div>' : '') + balance,
+          '<br>' + linkList + '</div>' : '') + balance + feedbackHtml_(),
       meta: 'INVOICE# ' + job.id + (job.boat_info ? ' · ' + job.boat_info : ''),
       buttons: (link ? button_(link, 'View your job') : '') +
         (job.payment_link ? button_(job.payment_link, due === null ? 'Pay online' : 'Pay ' + money_(due), '#C08A22') : '')
     }),
     text: 'The work you requested has been done.' +
+      '\n\n' + FEEDBACK_LINE +
       (extras.length ? '\n\nAlso attached: ' + extras.join(', ') : '') +
       (linked.length ? '\n\nToo large to email, so here to download:\n' +
         linked.map(function (file) { return file.name + ': ' + driveViewUrl_(file.driveFile); }).join('\n') : '') +
@@ -3098,6 +3300,380 @@ function sendInvoiceEmail_(job) {
       '\n\nInvoice ' + job.id + '\n' + SHOP_NAME,
     attachments: attachments
   });
+}
+
+/* ============================== payments =============================== */
+
+/**
+ * `2026-09-15` as a person reads it, without going near a Date.
+ *
+ * Deliberately string arithmetic. A payment date is stored as a plain day —
+ * no time, no zone — and `new Date('2026-09-15')` is midnight UTC, which
+ * formatted in the shop's own timezone is the fourteenth. A customer reading
+ * a receipt dated the day before they paid rings up about it, and they are
+ * right to.
+ */
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function payDate_(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ''));
+  if (!match) return '';
+  const month = MONTH_NAMES[Number(match[2]) - 1];
+  if (!month) return '';
+  return month + ' ' + Number(match[3]) + ', ' + match[1];
+}
+
+/** "Visa ending 4412" — how a payment is named on the receipt. */
+function paymentLabel_(payment) {
+  const label = PAYMENT_METHOD_LABEL[payment.method] || PAYMENT_METHOD_LABEL.other;
+  return payment.reference ? label + ' · ' + payment.reference : label;
+}
+
+/**
+ * The receipt a customer gets when money is taken: what was received, how,
+ * and where that leaves the invoice.
+ *
+ * Two shapes out of one function on purpose. "Paid in full" and "payment
+ * received, balance owed" differ in what they say and in whether they ask for
+ * anything further, and a single template with a couple of ternaries in it is
+ * how one of those ends up quietly asking a customer who has settled up to
+ * pay again.
+ *
+ * Built out of tables carrying bgcolor attributes, like everything else that
+ * leaves this file — see noticeHtml_ for why that is not a style choice.
+ */
+function paymentEmailContent_(job, options) {
+  const rehearsal = testMode_();
+  const payments = options.payments || [];
+  const batchTotal = money2_(payments.reduce(function (sum, p) { return sum + p.amount; }, 0));
+  const paidTotal = money2_(options.paidTotal || 0);
+  const balance = options.balance;
+  const full = Boolean(options.paidInFull);
+  const review = options.requestReview ? reviewUrl_() : '';
+  const note = String(options.note || '').trim();
+  const linked = options.linked || [];
+
+  const rows = payments.map(function (payment) {
+    const when = payDate_(payment.receivedAt);
+    return '<tr>' +
+      '<td style="' + MAIL_FONT + ';padding:4px 10px 4px 0;color:#1D2B38;font-size:14px;line-height:21px">' +
+        esc_(paymentLabel_(payment)) +
+        (when ? ' <span style="color:#5C7185">· ' + esc_(when) + '</span>' : '') + '</td>' +
+      '<td align="right" style="' + MAIL_FONT + ';padding:4px 0;color:#1D2B38;font-size:14px;' +
+        'line-height:21px;white-space:nowrap">' + money_(payment.amount) + '</td></tr>';
+  }).join('');
+
+  const lineTable = '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" ' +
+      'style="margin:10px 0 2px">' + rows +
+    '<tr><td style="' + MAIL_FONT + ';padding:8px 10px 0 0;border-top:1px solid #C7D5E0;font-weight:bold;' +
+      'color:#14293E;font-size:14px;line-height:21px">' +
+      (payments.length > 1 ? 'Total received' : 'Received') + '</td>' +
+    '<td align="right" style="' + MAIL_FONT + ';padding:8px 0 0;border-top:1px solid #C7D5E0;font-weight:bold;' +
+      'color:#14293E;font-size:14px;line-height:21px;white-space:nowrap">' + money_(batchTotal) + '</td></tr>' +
+    '</table>';
+
+  // Paid in full says so in its own colour and asks for nothing. A remaining
+  // balance is the same box the invoice email uses, so the figure a customer
+  // is looking at is in the place they last saw one.
+  const balanceBox = full
+    ? mailBox_('#EFF6EE', '#BBD5B6',
+        '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">' +
+          '<tr><td style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#2E6B2A;' +
+            'font-size:15px;line-height:23px">Paid in full — nothing further owed</td>' +
+          '<td align="right" style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#2E6B2A;' +
+            'font-size:17px;line-height:24px;white-space:nowrap">' + money_(0) + '</td></tr></table>')
+    : (balance === null ? '' : mailBox_('#FDFCF7', '#C7D5E0',
+        '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">' +
+          (paidTotal > batchTotal + 0.005
+            ? '<tr><td style="' + MAIL_FONT + ';padding:3px 0;color:#5C7185;font-size:13px;line-height:19px">' +
+              'Paid on this invoice to date</td>' +
+              '<td align="right" style="' + MAIL_FONT + ';padding:3px 0;color:#5C7185;font-size:13px;' +
+              'line-height:19px">' + money_(paidTotal) + '</td></tr>'
+            : '') +
+          '<tr><td style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;' +
+            'font-size:15px;line-height:23px">Balance remaining</td>' +
+          '<td align="right" style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;' +
+            'font-size:17px;line-height:24px;white-space:nowrap">' + money_(balance) + '</td></tr></table>'));
+
+  const noteBox = note
+    ? mailBox_('#F4F8FB', '#C7D5E0',
+        '<div style="' + MAIL_FONT + ';font-size:14.5px;line-height:22px;color:#1D2B38">' +
+          esc_(note).replace(/\r?\n/g, '<br>') + '</div>')
+    : '';
+
+  // Only when a writer ticked the box AND the shop has actually set its review
+  // link. Never by default: the whole point of the tick is that a job which
+  // went badly gets the receipt without the ask.
+  const reviewBlock = review
+    ? '<div style="' + MAIL_FONT + ';font-size:14.5px;line-height:22px;color:#1D2B38;margin:16px 0 0">' +
+        'It was a pleasure working with you. If you have a minute, a short Google review helps ' +
+        'other boaters find us more than just about anything else we can do.</div>'
+    : '';
+
+  const banner = rehearsal
+    ? mailBox_('#FBEEE2', '#E4B48F',
+      '<div style="' + MAIL_FONT + ';font-size:14px;line-height:21px;color:#A6541F">' +
+        '<b>TEST MODE — not sent to the customer.</b><br>This is what ' +
+        esc_(job.customer_email) + ' would have received for job ' + esc_(job.id) + '.' +
+        '<br>Generated ' + esc_(rehearsalStamp_()) + '.</div>',
+      ';border-left:4px solid #A6541F')
+    : '';
+
+  const to = rehearsal ? testEmail_() : job.customer_email;
+  const first = String(job.customer_name || '').split(' ')[0];
+  const kind = full ? 'customer_paid' : 'customer_payment';
+
+  const intro = full
+    ? 'Thank you — your payment has been received, and invoice ' + esc_(job.id) +
+      ' is now paid in full.'
+    : 'Thank you — your payment has been received. Here is where the invoice stands.';
+
+  const attachNote = options.attached && options.attached.length
+    ? '<div style="' + MAIL_FONT + ';margin-top:10px">Attached: ' +
+      options.attached.map(esc_).join(', ') + '.</div>'
+    : '';
+  const linkNote = linked.length
+    ? '<div style="' + MAIL_FONT + ';margin-top:8px">' +
+      (linked.length === 1 ? 'This is too large to email, so it is here to download:'
+        : 'These are too large to email, so they are here to download:') +
+      '<br>' + linkListHtml_(linked) + '</div>'
+    : '';
+
+  return {
+    to: to,
+    // The shop keeps its own copy of everything that goes to a customer,
+    // skipped when the desk is already the recipient — see sendInvoiceEmail_.
+    cc: to === SERVICE_EMAIL ? '' : SERVICE_EMAIL,
+    jobId: job.id,
+    kind: rehearsal ? kind + '_test' : kind,
+    suppressed: rehearsal,
+    intendedFor: job.customer_email,
+    subject: (rehearsal ? '[TEST ' + rehearsalStamp_() + '] ' : '') +
+      (full ? 'Payment received, paid in full — ' : 'Payment received — ') +
+      SHOP_NAME + ' invoice ' + job.id,
+    html: noticeHtml_({
+      banner: banner,
+      greeting: first,
+      intro: intro + lineTable + balanceBox + noteBox + attachNote + linkNote + reviewBlock +
+        // On every one of these, review request or not. Deliberately after the
+        // review ask rather than before it, so the customer who was not asked
+        // is not reading a shorter version of somebody else's email.
+        feedbackHtml_(),
+      meta: 'INVOICE# ' + job.id + (job.boat_info ? ' · ' + job.boat_info : ''),
+      buttons: (review ? button_(review, 'Leave us a Google review', '#C08A22') : '') +
+        // Never on a paid-in-full receipt, whatever link is on the job: a Pay
+        // button under the words "nothing further owed" is how a customer
+        // pays twice.
+        (!full && balance !== null && balance > 0.005 && job.payment_link
+          ? button_(job.payment_link, 'Pay ' + money_(balance), '#C08A22')
+          : '')
+    }),
+    text: (full
+      ? 'Thank you - your payment has been received, and invoice ' + job.id + ' is now paid in full.'
+      : 'Thank you - your payment has been received.') +
+      '\n\n' + payments.map(function (payment) {
+        const when = payDate_(payment.receivedAt);
+        return paymentLabel_(payment) + (when ? ' (' + when + ')' : '') + ': ' + money_(payment.amount);
+      }).join('\n') +
+      '\n' + (payments.length > 1 ? 'Total received' : 'Received') + ': ' + money_(batchTotal) +
+      (full ? '\n\nPaid in full - nothing further owed.'
+        : (balance === null ? '' : '\n\nBalance remaining: ' + money_(balance) +
+          (job.payment_link ? '\nPay online: ' + job.payment_link : ''))) +
+      (note ? '\n\n' + note : '') +
+      (options.attached && options.attached.length ? '\n\nAttached: ' + options.attached.join(', ') : '') +
+      (linked.length ? '\n\nToo large to email, so here to download:\n' +
+        linked.map(function (file) { return file.name + ': ' + driveViewUrl_(file.driveFile); }).join('\n') : '') +
+      (review ? '\n\nA short Google review helps other boaters find us: ' + review : '') +
+      '\n\n' + FEEDBACK_LINE +
+      '\n\nInvoice ' + job.id + '\n' + SHOP_NAME,
+    attachments: options.attachments || []
+  };
+}
+
+/**
+ * Records money taken against an invoice and, if the writer asked for it,
+ * sends the customer their receipt.
+ *
+ * SEVERAL PAYMENTS AT ONCE is the normal case, not a nicety: a boat is
+ * routinely settled with a card at the counter and a check that came in the
+ * post, and entering those as two separate actions means two emails to a
+ * customer who paid once. They go in together, under one `batch`, and one
+ * receipt covers the lot.
+ *
+ * PAID IN FULL IS THE WRITER'S CALL, not the arithmetic's. The page works out
+ * the obvious answer and ticks the box for them, but the shop is allowed to
+ * call a ticket settled with eleven cents of rounding left on it, and it is
+ * allowed to take a payment that clears the balance on a job it wants to keep
+ * open. Only the tick closes a ticket, and only a closed ticket leaves the
+ * open-jobs list.
+ *
+ * Nothing about this sends by itself. `sendEmail` is a separate decision from
+ * recording the money, and a writer who is only correcting the books leaves it
+ * off.
+ */
+function recordPayment(token, id, payload) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such job.');
+  // The same gate as the invoice email: a receipt saying what is owed on a
+  // finished invoice needs there to be a finished invoice.
+  if (job.status !== 'done') {
+    throw new Error('Mark the job done first — a payment is recorded against the final invoice.');
+  }
+  // Both are new with this feature, so until setup() has run the rows would
+  // save and read back empty. Say so instead of losing somebody's money.
+  requireColumn_('Jobs', 'paid_total');
+  requireColumn_('Payments', 'batch');
+
+  const wanted = (payload && payload.payments) || [];
+  if (!wanted.length) throw new Error('Add at least one payment.');
+  const today = nowIso_().slice(0, 10);
+
+  const lines = wanted.map(function (line) {
+    const amount = money2_(numberOrNull_(line && line.amount));
+    if (!(amount > 0)) throw new Error('Every payment needs an amount greater than zero.');
+    const method = PAYMENT_METHODS.indexOf(String(line.method || '')) === -1
+      ? 'other' : String(line.method);
+    // A date typed as anything but a plain day is not stored: the receipt
+    // formats it as a day, and half a timestamp in that column reads back as
+    // a date Sheets has had its own ideas about.
+    const when = /^\d{4}-\d{2}-\d{2}$/.test(String(line.receivedAt || '')) ? String(line.receivedAt) : today;
+    return {
+      amount: amount,
+      method: method,
+      reference: String(line.reference || '').trim().substr(0, 80),
+      receivedAt: when,
+      note: String(line.note || '').trim().substr(0, 400)
+    };
+  });
+
+  const batchTotal = money2_(lines.reduce(function (sum, line) { return sum + line.amount; }, 0));
+
+  // Drive BEFORE the lock, like every other upload path here: one script lock
+  // serves the whole shop, and a writer attaching a scanned card receipt must
+  // not be everybody else's wait. See saveFile_ and the backend-data notes.
+  const uploaded = [];
+  ((payload && payload.files) || []).forEach(function (file) {
+    if (!file || !file.base64) return;
+    const name = String(file.name || '').trim() || 'receipt';
+    const fileId = saveFile_(job.id, name, file.mime || 'application/octet-stream', file.base64);
+    const row = {
+      id: newId_('file'),
+      job_id: job.id,
+      name: name,
+      mime: file.mime || '',
+      // Uploaded on the payment form, which is the customer's own receipt
+      // going back to them. There is no internal variant of this button —
+      // anything the shop wants to keep to itself goes through Attachments,
+      // where saying so is the whole of the choice.
+      drive_file: fileId,
+      visibility: 'customer',
+      added_by: SHOP_WRITER_NAME,
+      created_at: nowIso_(),
+      size: base64Bytes_(file.base64)
+    };
+    appendRow_('JobFiles', row);
+    uploaded.push({ name: name, driveFile: fileId, size: row.size });
+  });
+
+  const batch = newId_('pay');
+  const saved = withLock_(function () {
+    // Re-read inside the lock before adding to the running total, for the
+    // same reason addEntry does: the row above was read before the lock, and
+    // two writers saving together would both write the same total.
+    forget_('Jobs');
+    const fresh = jobRow_(job.id);
+    if (!fresh) throw new Error('No such job.');
+
+    const at = nowIso_();
+    lines.forEach(function (line) {
+      appendRow_('Payments', {
+        id: newId_('pmt'),
+        job_id: fresh.id,
+        batch: batch,
+        amount: line.amount,
+        method: line.method,
+        reference: line.reference,
+        received_at: line.receivedAt,
+        note: line.note,
+        recorded_by: SHOP_WRITER_NAME,
+        created_at: at
+      });
+    });
+
+    const paidTotal = money2_((numberOrNull_(fresh.paid_total) || 0) + batchTotal);
+    const patch = { paid_total: paidTotal, updated_at: at };
+    // The one thing that archives a ticket. Not the arithmetic reaching zero
+    // and not the email going out — the writer saying the account is settled.
+    if (payload && payload.paidInFull) {
+      if (!fresh.paid_at) patch.paid_at = at;
+    }
+    updateRow_('Jobs', fresh._row, patch);
+    return { paidTotal: paidTotal, at: at };
+  });
+
+  const after = jobRow_(job.id);
+  const balance = jobBalance_(after);
+  const paidInFull = Boolean(payload && payload.paidInFull);
+
+  let emailed = null;
+  if (payload && payload.sendEmail) {
+    if (!after.customer_email) {
+      throw new Error('The payment is recorded, but this job has no customer email address, ' +
+        'so there is nobody to send the receipt to.');
+    }
+    emailed = sendPaymentEmail_(after, {
+      payments: paymentsForJob_(after.id).filter(function (p) { return p.batch === batch; }),
+      paidInFull: paidInFull,
+      balance: balance,
+      paidTotal: saved.paidTotal,
+      note: payload.note,
+      requestReview: Boolean(payload.requestReview),
+      files: uploaded
+    });
+  }
+
+  return {
+    job: jobSummary_(after),
+    payments: paymentsForJob_(after.id),
+    files: filesForJob_(after.id),
+    batch: batch,
+    recorded: lines.length,
+    received: batchTotal,
+    balance: balance,
+    // The ticket only leaves the open-jobs list when it is paid in full, so
+    // the page can say which of the two things just happened.
+    archived: Boolean(after.paid_at),
+    emailed: emailed,
+    testMode: testMode_(),
+    sentTo: emailed === null ? '' : (testMode_() ? testEmail_() : after.customer_email),
+    reviewRequested: Boolean(payload && payload.requestReview && reviewUrl_())
+  };
+}
+
+/**
+ * Puts the receipt's attachments together and sends it.
+ *
+ * What rides along is whatever the writer uploaded on the payment form — the
+ * invoice with the payment noted on it, the card receipt — under the same
+ * attach-or-link rule as every other customer email. Nothing else on the job
+ * is swept in: the invoice email already sent the customer's files, and a
+ * receipt that silently re-attaches them is a surprise rather than a service.
+ */
+function sendPaymentEmail_(job, options) {
+  const packed = packAttachments_(MAIL_ATTACHMENT_BUDGET, options.files || []);
+  return send_(paymentEmailContent_(job, {
+    payments: options.payments,
+    paidInFull: options.paidInFull,
+    balance: options.balance,
+    paidTotal: options.paidTotal,
+    note: options.note,
+    requestReview: options.requestReview,
+    attachments: packed.blobs,
+    attached: packed.attached,
+    linked: packed.linked
+  }));
 }
 
 /**
@@ -3628,8 +4204,28 @@ function config(token) {
     testEmail: testEmail_(),
     customerTracking: customerTracking_(),
     siteUrl: SITE_URL,
-    serviceEmail: SERVICE_EMAIL
+    serviceEmail: SERVICE_EMAIL,
+    reviewUrl: reviewUrl_()
   };
+}
+
+/**
+ * The shop's Google review link, set from the App setup page.
+ *
+ * A script property rather than a constant in the code because it is the
+ * shop's to change and changing it should not be a deploy. Not a credential —
+ * see GOOGLE_REVIEW_URL. Blank clears it, which turns the review tick box on
+ * the payment form back off rather than leaving it pointing at nothing.
+ */
+function setReviewUrl(token, url) {
+  requireAdmin_(token);
+  const value = String(url || '').trim();
+  if (value && !/^https:\/\//i.test(value)) {
+    throw new Error('That needs to be a full https:// link \u2014 the one your Google Business ' +
+      'Profile gives you under "Ask for reviews".');
+  }
+  props_().setProperty('GOOGLE_REVIEW_URL', value);
+  return { reviewUrl: reviewUrl_() };
 }
 
 /**
@@ -4194,21 +4790,42 @@ function jobTotalsDrift_() {
     }
   });
 
+  // paid_total is derived exactly like the two above, off the Payments tab,
+  // and every balance the shop or a customer is shown comes out of it. A tab
+  // setup() has not created yet simply has no payments in it.
+  const paid = {};
+  let payments = [];
+  try {
+    payments = rows_('Payments');
+  } catch (err) {
+    payments = [];
+  }
+  payments.forEach(function (payment) {
+    const id = String(payment.job_id);
+    paid[id] = money2_((paid[id] || 0) + (numberOrNull_(payment.amount) || 0));
+  });
+
   const out = [];
   rows_('Jobs').forEach(function (job) {
     const id = String(job.id);
     const wantCount = counts[id] || 0;
     const wantMinutes = minutes[id] || 0;
+    const wantPaid = money2_(paid[id] || 0);
     if (Number(job.entry_count || 0) === wantCount &&
-        Number(job.minutes_total || 0) === wantMinutes) return;
-    out.push({ id: id, row: job._row, entryCount: wantCount, minutesTotal: wantMinutes });
+        Number(job.minutes_total || 0) === wantMinutes &&
+        money2_(numberOrNull_(job.paid_total) || 0) === wantPaid) return;
+    out.push({ id: id, row: job._row, entryCount: wantCount, minutesTotal: wantMinutes, paidTotal: wantPaid });
   });
   return out;
 }
 
 function recountJobTotals_() {
   return jobTotalsDrift_().map(function (job) {
-    updateRow_('Jobs', job.row, { entry_count: job.entryCount, minutes_total: job.minutesTotal });
+    updateRow_('Jobs', job.row, {
+      entry_count: job.entryCount,
+      minutes_total: job.minutesTotal,
+      paid_total: job.paidTotal
+    });
     return job.id;
   });
 }
@@ -4352,8 +4969,8 @@ function setup() {
       ? 'Repaired ' + repaired.length + ' job id(s) Sheets had read as dates: ' + repaired.join(', ')
       : 'Job ids are stored as text. Nothing to repair.',
     recounted.length
-      ? 'Recounted entries and time on ' + recounted.length + ' job(s).'
-      : 'Every job\'s entry and time totals already agreed with the log.',
+      ? 'Recounted entries, time and payments on ' + recounted.length + ' job(s).'
+      : 'Every job\'s entry, time and payment totals already agreed with the record.',
     'Spreadsheet: ' + spreadsheet.getUrl(),
     'Drive folder: https://drive.google.com/drive/folders/' + props_().getProperty('DRIVE_FOLDER_ID'),
     '',

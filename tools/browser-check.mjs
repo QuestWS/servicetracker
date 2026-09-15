@@ -1193,6 +1193,111 @@ check('and says test mode kept it in the building', /test mode, so that was the 
   afterSend.slice(afterSend.search(/Invoice emailed/i), afterSend.search(/Invoice emailed/i) + 160));
 await admin.screenshot({ path: `${SHOTS}/45b-invoice-sent.png`, fullPage: true });
 
+/* ------------------------------------------------- taking money at the desk */
+console.log('\n== recording a payment ==');
+// Its OWN job, priced and closed through the API rather than the invoice
+// already on screen. Paying that one off would leave every later check —
+// the customer boundary among them — reading a balance of zero, and a
+// suite where one section quietly rewrites another's fixture is a suite
+// that fails somewhere it is not broken.
+const PAY_JOB = `01-${String(Math.floor(1000 + Math.random() * 8999))}`;
+await admin.evaluate(async ({ base, id }) => {
+  const shop = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const post = (fn, args) => fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn, token: shop, args }),
+  }).then((res) => res.json());
+  await post('createJob', [{
+    invoiceNumber: id, customerName: 'Pat Harbour', customerEmail: 'pat@example.com',
+    boatInfo: '2018 Yamaha VX Cruiser',
+  }]);
+  await post('saveInvoice', [id, 'https://pay.pospluslogin.com/questwatersports/pay1', 'JVBERi0=',
+    { grandTotal: 2000, deposits: 400, amountDue: 1600 }]);
+  await post('markDone', [id]);
+}, { base: BASE, id: PAY_JOB });
+
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(PAY_JOB)}`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('#paylines', { timeout: 20000 });
+
+check('a done job offers a way to record a payment', await admin.locator('#paylines').count() === 1);
+check('the first amount is filled in with what is owed',
+  (await admin.inputValue('#pay-amount-0')) === '1600.00', await admin.inputValue('#pay-amount-0'));
+check('the review ask is switched off until the shop sets a link',
+  await admin.isDisabled('#payreview'));
+
+// Several payments in one recording is the normal case, not an edge: a card
+// at the counter and a check in the post is one payment to the customer.
+await admin.click('#addpayline');
+check('another payment can be added to the same recording',
+  await admin.locator('[data-payline]').count() === 2);
+await admin.locator('[data-payline="1"] [data-payfield="amount"]').fill('100');
+await admin.locator('[data-payline="1"] [data-payfield="method"]').selectOption('check');
+await admin.locator('[data-payline="1"] [data-payfield="reference"]').fill('1043');
+await admin.locator('[data-payline="0"] [data-payfield="amount"]').fill('500');
+await admin.locator('[data-payline="0"] [data-payfield="method"]').selectOption('card');
+await admin.waitForFunction(() => /Taking/.test(document.getElementById('paysummary')?.innerText || ''),
+  { timeout: 20000 });
+
+const takingPart = await admin.evaluate(() => document.getElementById('paysummary').innerText);
+check('it adds the payments up as they are typed', /\$600\.00/.test(takingPart), takingPart.trim());
+check('and says what that leaves outstanding', /\$1,000\.00/.test(takingPart), takingPart.trim());
+check('a part payment does not tick the account settled by itself',
+  (await admin.isChecked('#payfull')) === false);
+
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#payrecord');
+// Waits on the COUNT, not the words. The payment card's own hint says
+// "several payments recorded together", so a bare /payments recorded/ matches
+// before the click has re-rendered anything — and the read that follows
+// catches the page mid-render, showing "Loading job…".
+await admin.waitForFunction(() => /payments recorded \(2\)/i.test(document.body.innerText), { timeout: 30000 });
+const afterPart = await admin.evaluate(() => document.body.innerText);
+check('the payments are recorded against the job', /payments recorded \(2\)/i.test(afterPart));
+check('what the customer owes drops to the balance',
+  (await admin.textContent('.hourstotal')).includes('1,000.00'),
+  await admin.textContent('.hourstotal'));
+check('and the invoice figure is still shown beside it', /1,600\.00/.test(afterPart));
+check('the ticket stays open — only paid in full closes one',
+  (await admin.isChecked('#ck-paid')) === false);
+await admin.screenshot({ path: `${SHOTS}/45c-payment-part.png`, fullPage: true });
+
+// Settling the rest, with the receipt going out. Test mode is still on, so
+// this is a rehearsal and the mail lands on the service desk.
+await admin.fill('#pay-amount-0', '1000');
+await admin.waitForFunction(() => document.getElementById('payfull')?.checked === true, { timeout: 20000 });
+check('clearing the balance ticks the account settled for you', await admin.isChecked('#payfull'));
+const takingFull = await admin.evaluate(() => document.getElementById('paysummary').innerText);
+check('and says plainly that the ticket will close',
+  /drops off the open jobs list/i.test(takingFull), takingFull.trim());
+
+await admin.fill('#paynote', 'Your spare prop is on the rack by the door.');
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#paysend');
+await admin.waitForFunction(() => /payments recorded \(3\)/i.test(document.body.innerText), { timeout: 30000 });
+check('paid in full closes the ticket', await admin.isChecked('#ck-paid'));
+const afterFull = await admin.evaluate(() => document.body.innerText);
+check('and all three payments are on the record', /payments recorded \(3\)/i.test(afterFull));
+check('the receipt is logged, held in test mode',
+  /customer paid/i.test(afterFull) && /held \(test mode\)/i.test(afterFull),
+  afterFull.slice(afterFull.search(/Email log/i), afterFull.search(/Email log/i) + 220));
+await admin.screenshot({ path: `${SHOTS}/45d-payment-full.png`, fullPage: true });
+
+// The same column check as the open job, on a done one: the payment card is
+// the tallest thing added to the left column in a while.
+const doneColumns = await admin.evaluate(() => [...document.querySelectorAll('.split > .stack')]
+  .map((el) => Math.round(el.getBoundingClientRect().height)));
+const [doneTall, doneShort] = [...doneColumns].sort((a, b) => b - a);
+console.log(`  done job columns: ${doneColumns.join('px, ')}px`);
+check("a done job's two columns stay roughly level too",
+  doneColumns.length === 2 && doneShort > doneTall * 0.5, `${doneColumns.join(' / ')}`);
+
+// Off the working list, which is the whole point of closing it.
+await admin.goto(`${BASE}/admin/?`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.card, .empty', { timeout: 20000 });
+check('a paid, done job leaves the open jobs list',
+  !(await admin.evaluate((id) => document.body.innerText.includes(id), PAY_JOB)));
+
 /* ---------------------------------------------------- the writer's shortlist */
 /* -------------------------------------------- moving and deleting entries */
 console.log('\n== marking work finished, one tap ==');

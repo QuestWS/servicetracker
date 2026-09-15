@@ -185,6 +185,67 @@ const JOB_FILTER_LABEL = Object.assign({ open: 'Open jobs', all: 'All' }, STATUS
  */
 const UPLOAD_LIMIT = 25 * 1024 * 1024;
 
+/**
+ * How a payment came in. Matches PAYMENT_METHODS in the backend — a method
+ * it does not recognise is filed as "other" rather than refused, but the
+ * two lists drifting apart would quietly relabel every card payment.
+ */
+const PAYMENT_METHODS = [
+  ['card', 'Card'],
+  ['cash', 'Cash'],
+  ['check', 'Check'],
+  ['transfer', 'Bank transfer'],
+  ['other', 'Other'],
+];
+
+/** Today in the shop's own timezone, as the plain day a payment is dated. */
+function todayInShop() {
+  return new Intl.DateTimeFormat('en-CA', {
+    year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'America/Chicago',
+  }).format(new Date());
+}
+
+/**
+ * One row of the payment form.
+ *
+ * Several of these is the normal case rather than an edge: a boat settled
+ * with a card at the counter and a check that came in the post is one
+ * afternoon here, and entering those separately means the customer gets two
+ * receipts for the one payment they think they made.
+ */
+function payLineHtml(index, amount) {
+  return `
+    <div class="payline" data-payline="${index}">
+      <div class="row tight" style="flex-wrap:nowrap;align-items:flex-end">
+        <div style="flex:1 1 34%">
+          ${index === 0 ? '<label class="fld" for="pay-amount-' + index + '">Amount</label>' : ''}
+          <input class="txt mono" id="pay-amount-${index}" data-payfield="amount"
+            inputmode="decimal" placeholder="0.00" value="${amount === null ? '' : esc(amount)}">
+        </div>
+        <div style="flex:1 1 30%">
+          ${index === 0 ? '<label class="fld" for="pay-method-' + index + '">How</label>' : ''}
+          <select class="txt" id="pay-method-${index}" data-payfield="method">
+            ${PAYMENT_METHODS.map(([value, label]) =>
+              `<option value="${value}">${label}</option>`).join('')}
+          </select>
+        </div>
+        <div style="flex:1 1 36%">
+          ${index === 0 ? '<label class="fld" for="pay-ref-' + index + '">Reference</label>' : ''}
+          <input class="txt" id="pay-ref-${index}" data-payfield="reference"
+            placeholder="Visa ending 4412" autocomplete="off">
+        </div>
+      </div>
+      <div class="row tight" style="flex-wrap:nowrap;align-items:flex-end;margin-top:6px">
+        <div style="flex:1 1 auto">
+          <input class="txt mono" id="pay-date-${index}" data-payfield="receivedAt"
+            type="date" value="${todayInShop()}">
+        </div>
+        ${index === 0 ? '' : `<button class="btn ghost sm" type="button" data-droppay="${index}"
+          title="Remove this payment">Remove</button>`}
+      </div>
+    </div>`;
+}
+
 const JOB_SORTS = {
   newest: 'Newest first',
   number: 'Work order number',
@@ -362,6 +423,17 @@ async function renderJob(id) {
   const invoiceEmail = emails.find((mail) =>
     mail.kind === 'customer_done' || mail.kind === 'customer_done_test');
   const invoiceSent = invoiceEmail && invoiceEmail.status !== 'failed' && invoiceEmail.status !== 'skipped';
+  // Older deployments have no Payments tab until setup() has been run — same
+  // arrangement as the files above.
+  const payments = data.payments || [];
+  const paidTotal = Number(job.paidTotal) || 0;
+  // What is left to collect. null when the invoice has not been priced yet,
+  // which is a different thing from nothing being owed.
+  const balance = job.balance === undefined ? null : job.balance;
+  const settled = balance !== null && balance <= 0.005;
+  // The review ask hangs off the shop having actually set a review link. An
+  // ask that links nowhere loses the review AND annoys the customer.
+  const reviewUrl = data.reviewUrl || '';
 
   view.innerHTML = `
     <div class="row" style="justify-content:space-between;margin-bottom:6px">
@@ -455,7 +527,9 @@ async function renderJob(id) {
           <label class="checkline">
             <input type="checkbox" id="ck-paid" ${job.paidAt ? 'checked' : ''}>
             <span>Invoice paid, ticket closed
-              <small>${job.paidAt ? `Ticked ${formatDate(job.paidAt)}` : 'Your own record — it changes nothing the customer sees'}</small></span>
+              <small>${job.paidAt
+                ? `Ticked ${formatDate(job.paidAt)}`
+                : 'Your own record — it changes nothing the customer sees. Recording a payment as settling the account in full ticks it for you.'}</small></span>
           </label>
         </section>
 
@@ -510,6 +584,55 @@ async function renderJob(id) {
               </div>
             </form>`}
         </section>
+
+        ${job.status === 'done' ? `<section class="card">
+          <h2>Record a payment</h2>
+          <p class="hint" style="margin-top:0">Money taken against this invoice, and the receipt
+            that goes back with it. Several payments recorded together go out as one receipt —
+            a card at the counter and a check in the post are one payment as far as the
+            customer is concerned.</p>
+
+          <div id="paylines">${payLineHtml(0, balance !== null && balance > 0 ? balance.toFixed(2) : '')}</div>
+          <button class="btn ghost sm" type="button" id="addpayline" style="margin-top:8px">
+            Add another payment</button>
+
+          <label class="fld" for="paynote" style="margin-top:14px">Anything to add (optional)</label>
+          <textarea class="txt" id="paynote" rows="2"
+            placeholder="Your spare prop is on the rack by the door whenever you want it."></textarea>
+          <p class="hint">Goes in the receipt, in the shop's own words.</p>
+
+          <label class="fld" for="payfiles">Attach to the receipt</label>
+          <input id="payfiles" type="file" multiple>
+          <p class="hint">The invoice with the payment noted on it, and the card receipt if there
+            was one. Anything too big to email goes to the customer as a Drive link instead, and
+            everything here is kept on the job under Attachments.</p>
+
+          <label class="checkline" style="margin-top:6px">
+            <input type="checkbox" id="payfull">
+            <span>This settles the account in full
+              <small>Ticking this is what closes the ticket and takes it off the open jobs list.
+                Nothing else does &mdash; not the balance reaching zero, and not sending the
+                receipt.</small></span>
+          </label>
+          <label class="checkline">
+            <input type="checkbox" id="payreview"${reviewUrl ? '' : ' disabled'}>
+            <span>Ask for a Google review
+              <small>${reviewUrl
+                ? 'For a customer you would be glad to hear from again. Leave it off and the same receipt goes without the ask.'
+                : 'Set the shop\'s review link on the <a href="?view=setup">App setup</a> page first — an ask that links nowhere is worse than no ask.'}</small></span>
+          </label>
+
+          <div id="paysummary"></div>
+          <div id="paymsg"></div>
+
+          <button class="btn gold block" type="button" id="paysend" style="margin-top:12px"${
+            job.customerEmail ? '' : ' disabled title="Add a customer email address first"'}>
+            Record it and email the receipt</button>
+          <button class="btn ghost block" type="button" id="payrecord" style="margin-top:8px">
+            Record it without emailing</button>
+          ${job.customerEmail ? '' : `<p class="hint" style="margin-top:8px">No email address on file,
+            so the payment can be recorded but no receipt can go out.</p>`}
+        </section>` : ''}
       </div>
 
       <div class="stack">
@@ -605,12 +728,31 @@ async function renderJob(id) {
 
         ${job.amountDue !== null ? `<section class="card">
           <h2>What the customer owes</h2>
-          <div class="hourstotal">${formatMoney(job.amountDue)}</div>
+          <div class="hourstotal">${formatMoney(balance === null ? job.amountDue : balance)}</div>
           ${job.grandTotal !== null ? `<div class="kv"><span class="k">Grand total</span>
             <b style="font-family:var(--mono)">${formatMoney(job.grandTotal)}</b></div>` : ''}
           ${job.deposits ? `<div class="kv"><span class="k">Deposits already paid</span>
             <b style="font-family:var(--mono)">${formatMoney(job.deposits)}</b></div>` : ''}
-          <p class="hint">Shown in the invoice email next to the payment link.</p>
+          <div class="kv"><span class="k">Invoice amount due</span>
+            <b style="font-family:var(--mono)">${formatMoney(job.amountDue)}</b></div>
+          ${paidTotal ? `<div class="kv"><span class="k">Payments received</span>
+            <b style="font-family:var(--mono)">&minus;${formatMoney(paidTotal)}</b></div>` : ''}
+          <p class="hint">The figure at the top is what is left to collect: the invoice's own
+            amount due, less everything recorded against it. That is what a customer is shown
+            and what a statement would chase.</p>
+
+          ${payments.length ? `
+            <div class="subhead">Payments recorded (${payments.length})</div>
+            ${payments.map((payment) => `<div class="kv">
+              <span class="k">${esc(payment.methodLabel)}${payment.reference ? ` · ${esc(payment.reference)}` : ''}
+                <div style="font-size:12px;color:var(--muted)">${formatDate(payment.receivedAt)}</div></span>
+              <b style="font-family:var(--mono)">${formatMoney(payment.amount)}</b></div>`).join('')}
+            ${job.paidAt && balance !== null && balance > 0.005 ? `<p class="hint">
+              Closed as settled with ${formatMoney(balance)} not collected.</p>` : ''}`
+            : ''}
+          ${settled && !job.paidAt ? `<div class="banner warn" style="margin-top:10px">
+            Nothing left to collect, but the ticket is still open. Tick <b>Invoice paid, ticket
+            closed</b> above, or record the last payment as settling the account in full.</div>` : ''}
         </section>` : ''}
 
         <section class="card">
@@ -745,6 +887,145 @@ async function renderJob(id) {
       }
     };
   });
+
+  /**
+   * Taking money at the counter, and the receipt that goes back.
+   *
+   * Three decisions live on this form and they are deliberately separate:
+   * how much came in, whether that settles the account, and whether to ask
+   * for a review. Only the middle one closes the ticket — see recordPayment
+   * in the backend — so a payment that happens to clear the balance on a job
+   * the office wants to keep open leaves it open.
+   */
+  const paylines = $('paylines');
+  if (paylines) {
+    let lineCount = 1;
+    // Whether the writer has set the paid-in-full tick themselves. Until they
+    // do, it follows the arithmetic; once they have, it is theirs and the
+    // running total stops moving it under them.
+    let fullTouched = false;
+
+    const readLines = () => Array.from(paylines.querySelectorAll('[data-payline]')).map((row) => {
+      const field = (name) => row.querySelector(`[data-payfield="${name}"]`);
+      return {
+        amount: field('amount').value.trim(),
+        method: field('method').value,
+        reference: field('reference').value.trim(),
+        receivedAt: field('receivedAt').value,
+      };
+    });
+
+    const refresh = () => {
+      const lines = readLines();
+      const taking = lines.reduce((sum, line) => sum + (Number(line.amount) || 0), 0);
+      const left = balance === null ? null : Math.round((balance - taking) * 100) / 100;
+      const clears = left !== null && left <= 0.005;
+      if (!fullTouched) $('payfull').checked = clears && taking > 0;
+
+      const full = $('payfull').checked;
+      $('paysummary').innerHTML = !taking
+        ? ''
+        : `<div class="banner ${full && !clears ? 'warn' : 'ok'}" style="margin-top:12px">
+            Taking <b>${formatMoney(taking)}</b>.
+            ${left === null
+              ? 'No invoice figure on this job yet, so there is no balance to work from.'
+              : full
+                ? (clears
+                    ? 'That settles it — the ticket closes and drops off the open jobs list.'
+                    : `That leaves <b>${formatMoney(left)}</b> outstanding, and you are closing the
+                       ticket anyway. The receipt will say paid in full and that ${formatMoney(left)}
+                       will not be chased.`)
+                : `That leaves <b>${formatMoney(left)}</b> outstanding.
+                   ${clears ? 'The ticket stays open until you tick that it is settled.' : ''}`}
+          </div>`;
+    };
+
+    paylines.oninput = refresh;
+    paylines.onchange = refresh;
+    $('payfull').onchange = () => { fullTouched = true; refresh(); };
+
+    $('addpayline').onclick = () => {
+      paylines.insertAdjacentHTML('beforeend', payLineHtml(lineCount, ''));
+      const added = paylines.lastElementChild;
+      added.querySelector('[data-droppay]').onclick = () => { added.remove(); refresh(); };
+      added.querySelector('[data-payfield="amount"]').focus();
+      lineCount += 1;
+      refresh();
+    };
+
+    const say = (tone, message) => {
+      $('paymsg').innerHTML = `<div class="msg ${tone}">${esc(message)}</div>`;
+    };
+
+    const record = async (sendEmail, button) => {
+      const lines = readLines().filter((line) => line.amount !== '');
+      if (!lines.length) return say('err', 'Put in what was taken first.');
+      const bad = lines.find((line) => !(Number(line.amount) > 0));
+      if (bad) return say('err', 'Every payment needs an amount greater than zero.');
+
+      const full = $('payfull').checked;
+      const review = $('payreview').checked;
+      const taking = lines.reduce((sum, line) => sum + Number(line.amount), 0);
+      // The one irreversible-feeling step on this form, so it is said back in
+      // the words that matter: the total, and whether the ticket closes.
+      const ask = sendEmail
+        ? `Record ${formatMoney(taking)} and email ${job.customerEmail}${
+            review ? ', asking for a Google review' : ''}?${
+            full ? '\n\nThe receipt will say paid in full and the ticket will close.' : ''}`
+        : `Record ${formatMoney(taking)} against this invoice?${
+            full ? '\n\nThe ticket will close.' : ''}`;
+      if (!confirm(ask)) return;
+
+      const buttons = [$('paysend'), $('payrecord')];
+      buttons.forEach((b) => { b.disabled = true; });
+      const label = button.textContent;
+      button.textContent = sendEmail ? 'Recording and sending…' : 'Recording…';
+      say('', 'Working…');
+
+      try {
+        const chosen = Array.from($('payfiles').files || []);
+        const tooBig = chosen.find((file) => file.size > UPLOAD_LIMIT);
+        if (tooBig) {
+          throw new Error(`${tooBig.name} is ${formatBytes(tooBig.size)}, and ${formatBytes(UPLOAD_LIMIT)} `
+            + 'is as much as one upload will carry.');
+        }
+        const files = [];
+        for (const file of chosen) {
+          files.push({
+            name: file.name,
+            mime: file.type || 'application/octet-stream',
+            base64: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
+          });
+        }
+
+        const result = await api('recordPayment', [job.id, {
+          payments: lines,
+          note: $('paynote').value.trim(),
+          paidInFull: full,
+          requestReview: review,
+          sendEmail: sendEmail,
+          files: files,
+        }]);
+
+        await renderJob(job.id);
+        const what = `${formatMoney(result.received)} recorded`;
+        const closed = result.archived ? ', ticket closed' : '';
+        toast(result.emailed === false
+          ? `${what}${closed} — but the receipt did not send. See the email log.`
+          : result.emailed
+            ? `${what}${closed}. Receipt sent to ${result.sentTo}.`
+            : `${what}${closed}.`);
+      } catch (error) {
+        buttons.forEach((b) => { b.disabled = false; });
+        button.textContent = label;
+        say('err', error.message);
+      }
+    };
+
+    $('paysend').onclick = () => record(true, $('paysend'));
+    $('payrecord').onclick = () => record(false, $('payrecord'));
+    refresh();
+  }
 
   const marklogged = $('marklogged');
   if (marklogged) marklogged.onclick = async () => {
@@ -2688,6 +2969,26 @@ async function renderSetup() {
       `}
     </section>
 
+    <section class="card" style="margin-top:16px">
+      <h2>Google review link</h2>
+      <p style="font-size:15px;line-height:1.55">
+        When you tick <b>Ask for a Google review</b> on a payment receipt, this is where the
+        customer is sent. Get it from your Google Business Profile under <b>Ask for reviews</b> —
+        it is the short <code>https://g.page/r/&hellip;</code> link, which opens the review box
+        directly. Until it is set, that tick box is switched off: an ask that drops somebody on
+        a search results page loses the review and wastes their time.
+      </p>
+      <label class="fld" for="reviewurl">Review link</label>
+      <div class="row tight" style="flex-wrap:nowrap">
+        <input class="txt mono" id="reviewurl" placeholder="https://g.page/r/..."
+          value="${esc(settings.reviewUrl || '')}">
+        <button class="btn ghost sm" type="button" id="savereview">Save</button>
+      </div>
+      <p class="hint">Blank clears it, which turns the ask back off. It is a public link, not a
+        password &mdash; it lives here rather than in the code so changing it is not a deploy.</p>
+      <div id="reviewmsg"></div>
+    </section>
+
     <section class="card" style="margin-top:16px" id="speedcard">
       <h2>How fast the backend is answering</h2>
       <p style="font-size:15px;line-height:1.55">
@@ -2721,6 +3022,20 @@ async function renderSetup() {
    * that in the editor means finding a function in a dropdown on a page
    * nobody in the shop otherwise visits.
    */
+  const savereview = $('savereview');
+  if (savereview) savereview.onclick = async () => {
+    savereview.disabled = true;
+    try {
+      const result = await api('setReviewUrl', [$('reviewurl').value.trim()]);
+      $('reviewmsg').innerHTML = `<div class="msg ok">${result.reviewUrl
+        ? 'Saved. The review tick box is available on a payment receipt.'
+        : 'Cleared. Payment receipts will not ask for a review.'}</div>`;
+    } catch (error) {
+      $('reviewmsg').innerHTML = `<div class="msg err">${esc(error.message)}</div>`;
+    }
+    savereview.disabled = false;
+  };
+
   const runsetup = $('runsetup');
   if (runsetup) runsetup.onclick = async () => {
     runsetup.disabled = true;

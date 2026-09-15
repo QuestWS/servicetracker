@@ -739,6 +739,16 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
 }
 .checkline input { width: 22px; height: 22px; margin-top: 1px; accent-color: var(--navy); flex: none; }
 .checkline small { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.4; }
+.checkline input:disabled { opacity: 0.45; }
+
+/* One payment on the record-a-payment form. Several of these stack, and each
+   is its own thing rather than more boxes in one long form, so the rule is
+   what says where one payment ends and the next begins. */
+.payline + .payline {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
 
 /* Hours and minutes, side by side. Two boxes with their units under them
    beats one decimal box: nobody has to work out what .35 of an hour is, and

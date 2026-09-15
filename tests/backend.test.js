@@ -2939,3 +2939,450 @@ describe('the hourly digest', () => {
     expect(backend.sentMail).toHaveLength(0);
   });
 });
+
+/**
+ * Money taken at the counter, and the receipt that goes back.
+ *
+ * Two things are load-bearing here and neither is obvious from the code:
+ * ONLY the writer's paid-in-full tick archives a ticket — arithmetic reaching
+ * zero does not — and the feedback invitation is on every one of these
+ * whether or not a review was asked for.
+ */
+describe('recording a payment', () => {
+  /** A finished job with a real balance and a payment link on it. */
+  function invoiced(amountDue = 1000, id = '01-8891') {
+    return openInvoice(id, 'jane@example.com', amountDue, {
+      paymentLink: 'https://pos.example.com/pay/abc',
+    });
+  }
+
+  const pay = (id, payload) => backend.fn('recordPayment', adminToken, id, payload);
+
+  it('records several payments taken in one go, under one batch', () => {
+    const id = invoiced(1000);
+    const result = pay(id, {
+      payments: [
+        { amount: 400, method: 'card', reference: 'Visa ending 4412', receivedAt: '2026-09-15' },
+        { amount: 250.5, method: 'check', reference: '1043', receivedAt: '2026-09-12' },
+      ],
+    });
+
+    expect(result.recorded).toBe(2);
+    expect(result.received).toBe(650.5);
+    expect(result.balance).toBe(349.5);
+    expect(result.payments).toHaveLength(2);
+    // One recording, one batch — which is what lets a receipt cover the lot.
+    expect(new Set(result.payments.map((p) => p.batch)).size).toBe(1);
+    expect(backend.fn('jobRow_', id).paid_total).toBe('650.5');
+  });
+
+  it('adds up across separate recordings without losing cents', () => {
+    const id = invoiced(100);
+    pay(id, { payments: [{ amount: 33.33, method: 'cash' }] });
+    pay(id, { payments: [{ amount: 33.33, method: 'cash' }] });
+    const result = pay(id, { payments: [{ amount: 33.33, method: 'cash' }] });
+    expect(result.job.paidTotal).toBe(99.99);
+    expect(result.balance).toBe(0.01);
+  });
+
+  it('only archives the ticket when the writer marks it paid in full', () => {
+    const id = invoiced(1000);
+    // The full amount, but not marked as settling the account. The balance is
+    // zero and the ticket is still the office's.
+    const part = pay(id, { payments: [{ amount: 1000, method: 'card' }] });
+    expect(part.balance).toBe(0);
+    expect(part.archived).toBe(false);
+    expect(backend.fn('jobRow_', id).paid_at).toBe('');
+    expect(backend.fn('listJobs', adminToken, { status: 'open' }).jobs.map((j) => j.id)).toContain(id);
+  });
+
+  it('archives it when the box is ticked, and it leaves the open list', () => {
+    const id = invoiced(1000);
+    const result = pay(id, { payments: [{ amount: 1000, method: 'card' }], paidInFull: true });
+    expect(result.archived).toBe(true);
+    expect(result.job.paidAt).toBeTruthy();
+    expect(backend.fn('listJobs', adminToken, { status: 'open' }).jobs.map((j) => j.id)).not.toContain(id);
+  });
+
+  it('lets the shop call a ticket settled with rounding left on it', () => {
+    // Deposits and BiT rounding leave odd cents behind, and the shop is
+    // allowed to write off eleven of them rather than chase a customer.
+    const id = invoiced(1000);
+    const result = pay(id, { payments: [{ amount: 999.89, method: 'card' }], paidInFull: true });
+    expect(result.archived).toBe(true);
+    expect(result.balance).toBe(0.11);
+  });
+
+  it('takes a part payment off what a statement would chase', () => {
+    const id = invoiced(1000);
+    pay(id, { payments: [{ amount: 600, method: 'check', reference: '1043' }] });
+    const groups = backend.fn('listOpenStatements', adminToken).customers;
+    const group = groups.find((g) => g.customerEmail === 'jane@example.com');
+    // Not the invoice's own figure — the customer would be billed twice for
+    // the part they have already settled.
+    expect(group.totalDue).toBe(400);
+    expect(group.invoices.find((inv) => inv.id === id).amountDue).toBe(400);
+  });
+
+  it('takes a fully-paid invoice off the statements list entirely', () => {
+    const id = invoiced(1000);
+    pay(id, { payments: [{ amount: 1000, method: 'card' }] });
+    const groups = backend.fn('listOpenStatements', adminToken).customers;
+    expect(groups.find((g) => g.customerEmail === 'jane@example.com')).toBeUndefined();
+  });
+
+  it('refuses a payment on a job that is not done yet', () => {
+    const { id } = seedJob();
+    expect(() => pay(id, { payments: [{ amount: 50, method: 'cash' }] }))
+      .toThrow(/Mark the job done first/);
+  });
+
+  it('refuses an empty recording, or an amount that is not money', () => {
+    const id = invoiced(500);
+    expect(() => pay(id, { payments: [] })).toThrow(/at least one payment/);
+    expect(() => pay(id, { payments: [{ amount: 0, method: 'cash' }] })).toThrow(/greater than zero/);
+    expect(() => pay(id, { payments: [{ amount: -20, method: 'cash' }] })).toThrow(/greater than zero/);
+    expect(() => pay(id, { payments: [{ amount: 'lots', method: 'cash' }] })).toThrow(/greater than zero/);
+    expect(backend.fn('jobRow_', id).paid_total).toBeFalsy();
+  });
+
+  it('records the money without emailing anybody unless asked', () => {
+    const id = invoiced(500);
+    pay(id, { payments: [{ amount: 500, method: 'cash' }], paidInFull: true });
+    expect(backend.sentMail).toHaveLength(0);
+  });
+
+  it('will not send a receipt to a customer with no address, and says so', () => {
+    backend.fn('createJob', adminToken, { invoiceNumber: '01-9100', customerName: 'Walk In' });
+    backend.fn('saveInvoice', adminToken, '01-9100', '', 'JVBERi0=', {
+      grandTotal: 80, deposits: 0, amountDue: 80,
+    });
+    backend.fn('markDone', adminToken, '01-9100');
+    expect(() => pay('01-9100', { payments: [{ amount: 80, method: 'cash' }], sendEmail: true }))
+      .toThrow(/no customer email address/);
+    // The money is still recorded. Only the sending failed.
+    expect(backend.fn('jobRow_', '01-9100').paid_total).toBe('80');
+  });
+});
+
+describe('the payment receipt email', () => {
+  function invoiced(amountDue = 1000, id = '01-8891') {
+    return openInvoice(id, 'jane@example.com', amountDue, {
+      paymentLink: 'https://pos.example.com/pay/abc',
+    });
+  }
+  const pay = (id, payload) =>
+    backend.fn('recordPayment', adminToken, id, Object.assign({ sendEmail: true }, payload));
+
+  it('says paid in full, shows no balance and never offers a Pay button', () => {
+    goLive();
+    const id = invoiced(1000);
+    pay(id, { payments: [{ amount: 1000, method: 'card', reference: 'Visa ending 4412' }], paidInFull: true });
+
+    const mail = backend.sentMail[0];
+    expect(mail.to).toBe('jane@example.com');
+    expect(mail.subject).toBe('Payment received, paid in full — Quest Watersports invoice ' + id);
+    expect(mail.opts.htmlBody).toContain('paid in full');
+    expect(mail.opts.htmlBody).toContain('nothing further owed');
+    // A Pay button under the words "nothing further owed" is how somebody
+    // pays the same invoice twice.
+    expect(mail.opts.htmlBody).not.toContain('pos.example.com');
+    expect(mail.body).not.toContain('pos.example.com');
+  });
+
+  it('says what is still owed, and offers the payment link for it', () => {
+    goLive();
+    const id = invoiced(1000);
+    pay(id, { payments: [{ amount: 400, method: 'card' }] });
+
+    const mail = backend.sentMail[0];
+    expect(mail.subject).toBe('Payment received — Quest Watersports invoice ' + id);
+    expect(mail.opts.htmlBody).toContain('Balance remaining');
+    expect(mail.opts.htmlBody).toContain('$600.00');
+    expect(mail.opts.htmlBody).toContain('Pay $600.00');
+    expect(mail.opts.htmlBody).toContain('pos.example.com');
+    expect(mail.opts.htmlBody).not.toContain('paid in full');
+  });
+
+  it('itemises every payment in the batch and totals them', () => {
+    goLive();
+    const id = invoiced(1000);
+    pay(id, {
+      payments: [
+        { amount: 400, method: 'card', reference: 'Visa ending 4412', receivedAt: '2026-09-15' },
+        { amount: 250.5, method: 'check', reference: '1043', receivedAt: '2026-09-12' },
+      ],
+    });
+
+    const html = backend.sentMail[0].opts.htmlBody;
+    expect(html).toContain('Visa ending 4412');
+    expect(html).toContain('Check · 1043');
+    expect(html).toContain('$400.00');
+    expect(html).toContain('$250.50');
+    expect(html).toContain('Total received');
+    expect(html).toContain('$650.50');
+  });
+
+  it('dates a payment the day it was taken, not the day before', () => {
+    goLive();
+    const id = invoiced(1000);
+    pay(id, { payments: [{ amount: 400, method: 'cash', receivedAt: '2026-09-15' }] });
+    // A plain day put through a Date is midnight UTC, which read back in the
+    // shop's own timezone is the fourteenth — and a customer whose receipt is
+    // dated the day before they paid rings up about it.
+    expect(backend.sentMail[0].opts.htmlBody).toContain('Sep 15, 2026');
+    expect(backend.sentMail[0].opts.htmlBody).not.toContain('Sep 14, 2026');
+  });
+
+  it('shows what was paid earlier as well, once there is more than one batch', () => {
+    goLive();
+    const id = invoiced(1000);
+    pay(id, { payments: [{ amount: 400, method: 'card' }] });
+    backend.sentMail.length = 0;
+    pay(id, { payments: [{ amount: 200, method: 'cash' }] });
+
+    const html = backend.sentMail[0].opts.htmlBody;
+    // This receipt is for the $200 — but the customer wants the whole picture.
+    expect(html).toContain('Paid on this invoice to date');
+    expect(html).toContain('$600.00');
+    expect(html).toContain('$400.00');
+  });
+
+  it('carries the feedback invitation whether or not a review was asked for', () => {
+    goLive();
+    backend.fn('setReviewUrl', adminToken, 'https://g.page/r/quest/review');
+    const line = 'please reply to this email and let us know';
+
+    const paid = invoiced(500, '01-8891');
+    pay(paid, { payments: [{ amount: 500, method: 'card' }], paidInFull: true, requestReview: true });
+    expect(backend.sentMail[0].opts.htmlBody).toContain(line);
+    expect(backend.sentMail[0].body).toContain(line);
+
+    backend.sentMail.length = 0;
+    const part = invoiced(500, '01-8892');
+    pay(part, { payments: [{ amount: 100, method: 'cash' }], requestReview: false });
+    expect(backend.sentMail[0].opts.htmlBody).toContain(line);
+    expect(backend.sentMail[0].body).toContain(line);
+  });
+
+  it('asks for a Google review only when the writer ticked the box', () => {
+    goLive();
+    backend.fn('setReviewUrl', adminToken, 'https://g.page/r/quest/review');
+
+    const id = invoiced(500);
+    pay(id, { payments: [{ amount: 500, method: 'card' }], paidInFull: true, requestReview: true });
+    expect(backend.sentMail[0].opts.htmlBody).toContain('https://g.page/r/quest/review');
+    expect(backend.sentMail[0].opts.htmlBody).toContain('Leave us a Google review');
+
+    backend.sentMail.length = 0;
+    const other = invoiced(500, '01-8892');
+    pay(other, { payments: [{ amount: 500, method: 'card' }], paidInFull: true });
+    // A difficult customer, or a repair that went badly. Same receipt, no ask.
+    expect(backend.sentMail[0].opts.htmlBody).not.toContain('g.page');
+    expect(backend.sentMail[0].opts.htmlBody).not.toContain('Google review');
+  });
+
+  it('asks for nothing when the shop has not set a review link', () => {
+    goLive();
+    const id = invoiced(500);
+    const result = pay(id, {
+      payments: [{ amount: 500, method: 'card' }], paidInFull: true, requestReview: true,
+    });
+    // An ask that links nowhere is worse than no ask at all.
+    expect(result.reviewRequested).toBe(false);
+    expect(backend.sentMail[0].opts.htmlBody).not.toContain('Google review');
+  });
+
+  it('refuses a review link that is not a real https link', () => {
+    expect(() => backend.fn('setReviewUrl', adminToken, 'g.page/r/quest')).toThrow(/https/);
+    expect(backend.fn('config', adminToken).reviewUrl).toBe('');
+  });
+
+  it('carries the writer\'s own note through to the customer', () => {
+    goLive();
+    const id = invoiced(500);
+    pay(id, {
+      payments: [{ amount: 500, method: 'card' }],
+      paidInFull: true,
+      note: 'Your spare prop is on the rack by the door\nwhenever you want to collect it.',
+    });
+    const html = backend.sentMail[0].opts.htmlBody;
+    expect(html).toContain('spare prop is on the rack');
+    // Typed over two lines, so it arrives over two lines.
+    expect(html).toContain('<br>whenever you want to collect it.');
+  });
+
+  it('attaches the invoice with the payment noted and the card receipt', () => {
+    goLive();
+    const id = invoiced(1000);
+    const result = pay(id, {
+      payments: [{ amount: 1000, method: 'card', reference: 'Visa ending 4412' }],
+      paidInFull: true,
+      files: [
+        { name: 'Invoice-01-8891-paid.pdf', mime: 'application/pdf', base64: 'JVBERi0=' },
+        { name: 'card-receipt.pdf', mime: 'application/pdf', base64: 'JVBERi0=' },
+      ],
+    });
+
+    const names = backend.sentMail[0].opts.attachments.map((a) => a.getName());
+    expect(names).toContain('Invoice-01-8891-paid.pdf');
+    expect(names).toContain('card-receipt.pdf');
+    expect(backend.sentMail[0].opts.htmlBody).toContain('Attached: Invoice-01-8891-paid.pdf, card-receipt.pdf');
+    // And they stay on the job, where the shop can find them again.
+    expect(result.files.map((f) => f.name)).toContain('card-receipt.pdf');
+    expect(result.files.every((f) => f.visibility === 'customer')).toBe(true);
+  });
+
+  it('sends an oversized receipt as a Drive link rather than bouncing the email', () => {
+    goLive();
+    const id = invoiced(1000);
+    // Past MAIL_ATTACHMENT_BUDGET: attaching it would bounce the whole
+    // message, and refusing it would put the writer back to mailing by hand.
+    const huge = 'A'.repeat(4 * (19 * 1024 * 1024 / 3));
+    pay(id, {
+      payments: [{ amount: 1000, method: 'card' }],
+      paidInFull: true,
+      files: [{ name: 'scan-of-everything.pdf', mime: 'application/pdf', base64: huge }],
+    });
+
+    const mail = backend.sentMail[0];
+    expect(mail.opts.attachments || []).toHaveLength(0);
+    expect(mail.opts.htmlBody).toContain('too large to email');
+    expect(mail.opts.htmlBody).toContain('drive.google.com/file/d/');
+    expect(mail.body).toContain('scan-of-everything.pdf');
+  });
+
+  it('holds the receipt in test mode and says who it was for', () => {
+    const id = invoiced(500);
+    const result = pay(id, { payments: [{ amount: 500, method: 'card' }], paidInFull: true });
+
+    expect(result.testMode).toBe(true);
+    expect(result.sentTo).toBe('service@questwatersports.com');
+    const mail = backend.sentMail[0];
+    expect(mail.to).toBe('service@questwatersports.com');
+    expect(mail.subject).toMatch(/^\[TEST \w{3} \d{1,2} \d{2}:\d{2}\]/);
+    expect(mail.opts.htmlBody).toContain('TEST MODE');
+    expect(mail.opts.htmlBody).toContain('jane@example.com');
+    // A rehearsal already goes to the desk; copying it to itself is noise.
+    expect(mail.opts.cc).toBeFalsy();
+
+    const logged = backend.fn('getJob', adminToken, id).emails.find((m) => m.kind === 'customer_paid_test');
+    expect(logged.status).toBe('held (test mode)');
+  });
+
+  it('copies the service desk on the real thing, and logs that it did', () => {
+    goLive();
+    const id = invoiced(500);
+    pay(id, { payments: [{ amount: 200, method: 'cash' }] });
+
+    expect(backend.sentMail[0].opts.cc).toBe('service@questwatersports.com');
+    const logged = backend.fn('getJob', adminToken, id).emails.find((m) => m.kind === 'customer_payment');
+    expect(logged.recipient).toContain('service@questwatersports.com');
+  });
+
+  it('is built the way Outlook needs, not the way a browser forgives', () => {
+    goLive();
+    backend.fn('setReviewUrl', adminToken, 'https://g.page/r/quest/review');
+    const id = invoiced(1000);
+    pay(id, {
+      payments: [{ amount: 400, method: 'card', reference: 'Visa ending 4412' }],
+      requestReview: true,
+      note: 'Thanks again for your patience on the parts.',
+    });
+    const html = backend.sentMail[0].opts.htmlBody;
+
+    // Word drops a background colour it was only given in CSS.
+    const filled = html.match(/<[a-z]+[^>]*style="[^"]*background:#[0-9A-Fa-f]{6}[^"]*"[^>]*>/g) || [];
+    expect(filled.length).toBeGreaterThan(3);
+    filled.forEach((tag) => expect(tag).toMatch(/bgcolor="#[0-9A-Fa-f]{6}"/));
+
+    expect(html).toContain('<!--[if mso]>');
+    expect(html).toContain('max-width:640px');
+
+    // And it will not inherit font-family into a table.
+    const sized = (html.match(/<td[^>]*style="[^"]*font-size:[^"]*"[^>]*>/g) || [])
+      .filter((tag) => !/font-size:0/.test(tag));
+    expect(sized.length).toBeGreaterThan(4);
+    sized.forEach((tag) => expect(tag).toMatch(/font-family:/));
+
+    // The review ask is a table too, for the same reason every other button is.
+    expect(html).toMatch(/<td[^>]*bgcolor="#C08A22"[^>]*>\s*<a href="https:\/\/g\.page/);
+  });
+
+  it('never calls what came through the shop a boat', () => {
+    goLive();
+    openInvoice('01-8921', 'ada@example.com', 300, {
+      customerName: 'Ada Trail', boatInfo: '2016 ShoreLand\'r tandem trailer',
+    });
+    pay('01-8921', { payments: [{ amount: 300, method: 'cash' }], paidInFull: true });
+
+    const mail = backend.sentMail[0];
+    expect(mail.opts.htmlBody).not.toMatch(/your boat/i);
+    expect(mail.body).not.toMatch(/your boat/i);
+    expect(mail.opts.htmlBody).toContain('tandem trailer');
+  });
+
+  it('tells the customer nothing about the shop\'s own figures', () => {
+    goLive();
+    const { id } = seedJob('01-8891');
+    backend.fn('saveInvoice', adminToken, id, '', 'JVBERi0=', {
+      grandTotal: 1284.55, deposits: 400, amountDue: 884.55,
+    });
+    backend.fn('markDone', adminToken, id);
+    pay(id, { payments: [{ amount: 884.55, method: 'card' }], paidInFull: true });
+
+    const mail = backend.sentMail[0];
+    // Part numbers, hours, mechanic names and internal notes stay in the shop.
+    expect(mail.opts.htmlBody).not.toContain('6BH-44352');
+    expect(mail.opts.htmlBody).not.toContain('Dale');
+    expect(mail.opts.htmlBody).not.toContain('never winterised');
+    // And never the grand total next to a figure they might pay against.
+    expect(mail.opts.htmlBody).not.toContain('1,284.55');
+  });
+});
+
+describe('payments and the customer page', () => {
+  it('never puts a payment record on /t/', () => {
+    goLive();
+    const id = openInvoice('01-8891', 'jane@example.com', 1000);
+    const token = backend.fn('jobRow_', id).token;
+    backend.fn('recordPayment', adminToken, id, {
+      payments: [{ amount: 400, method: 'card', reference: 'Visa ending 4412', note: 'took it at the counter' }],
+    });
+
+    const seen = JSON.stringify(backend.fn('publicJob', token, ''));
+    expect(seen).not.toContain('Visa ending 4412');
+    expect(seen).not.toContain('at the counter');
+    expect(seen).not.toContain('payments');
+  });
+
+  it('shows the customer what is left to pay, not what the invoice first said', () => {
+    goLive();
+    const id = openInvoice('01-8891', 'jane@example.com', 1000);
+    const token = backend.fn('jobRow_', id).token;
+    backend.fn('recordPayment', adminToken, id, { payments: [{ amount: 400, method: 'card' }] });
+    expect(backend.fn('publicJob', token, '').job.amountDue).toBe(600);
+  });
+});
+
+describe('the sheet keeping up with payments', () => {
+  it('notices a paid_total that disagrees with the Payments tab', () => {
+    const id = openInvoice('01-8891', 'jane@example.com', 1000);
+    backend.fn('recordPayment', adminToken, id, { payments: [{ amount: 400, method: 'card' }] });
+    expect(backend.fn('sheetStatus', adminToken).ready).toBe(true);
+
+    // What a hand edit in the Sheet looks like from here.
+    const jobs = backend.sheet('Jobs');
+    const column = backend.call('SHEETS.Jobs').indexOf('paid_total');
+    const row = jobs.rows.findIndex((r) => r[0] === id);
+    jobs.rows[row][column] = '999';
+    backend.call('forget_()');
+
+    expect(backend.fn('sheetStatus', adminToken).ready).toBe(false);
+    expect(backend.fn('sheetStatus', adminToken).driftedIds).toContain(id);
+
+    backend.call('recountJobTotals_()');
+    expect(backend.fn('jobRow_', id).paid_total).toBe('400');
+    expect(backend.fn('sheetStatus', adminToken).ready).toBe(true);
+  });
+});
