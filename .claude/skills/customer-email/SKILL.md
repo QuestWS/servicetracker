@@ -85,6 +85,26 @@ customer was sent. It is **skipped when the desk is already the recipient** —
 which is what a rehearsal is — because copying an address to itself is a
 duplicate rather than a record. The email log records `to (cc ...)`.
 
+## Testing a link in one of these emails
+
+**Send it from the portal, in test mode. Never from outside the app.**
+
+A sample composed elsewhere — the Gmail API, a hand-written message — renders
+differently in Gmail, and the difference is not cosmetic. Gmail wraps every
+link it shows as `google.com/url?q=...` and forwards silently only when that
+wrapper carries a valid `usg=` signature. Mail sent out-of-band gets no
+signature, so **every link in it** stops at a "Redirect Notice" warning page —
+including a POS+ payment link that works perfectly in the invoice email this
+app sends.
+
+That cost a day and three shipped "fixes" to a review link that was never
+broken: the destination, the domain and the markup were all changed in turn,
+and the control that settled it was clicking the payment link in the same
+sample and seeing it fail too.
+
+A test-mode send from the job page goes to `service@`, arrives the way a
+customer's will, and is the only sample worth judging a link by.
+
 ## Test mode
 
 `TEST_MODE` defaults to **on**, so a fresh deployment cannot email a customer

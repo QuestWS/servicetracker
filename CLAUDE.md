@@ -57,8 +57,6 @@ index.html            landing
 admin/index.html      service writer portal (password → token in localStorage)
 m/index.html          mechanic PWA (name → token; manifest + sw.js at the root)
 t/index.html          customer page (?j=token is the only credential)
-r/index.html          review doorway — a receipt's review button points here,
-                      because Gmail will not silently forward to google.com
 assets/lib/           shared browser modules — no framework, plain ESM
 assets/vendor/        pdfjs, pdf-lib, qrcode, zxing, committed on purpose
 service-tracker.gs    the entire backend

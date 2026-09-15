@@ -52,22 +52,31 @@ const STATEMENT_PAYMENT_URL = 'https://pay.pospluslogin.com/questws';
  * encoded. Public, like STATEMENT_PAYMENT_URL above — nothing secret lives
  * in this file.
  *
- * TWO EARLIER SHAPES WERE TRIED AND ARE NOT WORTH RETRYING:
+ * Two other shapes were considered:
  *
- *   - The Business Profile's own https://g.page/r/.../review. The right link
- *     in principle, but that profile sits on the owner's personal Google
- *     account and was not to hand.
+ *   - The Business Profile's own https://g.page/r/.../review. Equally direct,
+ *     and fine to paste into App setup if it ever turns up — but that profile
+ *     sits on the owner's personal Google account and was not to hand.
  *   - https://www.google.com/search?kgmid=/g/1thkxvf7, the shop's knowledge
- *     panel. It went out in a test email and arrived badly: Gmail rewrites
- *     every link as google.com/url?q=..., and Google will not silently bounce
- *     that wrapper into its own search results, so the customer met a
- *     "Redirect Notice" warning page, THEN a page of search results, THEN had
- *     to find "Write a review" on it. Three steps and a scare to leave a
- *     review nobody was going to leave by then.
+ *     panel. Rejected on merit: it opens a PAGE, and the customer still has
+ *     to find "Write a review" on it. writereview opens the box itself.
  *
- * search.google.com/local/writereview has neither problem. It is not a search
- * result, so the wrapper passes it through, and it opens the review dialog
- * itself rather than a page that contains a way to get to one.
+ * ── A WARNING ABOUT TESTING THIS, WHICH COST A DAY ────────────────────
+ * Clicking a review link in a sample email sent from OUTSIDE this app — the
+ * Gmail API, a hand-composed message, anything not sent by Apps Script — lands
+ * on a Google "Redirect Notice" warning page instead of the destination.
+ *
+ * That is an artefact of the test, NOT of the link. Gmail wraps every link it
+ * renders as google.com/url?q=... and forwards silently only when the wrapper
+ * carries a valid usg= signature; the out-of-band samples got no signature, so
+ * EVERY link in them stopped at the warning — including a POS+ payment link
+ * that works perfectly in the invoice email this app sends.
+ *
+ * Three "fixes" were shipped chasing this before that control was run: the
+ * knowledge-panel link, then writereview, then a redirect page on the shop's
+ * own domain. None of them was fixing anything. If a link looks broken in a
+ * sample, send a real one from the portal in test mode BEFORE touching the
+ * code — it arrives via service@ and renders the way a customer's will.
  *
  * Still overridable from App setup, for the day the g.page link turns up or
  * the listing moves.
@@ -101,34 +110,6 @@ function reviewUrl_() {
  * sentence is attached to the link that needs it rather than written into the
  * template for good.
  */
-/**
- * The URL the review button actually carries: a hop through the shop's own
- * /r/ page rather than the Google link itself.
- *
- * WHY, because this looks like pointless indirection and is not. Gmail
- * rewrites every link it renders as google.com/url?q=..., and that redirector
- * refuses to silently forward to a google.com destination — it shows the
- * reader a "Redirect Notice" warning page first. Two different Google review
- * URLs were tried in front of a real inbox and both hit it; the destination
- * being on google.com IS the trigger, so no third Google URL fixes it.
- *
- * questws.github.io is not google.com, so Gmail forwards it silently, and the
- * hop from that page to Google is an ordinary navigation nothing wraps.
- *
- * The query string is left off when the link is the built-in one, which is
- * the normal case: /r/ already knows it, and a bare URL is what somebody
- * reading the plain-text part of the email should see. An overridden link
- * travels as ?u=, and /r/ checks it against the shapes a Google review box is
- * served at before following it — an unchecked redirector on the shop's own
- * domain is a phishing link with the shop's name on it.
- */
-function reviewLinkUrl_() {
-  const url = reviewUrl_();
-  if (!url) return '';
-  if (url === GOOGLE_REVIEW_URL) return SITE_URL + '/r/';
-  return SITE_URL + '/r/?u=' + encodeURIComponent(url);
-}
-
 function directReviewLink_(url) {
   return /^https:\/\/(g\.page\/r\/|search\.google\.com\/local\/writereview)/i.test(String(url || ''));
 }
@@ -3419,11 +3400,7 @@ function paymentEmailContent_(job, options) {
   const paidTotal = money2_(options.paidTotal || 0);
   const balance = options.balance;
   const full = Boolean(options.paidInFull);
-  // Two different things: `review` is the Google link, and decides whether
-  // there is an ask at all and whether it needs explaining. `reviewHref` is
-  // what the button carries — see reviewLinkUrl_ for why they differ.
   const review = options.requestReview ? reviewUrl_() : '';
-  const reviewHref = review ? reviewLinkUrl_() : '';
   const note = String(options.note || '').trim();
   const linked = options.linked || [];
 
@@ -3541,7 +3518,7 @@ function paymentEmailContent_(job, options) {
         // is not reading a shorter version of somebody else's email.
         feedbackHtml_(),
       meta: 'INVOICE# ' + job.id + (job.boat_info ? ' · ' + job.boat_info : ''),
-      buttons: (review ? button_(reviewHref, 'Leave us a Google review', '#C08A22') : '') +
+      buttons: (review ? button_(review, 'Leave us a Google review', '#C08A22') : '') +
         // Never on a paid-in-full receipt, whatever link is on the job: a Pay
         // button under the words "nothing further owed" is how a customer
         // pays twice.
@@ -3564,7 +3541,7 @@ function paymentEmailContent_(job, options) {
       (options.attached && options.attached.length ? '\n\nAttached: ' + options.attached.join(', ') : '') +
       (linked.length ? '\n\nToo large to email, so here to download:\n' +
         linked.map(function (file) { return file.name + ': ' + driveViewUrl_(file.driveFile); }).join('\n') : '') +
-      (review ? '\n\nA short Google review helps other boaters find us: ' + reviewHref +
+      (review ? '\n\nA short Google review helps other boaters find us: ' + review +
         (directReviewLink_(review) ? '' : '\n(Tap "Write a review" on the listing that opens.)') : '') +
       '\n\n' + FEEDBACK_LINE +
       '\n\nInvoice ' + job.id + '\n' + SHOP_NAME,
@@ -4291,9 +4268,7 @@ function config(token) {
     // pasted, or the listing fallback it falls back to — and offer the
     // fallback back if somebody clears the field and changes their mind.
     reviewUrlDefault: GOOGLE_REVIEW_URL,
-    reviewUrlDirect: directReviewLink_(reviewUrl_()),
-    // What the button in the email carries, which is not the link above.
-    reviewLinkUrl: reviewLinkUrl_()
+    reviewUrlDirect: directReviewLink_(reviewUrl_())
   };
 }
 
