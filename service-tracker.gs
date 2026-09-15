@@ -46,22 +46,52 @@ const STATEMENT_PAYMENT_URL = 'https://pay.pospluslogin.com/questws';
  * Where a customer is sent to leave a Google review, when a service writer
  * ticks the box on a payment email.
  *
- * Deliberately EMPTY here rather than guessed at. The right value is the
- * shop's own Google Business Profile "review us" short link (the
- * https://g.page/r/... one the profile hands you), and a search URL that
- * merely lands near the listing is worse than no link: somebody who meant to
- * leave a review and could not find where gives up rather than hunting.
+ * THIS IS THE FALLBACK, not the best link. It opens the shop's knowledge
+ * panel by its Google Knowledge Graph id, where the customer still has to
+ * find "Write a review" for themselves. The link worth having is the
+ * Business Profile's own https://g.page/r/.../review, which opens the review
+ * box directly — but that profile sits on the owner's personal Google
+ * account, so it was not to hand, and a feature nobody can switch on is worth
+ * less than one that costs the customer an extra tap.
  *
- * Set it once from the App setup page, which writes GOOGLE_REVIEW_URL into
- * script properties — so it survives a deploy and needs no code change. Until
- * it is set, the review tick box on a payment email is disabled and says why.
- * Not a credential: it is a public link, and it lives in properties because
- * the shop owns it, not because it is secret.
+ * The kgmid is the shop's own listing and is public, like
+ * STATEMENT_PAYMENT_URL above. Nothing secret lives in this file.
+ *
+ * Paste the g.page link into App setup the day it turns up and it supersedes
+ * this with no deploy — and because the email knows the difference (see
+ * directReviewLink_), the extra "tap Write a review" sentence disappears by
+ * itself when it is no longer needed.
  */
-const GOOGLE_REVIEW_URL = '';
+const GOOGLE_REVIEW_URL = 'https://www.google.com/search?kgmid=/g/1thkxvf7';
 
+/**
+ * The link in force: what the shop saved, or the fallback above if they never
+ * saved anything.
+ *
+ * Reads the property for PRESENCE rather than truth. A saved empty string is
+ * the shop deliberately turning the ask off, and `||` would have quietly
+ * handed the fallback straight back — so clearing it would not have cleared
+ * it. Never saved at all is null, and that is the only case the default
+ * applies to.
+ */
 function reviewUrl_() {
-  return String(props_().getProperty('GOOGLE_REVIEW_URL') || GOOGLE_REVIEW_URL || '').trim();
+  const saved = props_().getProperty('GOOGLE_REVIEW_URL');
+  if (saved === null || saved === undefined) return GOOGLE_REVIEW_URL;
+  return String(saved).trim();
+}
+
+/**
+ * Whether a review link opens the review box itself, or merely the listing.
+ *
+ * Decides one sentence in the email. A g.page/r/ link drops the customer on
+ * the star rating with the keyboard up; the kgmid fallback drops them on a
+ * page where "Write a review" is one more thing to spot. Telling somebody to
+ * look for a button that is not there is worse than saying nothing, so the
+ * sentence is attached to the link that needs it rather than written into the
+ * template for good.
+ */
+function directReviewLink_(url) {
+  return /^https:\/\/(g\.page\/r\/|search\.google\.com\/local\/writereview)/i.test(String(url || ''));
 }
 
 /**
@@ -3408,7 +3438,14 @@ function paymentEmailContent_(job, options) {
   const reviewBlock = review
     ? '<div style="' + MAIL_FONT + ';font-size:14.5px;line-height:22px;color:#1D2B38;margin:16px 0 0">' +
         'It was a pleasure working with you. If you have a minute, a short Google review helps ' +
-        'other boaters find us more than just about anything else we can do.</div>'
+        'other boaters find us more than just about anything else we can do.' +
+        // Only when the link lands on the listing rather than the review box.
+        // The shop's Business Profile link opens the stars directly, and
+        // telling somebody to hunt for a button that is already in front of
+        // them reads as clutter.
+        (directReviewLink_(review) ? ''
+          : ' The button below opens our Google listing \u2014 tap <b>Write a review</b> there.') +
+      '</div>'
     : '';
 
   const banner = rehearsal
@@ -3484,7 +3521,8 @@ function paymentEmailContent_(job, options) {
       (options.attached && options.attached.length ? '\n\nAttached: ' + options.attached.join(', ') : '') +
       (linked.length ? '\n\nToo large to email, so here to download:\n' +
         linked.map(function (file) { return file.name + ': ' + driveViewUrl_(file.driveFile); }).join('\n') : '') +
-      (review ? '\n\nA short Google review helps other boaters find us: ' + review : '') +
+      (review ? '\n\nA short Google review helps other boaters find us: ' + review +
+        (directReviewLink_(review) ? '' : '\n(Tap "Write a review" on the listing that opens.)') : '') +
       '\n\n' + FEEDBACK_LINE +
       '\n\nInvoice ' + job.id + '\n' + SHOP_NAME,
     attachments: options.attachments || []
@@ -4205,7 +4243,12 @@ function config(token) {
     customerTracking: customerTracking_(),
     siteUrl: SITE_URL,
     serviceEmail: SERVICE_EMAIL,
-    reviewUrl: reviewUrl_()
+    reviewUrl: reviewUrl_(),
+    // So App setup can say WHICH link is in force — the direct one the shop
+    // pasted, or the listing fallback it falls back to — and offer the
+    // fallback back if somebody clears the field and changes their mind.
+    reviewUrlDefault: GOOGLE_REVIEW_URL,
+    reviewUrlDirect: directReviewLink_(reviewUrl_())
   };
 }
 

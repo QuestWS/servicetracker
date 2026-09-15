@@ -2971,12 +2971,23 @@ async function renderSetup() {
 
     <section class="card" style="margin-top:16px">
       <h2>Google review link</h2>
+      <div class="banner ${settings.reviewUrl ? (settings.reviewUrlDirect ? 'ok' : 'warn') : 'warn'}"
+        style="margin-bottom:12px">
+        ${!settings.reviewUrl
+          ? `<b>The ask is switched off.</b> Ticking <b>Ask for a Google review</b> on a receipt
+             will do nothing until there is a link here.`
+          : settings.reviewUrlDirect
+            ? `<b>Using the direct review link.</b> A customer who taps it lands straight on the
+               star rating, which is as good as this gets.`
+            : `<b>Using the listing fallback.</b> It opens the shop's Google listing, where the
+               customer still has to find <b>Write a review</b> &mdash; so the receipt tells them
+               to. It works; the link below is better.`}
+      </div>
       <p style="font-size:15px;line-height:1.55">
-        When you tick <b>Ask for a Google review</b> on a payment receipt, this is where the
-        customer is sent. Get it from your Google Business Profile under <b>Ask for reviews</b> —
-        it is the short <code>https://g.page/r/&hellip;</code> link, which opens the review box
-        directly. Until it is set, that tick box is switched off: an ask that drops somebody on
-        a search results page loses the review and wastes their time.
+        The one worth having comes from the Google Business Profile under <b>Ask for reviews</b>:
+        the short <code>https://g.page/r/&hellip;</code> link, which opens the review box directly.
+        Paste it here the day it turns up and it replaces whatever is in use &mdash; no deploy, and
+        the receipt drops its &ldquo;tap Write a review&rdquo; line by itself.
       </p>
       <label class="fld" for="reviewurl">Review link</label>
       <div class="row tight" style="flex-wrap:nowrap">
@@ -2984,8 +2995,11 @@ async function renderSetup() {
           value="${esc(settings.reviewUrl || '')}">
         <button class="btn ghost sm" type="button" id="savereview">Save</button>
       </div>
-      <p class="hint">Blank clears it, which turns the ask back off. It is a public link, not a
-        password &mdash; it lives here rather than in the code so changing it is not a deploy.</p>
+      <div class="row tight" style="margin-top:8px">
+        <button class="btn ghost sm" type="button" id="usefallback">Use the listing fallback</button>
+      </div>
+      <p class="hint">Blank turns the ask off altogether. It is a public link, not a password
+        &mdash; it lives here rather than in the code so changing it is not a deploy.</p>
       <div id="reviewmsg"></div>
     </section>
 
@@ -3022,14 +3036,22 @@ async function renderSetup() {
    * that in the editor means finding a function in a dropdown on a page
    * nobody in the shop otherwise visits.
    */
+  const usefallback = $('usefallback');
+  if (usefallback) usefallback.onclick = () => {
+    $('reviewurl').value = settings.reviewUrlDefault || '';
+    $('reviewmsg').innerHTML = `<div class="msg note">Press Save to use it.</div>`;
+  };
+
   const savereview = $('savereview');
   if (savereview) savereview.onclick = async () => {
     savereview.disabled = true;
     try {
       const result = await api('setReviewUrl', [$('reviewurl').value.trim()]);
       $('reviewmsg').innerHTML = `<div class="msg ok">${result.reviewUrl
-        ? 'Saved. The review tick box is available on a payment receipt.'
+        ? 'Saved.'
         : 'Cleared. Payment receipts will not ask for a review.'}</div>`;
+      // The banner above states which link is in force, so it has to be redrawn.
+      setTimeout(() => renderSetup(), 700);
     } catch (error) {
       $('reviewmsg').innerHTML = `<div class="msg err">${esc(error.message)}</div>`;
     }

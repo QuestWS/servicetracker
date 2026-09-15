@@ -1223,8 +1223,11 @@ await admin.waitForSelector('#paylines', { timeout: 20000 });
 check('a done job offers a way to record a payment', await admin.locator('#paylines').count() === 1);
 check('the first amount is filled in with what is owed',
   (await admin.inputValue('#pay-amount-0')) === '1600.00', await admin.inputValue('#pay-amount-0'));
-check('the review ask is switched off until the shop sets a link',
-  await admin.isDisabled('#payreview'));
+// The Business Profile's own g.page link was not to hand, so the shop runs on
+// the listing fallback — which means the ask is available out of the box
+// rather than waiting on somebody's personal Google account.
+check('the review ask is available on the listing fallback',
+  (await admin.isDisabled('#payreview')) === false);
 
 // Several payments in one recording is the normal case, not an edge: a card
 // at the counter and a check in the post is one payment to the customer.
@@ -1750,6 +1753,41 @@ await admin.waitForFunction(
 check('and says so when it has',
   await admin.locator('.banner.ok:has-text("up to date")').count() === 1,
   (await admin.evaluate(() => document.body.innerText)).slice(0, 300));
+
+// The review link, and which of the two is actually in force. The page has to
+// be honest about running on the fallback — "set and working" and "set to the
+// good one" are different states and only one of them is finished.
+const reviewCard = await admin.evaluate(() => {
+  const input = document.getElementById('reviewurl');
+  return { value: input ? input.value : null, text: document.body.innerText };
+});
+check('the setup page says it is running on the listing fallback',
+  /using the listing fallback/i.test(reviewCard.text));
+// The field shows the link actually in force rather than sitting empty with
+// the banner explaining: what is going out is a thing the writer should be
+// able to read and edit, not something they have to be told about.
+check('and the field shows the link that is actually in force',
+  String(reviewCard.value).includes('kgmid'), JSON.stringify(reviewCard.value));
+
+await admin.click('#usefallback');
+check('the fallback can be put back into the field to save',
+  (await admin.inputValue('#reviewurl')).includes('kgmid'), await admin.inputValue('#reviewurl'));
+
+await admin.fill('#reviewurl', 'https://g.page/r/quest-browser-check/review');
+await admin.click('#savereview');
+await admin.waitForFunction(() => /using the direct review link/i.test(document.body.innerText),
+  { timeout: 20000 });
+check('saving a g.page link switches the page to saying so',
+  /using the direct review link/i.test(await admin.evaluate(() => document.body.innerText)));
+
+// And blank really does turn it off — the whole reason the property is read
+// for presence rather than truth.
+await admin.fill('#reviewurl', '');
+await admin.click('#savereview');
+await admin.waitForFunction(() => /the ask is switched off/i.test(document.body.innerText),
+  { timeout: 20000 });
+check('clearing it turns the ask off rather than falling back',
+  /the ask is switched off/i.test(await admin.evaluate(() => document.body.innerText)));
 
 // Where "it feels slow" turns into a figure somebody can quote back.
 check('the setup page lists what the backend is costing',
