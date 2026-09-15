@@ -3182,25 +3182,32 @@ describe('the payment receipt email', () => {
     expect(backend.sentMail[0].opts.htmlBody).not.toContain('Google review');
   });
 
-  it('falls back to the shop listing when no link has ever been saved', () => {
+  it('ships with a link that opens the review box itself', () => {
     goLive();
-    // The Business Profile lives on the owner's personal account, so the
-    // g.page link was not to hand. The listing link is the fallback, and a
-    // feature nobody can switch on is worth less than one extra tap.
     const id = invoiced(500);
     const result = pay(id, {
       payments: [{ amount: 500, method: 'card' }], paidInFull: true, requestReview: true,
     });
     expect(result.reviewRequested).toBe(true);
     const html = backend.sentMail[0].opts.htmlBody;
-    expect(html).toContain('kgmid=/g/1thkxvf7');
-    // It opens the listing, not the review box, so the customer is told what
-    // to look for rather than left to spot it.
-    expect(html).toContain('Write a review');
-    expect(backend.sentMail[0].body).toContain('Tap "Write a review"');
+    expect(html).toContain('search.google.com/local/writereview?placeid=ChIJfXEeU5lUCYgRinSXcUIjYX0');
+    expect(backend.fn('config', adminToken).reviewUrlDirect).toBe(true);
+    // Nothing to explain: the tap lands on the stars.
+    expect(html).not.toContain('Write a review');
   });
 
-  it('drops that extra instruction once a direct review link is saved', () => {
+  it('never ships a link that lands on Google search results', () => {
+    // A knowledge-panel link went out once and arrived badly. Gmail rewrites
+    // every link as google.com/url?q=..., and Google will not silently bounce
+    // that wrapper into its own search — so the customer met a "Redirect
+    // Notice" warning, then search results, then had to find the review
+    // button. Three steps to leave a review nobody leaves by then.
+    const shipped = backend.call('GOOGLE_REVIEW_URL');
+    expect(shipped).not.toMatch(/google\.com\/search/);
+    expect(backend.call('directReviewLink_(GOOGLE_REVIEW_URL)')).toBe(true);
+  });
+
+  it('takes a g.page link as equally direct', () => {
     goLive();
     backend.fn('setReviewUrl', adminToken, 'https://g.page/r/quest/review');
     const id = invoiced(500);
@@ -3208,10 +3215,21 @@ describe('the payment receipt email', () => {
 
     const html = backend.sentMail[0].opts.htmlBody;
     expect(html).toContain('https://g.page/r/quest/review');
-    expect(html).not.toContain('kgmid');
-    // A g.page link lands on the stars already. Telling somebody to hunt for
-    // a button that is in front of them is clutter.
+    expect(html).not.toContain('writereview');
     expect(html).not.toContain('Write a review');
+  });
+
+  it('tells the customer where to look when the link only opens a page', () => {
+    goLive();
+    // Still reachable: somebody pastes a listing URL over the default. The
+    // ask is worse, but saying nothing about it would be worse again.
+    backend.fn('setReviewUrl', adminToken, 'https://www.google.com/search?kgmid=/g/1thkxvf7');
+    expect(backend.fn('config', adminToken).reviewUrlDirect).toBe(false);
+
+    const id = invoiced(500);
+    pay(id, { payments: [{ amount: 500, method: 'card' }], paidInFull: true, requestReview: true });
+    expect(backend.sentMail[0].opts.htmlBody).toContain('Write a review');
+    expect(backend.sentMail[0].body).toContain('Tap "Write a review"');
   });
 
   it('asks for nothing at all once the link is deliberately cleared', () => {
@@ -3228,14 +3246,14 @@ describe('the payment receipt email', () => {
     });
     expect(result.reviewRequested).toBe(false);
     expect(backend.sentMail[0].opts.htmlBody).not.toContain('Google review');
-    expect(backend.sentMail[0].opts.htmlBody).not.toContain('kgmid');
+    expect(backend.sentMail[0].opts.htmlBody).not.toContain('writereview');
   });
 
   it('refuses a review link that is not a real https link', () => {
     expect(() => backend.fn('setReviewUrl', adminToken, 'g.page/r/quest')).toThrow(/https/);
-    // And the refusal changes nothing — the fallback is still what is in force.
-    expect(backend.fn('config', adminToken).reviewUrl).toContain('kgmid');
-    expect(backend.fn('config', adminToken).reviewUrlDirect).toBe(false);
+    // And the refusal changes nothing — the built-in link is still in force.
+    expect(backend.fn('config', adminToken).reviewUrl).toContain('writereview');
+    expect(backend.fn('config', adminToken).reviewUrlDirect).toBe(true);
   });
 
   it('carries the writer\'s own note through to the customer', () => {

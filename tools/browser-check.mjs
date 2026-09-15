@@ -1223,10 +1223,10 @@ await admin.waitForSelector('#paylines', { timeout: 20000 });
 check('a done job offers a way to record a payment', await admin.locator('#paylines').count() === 1);
 check('the first amount is filled in with what is owed',
   (await admin.inputValue('#pay-amount-0')) === '1600.00', await admin.inputValue('#pay-amount-0'));
-// The Business Profile's own g.page link was not to hand, so the shop runs on
-// the listing fallback — which means the ask is available out of the box
-// rather than waiting on somebody's personal Google account.
-check('the review ask is available on the listing fallback',
+// The shop ships with a link that opens the review box itself, so the ask
+// works out of the box rather than waiting on somebody's personal Google
+// account.
+check('the review ask is available out of the box',
   (await admin.isDisabled('#payreview')) === false);
 
 // Several payments in one recording is the normal case, not an edge: a card
@@ -1761,24 +1761,34 @@ const reviewCard = await admin.evaluate(() => {
   const input = document.getElementById('reviewurl');
   return { value: input ? input.value : null, text: document.body.innerText };
 });
-check('the setup page says it is running on the listing fallback',
-  /using the listing fallback/i.test(reviewCard.text));
+check('the setup page says the built-in link opens the review box',
+  /opens the review box directly/i.test(reviewCard.text));
 // The field shows the link actually in force rather than sitting empty with
 // the banner explaining: what is going out is a thing the writer should be
 // able to read and edit, not something they have to be told about.
 check('and the field shows the link that is actually in force',
-  String(reviewCard.value).includes('kgmid'), JSON.stringify(reviewCard.value));
+  String(reviewCard.value).includes('writereview'), JSON.stringify(reviewCard.value));
+
+// A link that only opens a PAGE is the state this card has to warn about.
+// Gmail rewrites every link it sends as google.com/url?q=..., and Google puts
+// a "Redirect Notice" warning in front of a bounce into its own search — so a
+// knowledge-panel link costs the customer a scare screen, then a page of
+// results, then finding the review button.
+await admin.fill('#reviewurl', 'https://www.google.com/search?kgmid=/g/1thkxvf7');
+await admin.click('#savereview');
+await admin.waitForFunction(() => /opens a page, not the review box/i.test(document.body.innerText),
+  { timeout: 20000 });
+check('and warns when a saved link only opens a page',
+  /opens a page, not the review box/i.test(await admin.evaluate(() => document.body.innerText)));
 
 await admin.click('#usefallback');
-check('the fallback can be put back into the field to save',
-  (await admin.inputValue('#reviewurl')).includes('kgmid'), await admin.inputValue('#reviewurl'));
-
-await admin.fill('#reviewurl', 'https://g.page/r/quest-browser-check/review');
+check('the built-in link can be put back into the field',
+  (await admin.inputValue('#reviewurl')).includes('writereview'), await admin.inputValue('#reviewurl'));
 await admin.click('#savereview');
-await admin.waitForFunction(() => /using the direct review link/i.test(document.body.innerText),
+await admin.waitForFunction(() => /opens the review box directly/i.test(document.body.innerText),
   { timeout: 20000 });
-check('saving a g.page link switches the page to saying so',
-  /using the direct review link/i.test(await admin.evaluate(() => document.body.innerText)));
+check('and saving it clears the warning',
+  /opens the review box directly/i.test(await admin.evaluate(() => document.body.innerText)));
 
 // And blank really does turn it off — the whole reason the property is read
 // for presence rather than truth.

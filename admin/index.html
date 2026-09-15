@@ -2977,26 +2977,27 @@ async function renderSetup() {
           ? `<b>The ask is switched off.</b> Ticking <b>Ask for a Google review</b> on a receipt
              will do nothing until there is a link here.`
           : settings.reviewUrlDirect
-            ? `<b>Using the direct review link.</b> A customer who taps it lands straight on the
-               star rating, which is as good as this gets.`
-            : `<b>Using the listing fallback.</b> It opens the shop's Google listing, where the
-               customer still has to find <b>Write a review</b> &mdash; so the receipt tells them
-               to. It works; the link below is better.`}
+            ? `<b>This opens the review box directly.</b> One tap and the customer is on the
+               stars with the keyboard up, which is as good as this gets. Nothing to do here.`
+            : `<b>This link opens a page, not the review box.</b> The customer has to find
+               <b>Write a review</b> on it &mdash; so the receipt tells them to, but plenty will
+               not bother. Use the button below to go back to the direct link.`}
       </div>
       <p style="font-size:15px;line-height:1.55">
-        The one worth having comes from the Google Business Profile under <b>Ask for reviews</b>:
-        the short <code>https://g.page/r/&hellip;</code> link, which opens the review box directly.
-        Paste it here the day it turns up and it replaces whatever is in use &mdash; no deploy, and
-        the receipt drops its &ldquo;tap Write a review&rdquo; line by itself.
+        Only change this if the listing moves, or if you get the shop's own
+        <code>https://g.page/r/&hellip;</code> link from the Google Business Profile under
+        <b>Ask for reviews</b> &mdash; that one is equally direct. Avoid anything that lands on
+        a search results page: Gmail wraps every link it sends, and Google shows the customer a
+        <b>Redirect Notice</b> warning before it will bounce them into its own search.
       </p>
       <label class="fld" for="reviewurl">Review link</label>
       <div class="row tight" style="flex-wrap:nowrap">
-        <input class="txt mono" id="reviewurl" placeholder="https://g.page/r/..."
+        <input class="txt mono" id="reviewurl" placeholder="https://search.google.com/local/writereview?placeid=..."
           value="${esc(settings.reviewUrl || '')}">
         <button class="btn ghost sm" type="button" id="savereview">Save</button>
       </div>
       <div class="row tight" style="margin-top:8px">
-        <button class="btn ghost sm" type="button" id="usefallback">Use the listing fallback</button>
+        <button class="btn ghost sm" type="button" id="usefallback">Put the built-in link back</button>
       </div>
       <p class="hint">Blank turns the ask off altogether. It is a public link, not a password
         &mdash; it lives here rather than in the code so changing it is not a deploy.</p>

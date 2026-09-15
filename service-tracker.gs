@@ -44,25 +44,36 @@ const STATEMENT_PAYMENT_URL = 'https://pay.pospluslogin.com/questws';
 
 /**
  * Where a customer is sent to leave a Google review, when a service writer
- * ticks the box on a payment email.
+ * ticks the box on a payment email. One tap, straight onto the stars.
  *
- * THIS IS THE FALLBACK, not the best link. It opens the shop's knowledge
- * panel by its Google Knowledge Graph id, where the customer still has to
- * find "Write a review" for themselves. The link worth having is the
- * Business Profile's own https://g.page/r/.../review, which opens the review
- * box directly — but that profile sits on the owner's personal Google
- * account, so it was not to hand, and a feature nobody can switch on is worth
- * less than one that costs the customer an extra tap.
+ * The place id is the shop's own, derived from the ftid in its Google Maps
+ * URL (0x88095499531e717d:0x7d6123427197748a) rather than looked up: a
+ * ChIJ... id is just those two 64-bit halves in a small protobuf, base64url
+ * encoded. Public, like STATEMENT_PAYMENT_URL above — nothing secret lives
+ * in this file.
  *
- * The kgmid is the shop's own listing and is public, like
- * STATEMENT_PAYMENT_URL above. Nothing secret lives in this file.
+ * TWO EARLIER SHAPES WERE TRIED AND ARE NOT WORTH RETRYING:
  *
- * Paste the g.page link into App setup the day it turns up and it supersedes
- * this with no deploy — and because the email knows the difference (see
- * directReviewLink_), the extra "tap Write a review" sentence disappears by
- * itself when it is no longer needed.
+ *   - The Business Profile's own https://g.page/r/.../review. The right link
+ *     in principle, but that profile sits on the owner's personal Google
+ *     account and was not to hand.
+ *   - https://www.google.com/search?kgmid=/g/1thkxvf7, the shop's knowledge
+ *     panel. It went out in a test email and arrived badly: Gmail rewrites
+ *     every link as google.com/url?q=..., and Google will not silently bounce
+ *     that wrapper into its own search results, so the customer met a
+ *     "Redirect Notice" warning page, THEN a page of search results, THEN had
+ *     to find "Write a review" on it. Three steps and a scare to leave a
+ *     review nobody was going to leave by then.
+ *
+ * search.google.com/local/writereview has neither problem. It is not a search
+ * result, so the wrapper passes it through, and it opens the review dialog
+ * itself rather than a page that contains a way to get to one.
+ *
+ * Still overridable from App setup, for the day the g.page link turns up or
+ * the listing moves.
  */
-const GOOGLE_REVIEW_URL = 'https://www.google.com/search?kgmid=/g/1thkxvf7';
+const GOOGLE_REVIEW_URL =
+  'https://search.google.com/local/writereview?placeid=ChIJfXEeU5lUCYgRinSXcUIjYX0';
 
 /**
  * The link in force: what the shop saved, or the fallback above if they never
