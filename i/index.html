@@ -71,6 +71,28 @@ function telHref(phone) {
   return `tel:+1${String(phone).replace(/[^0-9]/g, '')}`;
 }
 
+/**
+ * Where "something wasn't up to par" goes: the desk's inbox, not the phone.
+ *
+ * The shop wants to hear about a job that fell short and would rather read it
+ * than take the call. This page is opened off a text, at whatever hour the
+ * customer gets to it, and an invitation to ring about a disappointment is
+ * answered by whoever happens to pick up — usually with the boat gone and
+ * nothing in front of them.
+ *
+ * The invoice number rides in the subject so the office can put the message
+ * against the job without having to ask which one it was.
+ *
+ * Deliberately NOT the phone number below it. That one stays, because "what
+ * did you do to my boat" and "when can I collect it" are calls the shop is
+ * glad to take; this is the one kind it would rather have in writing.
+ */
+function feedbackHref(shop, invoice) {
+  const to = (shop && shop.email) || SHOP_FALLBACK.email;
+  const subject = invoice && invoice.id ? `Invoice ${invoice.id}` : 'My recent service';
+  return `mailto:${to}?subject=${encodeURIComponent(subject)}`;
+}
+
 /** Somebody is holding a link that does not open anything. Give them a person. */
 function renderMissing(shop, message) {
   const desk = shop || SHOP_FALLBACK;
@@ -143,7 +165,7 @@ function render(data) {
       ${pdf}
       <p class="hint" style="margin-top:14px">
         If there was any part of your experience that wasn’t up to your expectations,
-        please call us and let us know.</p>
+        please <a href="${esc(feedbackHref(shop, invoice))}">email us</a> and let us know.</p>
     </section>
     ${extras}
     <section class="card" style="text-align:center">

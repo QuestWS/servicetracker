@@ -1248,6 +1248,28 @@ check('and the invoice itself to look at',
 // a log. Nothing filtered — nothing at all.
 check('and none of the shop’s own working', !/6BH-44352|Bill the extra hour|Dale|1h 30m/.test(textedText),
   textedText.slice(0, 400));
+// The shop is glad to take a call about a boat, and would rather have a
+// complaint in writing — a disappointment invited by phone is answered by
+// whoever picks up, with the boat gone and nothing in front of them. So this
+// one line is email, deliberately, while the number below it stays.
+const feedback = await texted.evaluate(() => {
+  const line = [...document.querySelectorAll('p')]
+    .find((p) => /up to your expectations/i.test(p.textContent));
+  if (!line) return null;
+  const link = line.querySelector('a');
+  return { text: line.textContent.replace(/\s+/g, ' ').trim(), href: link ? link.getAttribute('href') : null };
+});
+check('a complaint is invited by email, not by phone',
+  Boolean(feedback) && /^mailto:/.test(feedback.href || ''), JSON.stringify(feedback));
+check('and it carries the invoice number, so the office can place it',
+  Boolean(feedback) && feedback.href.includes(encodeURIComponent(`Invoice ${invoiceNumber}`)),
+  feedback && feedback.href);
+check('the line itself says nothing about ringing up',
+  Boolean(feedback) && !/call/i.test(feedback.text), feedback && feedback.text);
+// The shop's own number is still on the page. This was never about hiding it.
+check('while the shop phone number is still offered',
+  await texted.locator('a[href^="tel:"]').count() > 0);
+
 check('the page raises no errors on a phone', textedErrors.filter((e) => !isEnvironmental(e)).length === 0,
   textedErrors.join(' | '));
 await texted.screenshot({ path: `${SHOTS}/45c-texted-invoice.png`, fullPage: true });
