@@ -21,11 +21,18 @@ These apply everywhere and are not negotiable by any skill.
 3. **`SITE_URL` is printed onto paper.** Changing it after work orders are in
    the folder invalidates every QR code already printed. Same reason a
    re-stamp keeps the job's existing token.
-4. **This is an internal tool, and customer tracking is scrapped.** The only
-   thing a customer ever receives is the invoice email a writer sends by hand
-   from a finished job. `markDone` closes the ticket and sends nothing;
-   `sendInvoiceEmail` is a separate call behind a separate button. Do not put
-   those back together, and do not add a send to a status change or a trigger.
+4. **This is an internal tool, and customer tracking is scrapped.** What a
+   customer receives is the finished job's invoice, and only because a writer
+   sent it: by email from the portal, or by text from BiT. `markDone` closes
+   the ticket and sends nothing; `sendInvoiceEmail` is a separate call behind a
+   separate button. Do not put those back together, and do not add a send to a
+   status change or a trigger. **The text is not a send at all** — this app
+   writes the message and mints the code, a person sends it from BiT, and
+   `markInvoiceTexted` is them saying so afterwards. Nothing here dials out.
+
+   `/i/?c=code` is what that link opens: the invoice PDF, the balance and the
+   Pay button. It is an invoice, not a log — `invoicePage` puts no log entry
+   within reach of it, and `verify.sh` fails the deploy if that changes.
 
    **Nothing any user sees may mention a customer tracking page.** Not the
    portal, not the mechanic app, not the landing page, not `/t/`, not an
@@ -57,6 +64,7 @@ index.html            landing
 admin/index.html      service writer portal (password → token in localStorage)
 m/index.html          mechanic PWA (name → token; manifest + sw.js at the root)
 t/index.html          customer page (?j=token is the only credential)
+i/index.html          the invoice a customer is texted (?c=code is the only credential)
 assets/lib/           shared browser modules — no framework, plain ESM
 assets/vendor/        pdfjs, pdf-lib, qrcode, zxing, committed on purpose
 service-tracker.gs    the entire backend
@@ -107,7 +115,7 @@ carries the reasoning, the traps, and how to test that area.
 | `mechanic-app` | `m/index.html` — the scanner, job screen, tabs, drafts, saves, time entry, photos, the PWA |
 | `writer-portal` | `admin/index.html` — jobs list and sorting, job page, re-stamping, the red alert, attachments, close out, fixing misfiled entries |
 | `parts-props` | the parts list, stock requests, order lifecycle, the archive table, props out for repair |
-| `customer-email` | anything mailed out — the invoice email, Outlook rendering, attachments vs Drive links, CC, test mode, the digest |
+| `customer-email` | anything mailed out — the invoice email, Outlook rendering, attachments vs Drive links, CC, test mode, the digest — and the invoice by text: the message, the short code, and the page it opens |
 | `backend-data` | read/write paths in `service-tracker.gs` — schema, locking, the row cache, Drive, transcripts, speed |
 | `deploy-setup` | deploying, `setup()`, the two switches, script properties, sign-in and the magic link, triggers, quotas |
 | `bit-forms` | the BiT PDF shape and the parsers in `assets/lib` |

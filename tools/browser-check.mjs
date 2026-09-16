@@ -1193,6 +1193,82 @@ check('and says test mode kept it in the building', /test mode, so that was the 
   afterSend.slice(afterSend.search(/Invoice emailed/i), afterSend.search(/Invoice emailed/i) + 160));
 await admin.screenshot({ path: `${SHOTS}/45b-invoice-sent.png`, fullPage: true });
 
+/* ------------------------------------------------- the invoice by text */
+console.log('\n== the invoice by text ==');
+// The other door out, for a customer with no email address. BiT sends the
+// text; this app writes it and serves the page the link opens.
+await admin.click('#writetext');
+await admin.waitForSelector('#textbox:not([hidden])', { timeout: 30000 });
+const smsMessage = await admin.inputValue('#invoicetext');
+const smsMeta = await admin.textContent('#invoicetextmeta');
+check('the portal writes the text for the writer to send from BiT',
+  smsMessage.includes('Quest Watersports') && smsMessage.includes(invoiceNumber), smsMessage);
+check('with a link to the invoice page in it', /\/i\/\?c=[0-9A-HJ-NP-TV-Z]{8}/.test(smsMessage), smsMessage);
+check('and says what it will cost to send', /one text/.test(smsMeta), smsMeta);
+// One character outside GSM-7 turns the whole message into UCS-2, where a
+// segment holds 70 rather than 160 — three texts instead of one.
+// eslint-disable-next-line no-control-regex
+check('in characters a phone can carry', /^[\x20-\x7E]+$/.test(smsMessage), smsMessage);
+check('nothing is logged just for writing it',
+  !/Texted /.test(await admin.evaluate(() => document.body.innerText)));
+
+// The link in the message names the real site, because the backend builds it
+// from its own SITE_URL — the one printed on paper — and the preview server
+// only rewrites the copy the pages import. So the shape is checked above and
+// the code is driven against the local page here.
+const smsCode = smsMessage.match(/\/i\/\?c=([0-9A-HJ-NP-TV-Z]{8})/)[1];
+
+// A customer's phone: no session, no token, nothing but the link.
+const textedPhone = await shopContext({ viewport: { width: 390, height: 844 } });
+const texted = await textedPhone.newPage();
+const textedErrors = [];
+texted.on('pageerror', (error) => textedErrors.push(String(error)));
+await texted.goto(`${BASE}/i/?c=${smsCode}`, { waitUntil: 'networkidle' });
+await texted.waitForSelector('.card h2', { timeout: 20000 });
+const textedText = await texted.evaluate(() => document.body.innerText);
+check('the link opens the invoice with no sign-in of any kind',
+  /service is complete/i.test(textedText), textedText.slice(0, 160));
+check('it names the invoice', textedText.includes(invoiceNumber), textedText.slice(0, 200));
+check('and shows the balance, not the grand total',
+  /1,632\.47/.test(textedText) && !/16,917\.79/.test(textedText), textedText.slice(0, 300));
+// An h2 in a card is a small blue section label everywhere else in this app,
+// and this one is the first thing a customer reads. The override is a class,
+// so it is exactly the kind of thing that loses a specificity argument and
+// quietly does nothing.
+const headline = await texted.evaluate(() => {
+  const style = getComputedStyle(document.querySelector('.invoice-headline'));
+  return { transform: style.textTransform, size: parseFloat(style.fontSize) };
+});
+check('the headline reads as a headline, not a section label',
+  headline.transform === 'none' && headline.size >= 20, JSON.stringify(headline));
+check('with a way to pay it', await texted.locator('a.btn.gold').count() === 1);
+check('and the invoice itself to look at',
+  (await texted.locator('a.btn.ghost').first().getAttribute('href')).includes('drive.google.com'));
+// The whole reason this page exists as its own door: it shows an invoice, not
+// a log. Nothing filtered — nothing at all.
+check('and none of the shop’s own working', !/6BH-44352|Bill the extra hour|Dale|1h 30m/.test(textedText),
+  textedText.slice(0, 400));
+check('the page raises no errors on a phone', textedErrors.filter((e) => !isEnvironmental(e)).length === 0,
+  textedErrors.join(' | '));
+await texted.screenshot({ path: `${SHOTS}/45c-texted-invoice.png`, fullPage: true });
+
+// A code that opens nothing still puts somebody in touch with a person.
+await texted.goto(`${BASE}/i/?c=ZZZZZZZZ`, { waitUntil: 'networkidle' });
+await texted.waitForSelector('.card h2', { timeout: 20000 });
+check('a dead code offers the shop’s phone number rather than a blank page',
+  /could not find that invoice/i.test(await texted.evaluate(() => document.body.innerText)));
+check('and the number is a real one to tap',
+  (await texted.locator('a.btn.navy').first().getAttribute('href')) === 'tel:+18154332200');
+await textedPhone.close();
+
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#marktexted');
+await admin.waitForSelector('text=Logged against the job', { timeout: 30000 });
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.card', { timeout: 20000 });
+check('and the job says the customer was texted once the writer says so',
+  /Texted /.test(await admin.evaluate(() => document.body.innerText)));
+
 /* ------------------------------------------------- taking money at the desk */
 console.log('\n== recording a payment ==');
 // Its OWN job, priced and closed through the API rather than the invoice

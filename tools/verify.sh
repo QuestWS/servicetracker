@@ -30,7 +30,7 @@ done
 # and the page rendered nothing — found three minutes into a browser run
 # rather than in the second this takes.
 echo "== page scripts =="
-for f in index.html admin/index.html m/index.html t/index.html; do
+for f in index.html admin/index.html m/index.html t/index.html i/index.html; do
   [ -f "$f" ] || continue
   python3 - "$f" > /tmp/page.mjs <<'PY'
 import re, sys
@@ -72,6 +72,23 @@ fi
 awk '/^function publicJob/,/^}/' service-tracker.gs | grep -q "job: {" \
   && note "publicJob still names the customer's fields one at a time, and none of them is the alert" \
   || bad "publicJob no longer builds the customer payload field by field"
+
+# The texted invoice page shows an invoice, never a log. It is not filtered
+# through customerView_ because nothing filtered reaches it: no log entry is
+# put within its reach at all. If that ever stops being true — a spread of the
+# job row, an entries list "for convenience" — the shop finds out the same way
+# it would from /t/, which is from a customer.
+if awk '/^function invoicePage/,/^}/' service-tracker.gs | grep -qE "entriesForJob_|customerWords_|\bentries\b"; then
+  bad "invoicePage returns log entries — that page is an invoice, not a log"
+fi
+for field in alert grand_total grandTotal work_requested internal; do
+  if awk '/^function invoicePage/,/^}/' service-tracker.gs | grep -q "$field"; then
+    bad "invoicePage mentions $field — the texted page must never carry it"
+  fi
+done
+awk '/^function invoicePage/,/^}/' service-tracker.gs | grep -q "invoice: {" \
+  && note "invoicePage names the customer's fields one at a time, and none of them is a log entry or the grand total" \
+  || bad "invoicePage no longer builds the customer payload field by field"
 
 echo "== the one shared URL =="
 # API_URL lives in exactly one file so the four pages cannot drift apart.

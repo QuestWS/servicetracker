@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Your invoice — Quest Watersports</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" type="image/png" href="../assets/quest-mark.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Non-blocking, for the reason spelled out on the other pages: a webfont
+     from Google that cannot be reached does not fail fast, it sits for about
+     twelve seconds. A customer opening this from a text is on a phone, on
+     whatever signal they have. -->
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;600&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;600&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet"></noscript>
+<link rel="stylesheet" href="../assets/app.css">
+</head>
+<body>
+<!--
+  What a customer with no email address gets instead of the invoice email.
+
+  BiT can send a text; this app cannot and never will. A service writer copies
+  the message the portal composes, sends it from BiT, and the link in it lands
+  here. Same three things the email carries — the invoice, what is owed, and
+  the way to pay — and nothing else: no log, no hours, no parts, no internal
+  notes. The backend does not hand this page a log entry to leak.
+
+  The code in the URL is the whole of the credential, exactly as the token is
+  on /t/.
+-->
+<header class="tracker-head">
+  <div class="inner">
+    <img src="../assets/quest-mark.png" alt="">
+    <div>
+      <div class="co">Quest Watersports</div>
+      <div class="sub">Ottawa, IL</div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap narrow" id="main">
+  <section class="card" style="margin-top:22px">
+    <p class="lead" style="margin:0">Loading your invoice…</p>
+  </section>
+</main>
+
+<script type="module">
+import { api } from '../assets/lib/api.js';
+import { esc, driveFileUrl } from '../assets/lib/ui.js';
+import { formatMoney } from '../assets/lib/parse-invoice.js';
+
+const main = document.getElementById('main');
+
+/**
+ * The code out of the link. `?c=` is the shape, because GitHub Pages serves
+ * static paths only — the same reason the customer page is `/t/?j=`. A hash
+ * is accepted too: phones and messaging apps have been known to hand a link
+ * on with the query stripped, and there is no cost to reading both.
+ */
+function codeFromUrl() {
+  const query = new URLSearchParams(location.search).get('c');
+  const hash = location.hash.replace(/^#/, '');
+  const raw = (query || hash || '').trim().toUpperCase();
+  return /^[0-9A-HJ-NP-TV-Z]{6,12}$/.test(raw) ? raw : '';
+}
+
+const SHOP_FALLBACK = { name: 'Quest Watersports', phone: '(815) 433-2200', email: 'service@questwatersports.com' };
+
+function telHref(phone) {
+  return `tel:+1${String(phone).replace(/[^0-9]/g, '')}`;
+}
+
+/** Somebody is holding a link that does not open anything. Give them a person. */
+function renderMissing(shop, message) {
+  const desk = shop || SHOP_FALLBACK;
+  main.innerHTML = `
+    <section class="card" style="margin-top:22px;text-align:center">
+      <h2 class="invoice-headline">We could not find that invoice</h2>
+      <p class="lead" style="margin:10px auto 0">${esc(message)}</p>
+      <p class="lead" style="margin:14px auto 0">Give us a call and we will sort it out.</p>
+      <p style="margin:18px 0 4px">
+        <a class="btn navy big" href="${telHref(desk.phone)}">${esc(desk.phone)}</a>
+      </p>
+      <p class="hint" style="margin-top:14px">
+        <a href="mailto:${esc(desk.email)}">${esc(desk.email)}</a>
+      </p>
+    </section>`;
+}
+
+function render(data) {
+  const { invoice, shop, files } = data;
+  const greeting = invoice.firstName ? `${esc(invoice.firstName)}, your` : 'Your';
+
+  // The balance box, the same shape and the same order as the email's: what
+  // was already down, what has been paid since, and what that leaves. A job
+  // with a deposit against it owes nothing like its total, and the customer
+  // should be able to see why the figure is what it is.
+  const owed = invoice.amountDue === null ? '' : `
+    <div class="card flat" style="background:var(--paper);margin:0 0 16px">
+      ${invoice.deposits ? `<div class="kv"><span class="k">Deposits already paid</span>
+        <b>${formatMoney(invoice.deposits)}</b></div>` : ''}
+      ${invoice.paidTotal ? `<div class="kv"><span class="k">Payments received</span>
+        <b>${formatMoney(invoice.paidTotal)}</b></div>` : ''}
+      <div class="kv" style="align-items:baseline">
+        <span class="k" style="color:var(--navy);font-weight:600">
+          ${invoice.settled ? 'Balance' : 'Amount due'}</span>
+        <b style="font-size:22px">${formatMoney(invoice.amountDue)}</b></div>
+    </div>`;
+
+  const pay = invoice.paymentLink && !invoice.settled
+    ? `<p style="margin:0 0 10px"><a class="btn gold big block" href="${esc(invoice.paymentLink)}"
+         target="_blank" rel="noreferrer">Pay ${invoice.amountDue === null ? 'online' : formatMoney(invoice.amountDue)}</a></p>`
+    : '';
+
+  const pdf = invoice.invoiceFile
+    ? `<p style="margin:0 0 10px"><a class="btn ghost big block" href="${driveFileUrl(invoice.invoiceFile)}"
+         target="_blank" rel="noreferrer">View your invoice</a></p>`
+    : '';
+
+  const extras = files.length ? `
+    <section class="card">
+      <h2>Also for you</h2>
+      <div class="filelist">
+        ${files.map((file) => `<div class="filerow"><span class="grow">
+          <a href="${driveFileUrl(file.driveFile)}" target="_blank" rel="noreferrer">${esc(file.name)}</a>
+        </span></div>`).join('')}
+      </div>
+    </section>` : '';
+
+  main.innerHTML = `
+    <section class="card" style="margin-top:22px">
+      <p class="hint mono" style="margin:0 0 6px;letter-spacing:0.06em">
+        INVOICE# ${esc(invoice.id)}${invoice.unit ? ` · ${esc(invoice.unit)}` : ''}</p>
+      <h2 class="invoice-headline">${greeting} service is complete</h2>
+      <p class="lead" style="margin:8px 0 16px">
+        ${invoice.settled
+          ? 'The work you asked for has been done and your account is settled. Thank you.'
+          : 'The work you asked for has been done. Your invoice is below, and you can pay online.'}
+      </p>
+      ${owed}
+      ${pay}
+      ${pdf}
+      <p class="hint" style="margin-top:14px">
+        If there was any part of your experience that wasn’t up to your expectations,
+        please call us and let us know.</p>
+    </section>
+    ${extras}
+    <section class="card" style="text-align:center">
+      <p class="lead" style="margin:0 auto">${esc(shop.name)} · ${esc(shop.address)}</p>
+      <p style="margin:14px 0 4px"><a class="btn navy" href="${telHref(shop.phone)}">${esc(shop.phone)}</a></p>
+      <p class="hint" style="margin-top:10px"><a href="mailto:${esc(shop.email)}">${esc(shop.email)}</a></p>
+    </section>`;
+}
+
+const code = codeFromUrl();
+if (!code) {
+  renderMissing(null, 'That link is missing its code, or it was cut short on the way.');
+} else {
+  try {
+    const data = await api('invoicePage', [code]);
+    if (data.notFound) renderMissing(data.shop, 'This link is not live. It may have been replaced by a newer one.');
+    else render(data);
+  } catch (error) {
+    renderMissing(null, error.message);
+  }
+}
+</script>
+</body>
+</html>

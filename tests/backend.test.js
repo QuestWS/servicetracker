@@ -1491,6 +1491,270 @@ describe('the customer email', () => {
   });
 });
 
+/**
+ * The other door out, for the customers who never give an email address.
+ *
+ * BiT sends the text; this app writes it and serves the page the link opens.
+ * Nothing here dials out, and nothing here reaches into BiT.
+ */
+describe('the invoice by text', () => {
+  const textable = (id = '01-8886') => {
+    const { id: jobId } = seedJob(id);
+    backend.fn('saveInvoice', adminToken, jobId, 'https://pos.example.com/pay/abc', 'JVBERi0=', {
+      grandTotal: 16917.79, deposits: 15285.32, amountDue: 1632.47,
+    });
+    backend.fn('markDone', adminToken, jobId);
+    return jobId;
+  };
+
+  it('writes a message with the invoice, the balance and the link', () => {
+    const id = textable();
+    const text = backend.fn('invoiceText', adminToken, id);
+
+    expect(text.message).toContain('Quest Watersports');
+    expect(text.message).toContain(id);
+    expect(text.message).toContain('$1,632.47');
+    expect(text.message).toContain(text.url);
+    expect(text.url).toContain('/i/?c=' + text.code);
+    // The number the writer is about to send it to, so they are not looking
+    // it up in two places at once.
+    expect(text.phone).toBe('(815) 555-0142');
+  });
+
+  it('asks for the balance, never the grand total', () => {
+    // 16,917.79 with 15,285.32 already down is a real invoice from this shop.
+    // A text asking for the total would be asking for it twice.
+    const id = textable();
+    const text = backend.fn('invoiceText', adminToken, id);
+    expect(text.message).not.toContain('16,917.79');
+    expect(text.message).toContain('$1,632.47');
+  });
+
+  it('asks for what is left after a payment, not what the invoice said', () => {
+    const id = textable();
+    backend.fn('recordPayment', adminToken, id, {
+      payments: [{ amount: 632.47, method: 'card' }], email: false,
+    });
+    expect(backend.fn('invoiceText', adminToken, id).message).toContain('$1,000.00');
+  });
+
+  it('says nothing about money once the account is settled', () => {
+    const id = textable();
+    backend.fn('recordPayment', adminToken, id, {
+      payments: [{ amount: 1632.47, method: 'card' }], email: false,
+    });
+    const text = backend.fn('invoiceText', adminToken, id);
+    expect(text.message).not.toMatch(/\$/);
+    expect(text.message).toContain('View it here');
+  });
+
+  it('fits in one text, in characters a phone can carry', () => {
+    const text = backend.fn('invoiceText', adminToken, textable());
+    // One character outside GSM-7 — a curly apostrophe, an em dash — turns the
+    // whole message into UCS-2, where a segment holds 70 rather than 160. The
+    // message then arrives in pieces and costs three times as much to send.
+    expect(text.message).toMatch(/^[\x20-\x7E]+$/);
+    expect(text.characters).toBeLessThanOrEqual(160);
+    expect(text.segments).toBe(1);
+  });
+
+  it('flattens the characters that would triple what a text costs', () => {
+    // The wording will be edited one day by somebody pasting from a document,
+    // and a single curly apostrophe or em dash turns the whole message from
+    // GSM-7 into UCS-2 — 70 characters to a segment instead of 160.
+    expect(backend.fn('gsmSafe_', 'It\u2019s ready \u2014 come and get it\u2026'))
+      .toBe("It's ready - come and get it...");
+    // Anything it cannot spell in ASCII is dropped rather than guessed at.
+    expect(backend.fn('gsmSafe_', 'Caf\u00e9 \u2713')).toBe('Caf ');
+  });
+
+  it('counts a long message as more than one text', () => {
+    expect(backend.fn('textSegments_', 'x'.repeat(160))).toBe(1);
+    expect(backend.fn('textSegments_', 'x'.repeat(161))).toBe(2);
+    expect(backend.fn('textSegments_', 'x'.repeat(307))).toBe(3);
+  });
+
+  it('mints the code once and then hands back the same one', () => {
+    const id = textable();
+    const first = backend.fn('invoiceText', adminToken, id);
+    const again = backend.fn('invoiceText', adminToken, id);
+    expect(again.code).toBe(first.code);
+    expect(backend.fn('getJob', adminToken, id).job.invoiceCode).toBe(first.code);
+  });
+
+  it('mints nothing for a job nobody has texted', () => {
+    // A code that exists is a live door into somebody's invoice. The ones
+    // that exist should be the ones the shop deliberately handed out.
+    const id = textable('01-8890');
+    expect(backend.fn('getJob', adminToken, id).job.invoiceCode).toBeNull();
+    expect(backend.fn('getJob', adminToken, id).job.invoiceUrl).toBeNull();
+  });
+
+  it('gives two jobs two different codes', () => {
+    const one = backend.fn('invoiceText', adminToken, textable('01-8886')).code;
+    const two = backend.fn('invoiceText', adminToken, textable('01-8887')).code;
+    expect(one).not.toBe(two);
+  });
+
+  it('will not write one for a job that is not finished', () => {
+    const { id } = seedJob();
+    expect(() => backend.fn('invoiceText', adminToken, id)).toThrow(/not marked done/);
+  });
+
+  it('is the writer\'s to ask for', () => {
+    const id = textable();
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => backend.fn('invoiceText', mech, id)).toThrow(/Sign in/);
+  });
+
+  it('records nothing until the writer says they have sent it', () => {
+    const id = textable();
+    backend.fn('invoiceText', adminToken, id);
+    // Writing the message is not sending it. A job whose text was prepared
+    // and never sent must not read as one the customer has heard from.
+    expect(backend.fn('getJob', adminToken, id).emails).toHaveLength(0);
+
+    backend.fn('markInvoiceTexted', adminToken, id);
+    const logged = backend.fn('getJob', adminToken, id).emails;
+    expect(logged).toHaveLength(1);
+    expect(logged[0].kind).toBe('customer_text');
+    expect(logged[0].recipient).toBe('(815) 555-0142');
+  });
+
+  it('says to run setup() when the sheet has not caught up', () => {
+    const id = textable();
+    const jobs = backend.sheet('Jobs');
+    // Exactly the state a deploy leaves behind: new code, old header. Without
+    // the column the code would be written into nothing, and the link would
+    // open on a page that cannot find the job.
+    jobs.rows[0] = jobs.rows[0].filter((column) => column !== 'invoice_code');
+    expect(() => backend.fn('invoiceText', adminToken, id)).toThrow(/run setup\(\)/);
+  });
+
+  it('sends no mail of its own, either way', () => {
+    const id = textable();
+    backend.fn('invoiceText', adminToken, id);
+    backend.fn('markInvoiceTexted', adminToken, id);
+    expect(backend.sentMail).toHaveLength(0);
+  });
+});
+
+describe('the page a texted customer opens', () => {
+  const texted = (id = '01-8886') => {
+    const { id: jobId } = seedJob(id);
+    backend.fn('saveInvoice', adminToken, jobId, 'https://pos.example.com/pay/abc', 'JVBERi0=', {
+      grandTotal: 16917.79, deposits: 15285.32, amountDue: 1632.47,
+    });
+    backend.fn('markDone', adminToken, jobId);
+    return { id: jobId, code: backend.fn('invoiceText', adminToken, jobId).code };
+  };
+
+  it('shows the invoice, the balance and the way to pay', () => {
+    const { id, code } = texted();
+    const page = backend.fn('invoicePage', code);
+
+    expect(page.invoice.id).toBe(id);
+    expect(page.invoice.amountDue).toBe(1632.47);
+    expect(page.invoice.paymentLink).toBe('https://pos.example.com/pay/abc');
+    expect(page.invoice.invoiceFile).toBeTruthy();
+    expect(page.invoice.firstName).toBe('Jane');
+    expect(page.shop.phone).toBe('(815) 433-2200');
+  });
+
+  it('carries no log entry at all, and none of the shop\'s own figures', () => {
+    const { id, code } = texted();
+    backend.fn('setJobAlert', adminToken, id, 'Owner is disputing the estimate');
+    const seen = JSON.stringify(backend.fn('invoicePage', code));
+
+    // Not a filtered log — no log. The customer page has customerView_
+    // because it shows a job's log; this one shows an invoice, and the way
+    // hours and part numbers stay off it is that they are never within reach.
+    expect(seen).not.toContain('6BH-44352');
+    expect(seen).not.toContain('Bill the extra hour');
+    expect(seen).not.toContain('Impeller was shot');
+    expect(seen).not.toContain('Dale');
+    expect(seen).not.toContain('disputing');
+    expect(seen).not.toContain('16917.79');
+    expect(seen).not.toContain('1.5');
+  });
+
+  it('is nothing at all until the job is done', () => {
+    const { id } = seedJob();
+    backend.fn('saveInvoice', adminToken, id, 'https://pos.example.com/pay/abc', 'JVBERi0=');
+    backend.fn('markDone', adminToken, id);
+    const code = backend.fn('invoiceText', adminToken, id).code;
+    backend.call(`updateRow_('Jobs', jobRow_(${JSON.stringify(id)})._row, { status: 'in_progress' });`);
+
+    const page = backend.fn('invoicePage', code);
+    expect(page.notFound).toBe(true);
+    expect(page.invoice).toBeUndefined();
+    // Still told who to call, because somebody is standing there holding a
+    // link that did not open anything.
+    expect(page.shop.phone).toBe('(815) 433-2200');
+  });
+
+  it('answers a code that never existed exactly the same way', () => {
+    const page = backend.fn('invoicePage', 'ZZZZZZZZ');
+    expect(page.notFound).toBe(true);
+    expect(page.invoice).toBeUndefined();
+  });
+
+  it('takes the code however it was retyped', () => {
+    const { code } = texted();
+    expect(backend.fn('invoicePage', code.toLowerCase()).invoice).toBeTruthy();
+    expect(backend.fn('invoicePage', ' ' + code + ' ').invoice).toBeTruthy();
+  });
+
+  it('opens without a token of any kind', () => {
+    // The code in the URL is the whole of the credential, exactly as the
+    // tracking token is on /t/.
+    const { code } = texted();
+    expect(backend.fn('invoicePage', code).invoice).toBeTruthy();
+  });
+
+  it('stays live in test mode and with the customer page switched off', () => {
+    // Both switches exist to stop this app sending something to a customer by
+    // itself. This page sends nothing — a person pressed send, in BiT — and a
+    // link already in somebody's phone must not go dark because a switch was
+    // flipped in the office.
+    const { code } = texted();
+    backend.fn('setTestMode', adminToken, true);
+    backend.fn('setCustomerTracking', adminToken, false);
+    expect(backend.fn('invoicePage', code).invoice).toBeTruthy();
+  });
+
+  it('shows the balance after a payment, not the invoice figure', () => {
+    const { id, code } = texted();
+    backend.fn('recordPayment', adminToken, id, {
+      payments: [{ amount: 632.47, method: 'card' }], email: false,
+    });
+    const page = backend.fn('invoicePage', code);
+    expect(page.invoice.amountDue).toBe(1000);
+    expect(page.invoice.paidTotal).toBe(632.47);
+    expect(page.invoice.settled).toBe(false);
+  });
+
+  it('says so once the account is settled', () => {
+    const { id, code } = texted();
+    backend.fn('recordPayment', adminToken, id, {
+      payments: [{ amount: 1632.47, method: 'card' }], email: false,
+    });
+    expect(backend.fn('invoicePage', code).invoice.settled).toBe(true);
+  });
+
+  it('carries the customer\'s own files and keeps the rest back', () => {
+    const { id, code } = texted();
+    backend.fn('addJobFile', adminToken, id, {
+      name: 'damage.jpg', mime: 'image/jpeg', visibility: 'customer', base64: 'ZmlsZQ==',
+    });
+    backend.fn('addJobFile', adminToken, id, {
+      name: 'supplier-quote.pdf', mime: 'application/pdf', visibility: 'internal', base64: 'ZmlsZQ==',
+    });
+    const files = backend.fn('invoicePage', code).files;
+    expect(files.map((f) => f.name)).toEqual(['damage.jpg']);
+  });
+});
+
 describe('customer statements', () => {
   it('groups open invoices by customer, and only ones with a real balance still owed', () => {
     openInvoice('01-9101', 'jane@example.com', 500);

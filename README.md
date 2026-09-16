@@ -43,8 +43,13 @@ change; the logging does.
    total — and the writer confirms the balance before it goes anywhere.
 8. They **Mark done**, which closes the ticket and sends nothing.
 9. When they want the customer to have it, they press **Email the invoice** —
-   a separate, deliberate act. That email is the only thing a customer ever
-   receives: the invoice PDF, the payment link, and what they actually owe.
+   a separate, deliberate act. That email carries the invoice PDF, the payment
+   link, and what they actually owe.
+10. For the many customers who never give an email address, there is the same
+   thing by text. The portal writes a short message with a link in it; the
+   writer copies it into **BiT**, which does the actual texting, and then tells
+   this app they have sent it. The link opens `/i/?c=…` — the invoice, the
+   balance and the Pay button, and nothing else.
 
 ```
 Received ──scan──▶ Work underway ──mechanic──▶ Work finished ──writer──▶ Done
@@ -53,13 +58,14 @@ Received ──scan──▶ Work underway ──mechanic──▶ Work finished
 
 Status never runs backwards.
 
-## The three faces
+## The four faces
 
 | Path | Who | What |
 |---|---|---|
 | `/admin/` | Service writer | Job list, intake, full log, close-out, mechanics roster |
 | `/m/` | Mechanics | Installable PWA: scan → name → log → finish |
 | `/t/?j=…` | Customer | Public, unguessable URL. Status and customer-facing notes only. **Off by default** — see below |
+| `/i/?c=…` | Customer | What a texted customer opens: their invoice, their balance, the way to pay. No log of any kind |
 
 ### The customer never sees
 
@@ -68,6 +74,11 @@ pricing — at any status. Before `Done` there is no invoice and no payment link
 either. That boundary lives in one function, `customerView_`, and is checked
 three ways: a backend unit test, a rendered-page assertion, and a grep in
 `tools/verify.sh` that fails the deploy if the filter goes missing.
+
+`/i/` keeps the same boundary a different way: it is an invoice, not a log, so
+no log entry is put within its reach at all — nothing to filter, nothing to
+leak. `verify.sh` fails the deploy if that stops being true, or if the grand
+total ever turns up next to the Pay button.
 
 ## How it is put together
 
@@ -161,11 +172,12 @@ is in [docs/DEPLOY.md](docs/DEPLOY.md).
 ## An internal tool, by choice
 
 The shop runs this for itself. The customer tracking page is **off**
-(`CUSTOMER_TRACKING`, which defaults to `off`), and the only thing that ever
-reaches a customer is the invoice email a service writer sends by hand from a
-finished job. Nothing sends on a timer, on a status change, or as a side effect
-of closing a ticket — the two send sites that could reach a customer both sit
-behind an admin session and a button press.
+(`CUSTOMER_TRACKING`, which defaults to `off`), and what reaches a customer is
+the finished job's invoice — emailed by a service writer by hand, or texted by
+that writer from BiT. Nothing sends on a timer, on a status change, or as a
+side effect of closing a ticket — the two send sites that could reach a
+customer both sit behind an admin session and a button press, and the text is
+not a send site at all: this app writes the words and BiT does the sending.
 
 While the page is off, a customer who scans the QR code on their work order
 gets a short holding message with the shop's phone number, and the invoice
@@ -186,6 +198,13 @@ production. One thing differs:
 
 - The invoice email you send goes to the shop instead, headed with who it was
   meant for, so you can read exactly what they would have got.
+
+Test mode cannot hold back the **invoice text**, and does not pretend to. This
+app never sends it — a person copies it into BiT and presses send there — so
+the only thing that stops one reaching a customer is that writer. The page the
+link opens answers in test mode for the same reason: a rehearsal that cannot
+open the page it is rehearsing is no rehearsal, and a link already in
+somebody's phone must not go dark because a switch was flipped in the office.
 
 (If the tracking page is switched on, test mode also holds it back from anyone
 not signed in on the shop side, while staff still see the real thing.)

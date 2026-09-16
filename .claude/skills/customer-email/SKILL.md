@@ -144,3 +144,46 @@ When it is done, follow **[the ship procedure](../../commands/ship.md)**:
 verify, browser-check if a page was touched, commit, push to the feature
 branch *and* `main`, deploy only if `service-tracker.gs` changed, then report —
 flagging clearly if `setup()` now has to be run.
+
+## The invoice by text
+
+Plenty of customers here never give an email address — a phone number at the
+counter is the whole of it. So the same invoice goes out the other door:
+`invoiceText` writes a short message, the writer copies it into **BiT**, BiT
+sends it, and `markInvoiceTexted` is the writer saying afterwards that they
+did. **Nothing in this app sends a text**, and nothing in it may start trying
+to. The rule about BiT is not suspended because texting would be convenient.
+
+Three things hang together and each one bites on its own:
+
+- **The code.** `invoice_code` on Jobs: eight characters of the same
+  Crockford-ish alphabet as the tracking token, minted by `invoiceCodeFor_`
+  the first time a writer asks for the text and never before. Eight, not the
+  token's twenty, because the whole message has to stay inside one segment;
+  still the only credential on that page, so it is not shorter than that.
+  Lazy because a code that exists is a live door into somebody's invoice.
+- **The message.** ASCII only, and `gsmSafe_` is what keeps it that way. One
+  character outside GSM-7 — a curly apostrophe pasted in, an em dash, an
+  accent — turns the whole text to UCS-2, where a segment holds 70 instead of
+  160. A message that reads fine in the portal then arrives in pieces and
+  costs three times as much to send. The portal shows the character count and
+  how many texts it is, so that is visible before it goes.
+- **The page.** `/i/?c=CODE`, served by `invoicePage`. The customer page has
+  `customerView_` because it shows a job's log; this one shows an invoice, so
+  the boundary is kept by never putting a log entry within its reach. No
+  entries, no alert, no grand total, fields named one at a time. `verify.sh`
+  fails the deploy on any of those.
+
+The balance is the balance, after deposits and after payments — the same rule
+as the email, for the same reason, and the same "never the grand total next to
+a Pay button".
+
+**Test mode cannot hold a text back and does not pretend to**, because this app
+is not what sends it. The portal says so in red on the text panel during a
+rehearsal, and the page itself answers whatever the two switches are set to: a
+rehearsal that cannot open the page is no rehearsal, and a link already in
+somebody's phone must not go dark because a switch was flipped in the office.
+
+Adding `invoice_code` means **`setup()` has to be run once** after the deploy
+that carries it. Until it is, `invoiceText` says exactly that rather than
+writing a code into a column that is not there.

@@ -127,6 +127,16 @@ needing writing up. Parts-ordered and paid/closed are job flags.
 **`markDone` sends nothing.** Closing a ticket and emailing a customer are two
 deliberate acts behind two buttons.
 
+**Three buttons, now that a customer can be texted instead.** Below the email
+button, *Write the text message* asks the backend for the wording and the short
+code — which is what mints the code, and is not a send. The writer copies the
+message into BiT, sends it there, and presses *I have sent it*, which is the
+only thing that logs anything. Do not fold those two together and do not infer
+a send from the copy button: that would mark a job texted because somebody
+looked at the wording. The panel says in red during a rehearsal that test mode
+cannot hold a text back — BiT sends it, not us. Full detail is in the
+`customer-email` skill.
+
 ## Fixing a misfiled entry
 
 The office can move a log entry to another work order, or delete it. The floor

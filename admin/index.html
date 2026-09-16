@@ -423,6 +423,10 @@ async function renderJob(id) {
   const invoiceEmail = emails.find((mail) =>
     mail.kind === 'customer_done' || mail.kind === 'customer_done_test');
   const invoiceSent = invoiceEmail && invoiceEmail.status !== 'failed' && invoiceEmail.status !== 'skipped';
+  // The same log, the other door: a text the writer sent from BiT and then
+  // told us about. There is no "sent by us" to check — this app never sends
+  // a text — so a row here means a person said they had.
+  const invoiceTexted = emails.find((mail) => mail.kind === 'customer_text');
   // Older deployments have no Payments tab until setup() has been run — same
   // arrangement as the files above.
   const payments = data.payments || [];
@@ -569,7 +573,35 @@ async function renderJob(id) {
             <button class="btn ${invoiceSent ? 'ghost' : 'gold'} block" type="button" id="sendinvoice"${job.customerEmail ? '' : ' disabled title="Add a customer email address first"'}>
               ${invoiceSent ? 'Send the invoice email again' : 'Email the invoice to the customer'}
             </button>
-            ${job.customerEmail ? '' : '<p class="hint" style="margin-top:8px">No email address on file for this customer.</p>'}`
+            ${job.customerEmail ? '' : '<p class="hint" style="margin-top:8px">No email address on file for this customer.</p>'}
+
+            <hr style="border:0;border-top:1px solid var(--ice);margin:18px 0">
+
+            <h3 style="font-family:var(--disp);font-size:17px;color:var(--navy);margin:0 0 4px">Text it instead</h3>
+            <p class="hint" style="margin:0 0 10px">For the customers who never give us an email address.
+              BiT sends the text; we only write it. Copy this into BiT, send it from there, then tell us
+              you have — this app never touches BiT itself.</p>
+            ${invoiceTexted
+              ? `<p class="hint" style="margin:0 0 10px">Texted ${formatDateTime(invoiceTexted.created_at)}
+                 to ${esc(invoiceTexted.recipient)}.</p>`
+              : ''}
+            ${job.customerPhone ? '' : '<p class="hint" style="margin:0 0 10px">No phone number on file — worth adding one before you go looking for it in BiT.</p>'}
+            ${data.testMode ? `<div class="banner warn" style="margin:0 0 10px">Test mode holds the
+              <b>email</b> back. It cannot hold this one back — we do not send it, BiT does. Send it
+              from BiT and the customer really gets it.</div>` : ''}
+            <div id="textbox" hidden>
+              <label class="fld" for="invoicetext">The message</label>
+              <textarea class="txt" id="invoicetext" rows="4" readonly></textarea>
+              <p class="hint" id="invoicetextmeta"></p>
+              <div class="row tight" style="margin-top:10px">
+                <button class="btn ghost sm" type="button" id="copyinvoicetext">Copy the message</button>
+                <button class="btn ghost sm" type="button" id="opentextlink">Open the link</button>
+                <button class="btn gold sm" type="button" id="marktexted">I have sent it</button>
+              </div>
+            </div>
+            <button class="btn ${invoiceTexted ? 'ghost' : 'gold'} block" type="button" id="writetext" style="margin-top:10px">
+              ${invoiceTexted ? 'Write the text again' : 'Write the text message'}
+            </button>`
           : `
             <p class="hint" style="margin-bottom:10px">Closes the ticket. It sends nothing —
               emailing the invoice is a separate button once the job is done.</p>
@@ -1408,6 +1440,53 @@ async function renderJob(id) {
     } catch (error) {
       sendinvoice.disabled = false;
       sendinvoice.textContent = 'Email the invoice to the customer';
+      notice('warn', error.message);
+    }
+  };
+
+  // The text a writer sends from BiT. Asking for it is what mints the code,
+  // so nothing exists until somebody presses this — and pressing it does not
+  // count as having sent anything. "I have sent it" is the separate act, the
+  // same way the email's own button is separate from marking a job done.
+  const writetext = $('writetext');
+  if (writetext) writetext.onclick = async () => {
+    writetext.disabled = true;
+    const was = writetext.textContent;
+    writetext.textContent = 'Writing…';
+    try {
+      const text = await api('invoiceText', [job.id]);
+      $('invoicetext').value = text.message;
+      $('invoicetextmeta').textContent =
+        `${text.characters} characters — ${text.segments === 1 ? 'one text' : `${text.segments} texts`}` +
+        (text.phone ? ` · ${text.phone}` : ' · no number on file');
+      $('textbox').hidden = false;
+      $('opentextlink').onclick = () => window.open(text.url, '_blank', 'noreferrer');
+      $('copyinvoicetext').onclick = async () => {
+        const field = $('invoicetext');
+        try {
+          await navigator.clipboard.writeText(field.value);
+          toast('Copied. Paste it into BiT.');
+        } catch {
+          // No clipboard permission, or an http:// preview. Select it so the
+          // writer can copy it by hand rather than retype it.
+          field.focus();
+          field.select();
+          toast('Press copy — the message is selected.');
+        }
+      };
+      $('marktexted').onclick = async () => {
+        if (!confirm(`Record that the invoice text for ${job.id} has been sent?`)) return;
+        try {
+          await api('markInvoiceTexted', [job.id]);
+          renderJob(job.id);
+          toast('Logged against the job.');
+        } catch (error) { notice('warn', error.message); }
+      };
+      writetext.textContent = 'Write it again';
+      writetext.disabled = false;
+    } catch (error) {
+      writetext.disabled = false;
+      writetext.textContent = was;
       notice('warn', error.message);
     }
   };

@@ -294,7 +294,11 @@ const SHEETS = {
          // customer need it, and none of them may pay for a read of every
          // payment in the shop to get one job's. recountJobPayments_ backfills
          // it and puts it right if it ever drifts.
-         'paid_total'],
+         'paid_total',
+         // The code in the link a customer is texted. Short enough to ride in
+         // an SMS next to everything else that has to be said, and minted
+         // only for a job somebody actually texts — see invoiceCodeFor_.
+         'invoice_code'],
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
                'transcript_id', 'transcript_error', 'notified_at', 'created_at',
@@ -378,6 +382,31 @@ function newTrackingToken_() {
   while (out.length < 20) {
     const uuid = Utilities.getUuid().replace(/[^0-9a-f]/g, '');
     for (let i = 0; i < uuid.length && out.length < 20; i += 2) {
+      out += TOKEN_ALPHABET[parseInt(uuid.substr(i, 2), 16) % TOKEN_ALPHABET.length];
+    }
+  }
+  return out;
+}
+
+/**
+ * The code that stands for a job in a text message.
+ *
+ * Eight characters, not the job's twenty-character tracking token, because
+ * this one has to fit in an SMS alongside a sentence and still leave the
+ * whole thing inside one 160-character segment. Eight of this alphabet is
+ * about a trillion codes: a code is still the only credential on that page,
+ * so it has to be worth as little to guess at as the token is.
+ *
+ * Same Crockford-ish alphabet as the token, for the same reason — a customer
+ * reading one back over the phone must not have to distinguish 1 from I.
+ */
+const INVOICE_CODE_LENGTH = 8;
+
+function newInvoiceCode_() {
+  let out = '';
+  while (out.length < INVOICE_CODE_LENGTH) {
+    const uuid = Utilities.getUuid().replace(/[^0-9a-f]/g, '');
+    for (let i = 0; i < uuid.length && out.length < INVOICE_CODE_LENGTH; i += 2) {
       out += TOKEN_ALPHABET[parseInt(uuid.substr(i, 2), 16) % TOKEN_ALPHABET.length];
     }
   }
@@ -698,6 +727,8 @@ function doPost(e) {
     saveInvoice:      function (a) { return saveInvoice(data.token, a[0], a[1], a[2], a[3]); },
     markDone:         function (a) { return markDone(data.token, a[0]); },
     sendInvoiceEmail: function (a) { return sendInvoiceEmail(data.token, a[0]); },
+    invoiceText:      function (a) { return invoiceText(data.token, a[0]); },
+    markInvoiceTexted: function (a) { return markInvoiceTexted(data.token, a[0]); },
     recordPayment:    function (a) { return recordPayment(data.token, a[0], a[1]); },
     listOpenStatements: function (a) { return listOpenStatements(data.token); },
     sendCustomerStatement: function (a) { return sendCustomerStatement(data.token, a[0], a[1]); },
@@ -759,6 +790,8 @@ function doPost(e) {
 
     /* customer page — the token in the URL is the only credential */
     publicJob:        function (a) { return publicJob(a[0], data.token); },
+    /* the texted invoice page — the short code in the URL is the whole of it */
+    invoicePage:      function (a) { return invoicePage(a[0]); },
     setTestMode:      function (a) { return setTestMode(data.token, a[0]); },
     setCustomerTracking: function (a) { return setCustomerTracking(data.token, a[0]); },
     setReviewUrl:     function (a) { return setReviewUrl(data.token, a[0]); },
@@ -834,6 +867,60 @@ function jobByNumber_(typed) {
 
 function trackingUrl_(job) {
   return SITE_URL + '/t/?j=' + job.token;
+}
+
+/**
+ * The invoice page by its short code. Matched case-insensitively: a customer
+ * who retypes the link off a text will not have held the shift key.
+ */
+function jobByInvoiceCode_(code) {
+  const wanted = String(code || '').trim().toUpperCase();
+  if (!wanted) return null;
+  const all = rows_('Jobs');
+  for (let i = 0; i < all.length; i++) {
+    if (String(all[i].invoice_code || '').toUpperCase() === wanted) return all[i];
+  }
+  return null;
+}
+
+/** Where a texted customer lands. Same site as the QR code, a different door. */
+function invoiceUrl_(code) {
+  return SITE_URL + '/i/?c=' + code;
+}
+
+/**
+ * This job's code, minted the first time somebody asks for it.
+ *
+ * Lazy on purpose. Most jobs are emailed, and a column written on every
+ * markDone is a write nobody asked for; a code that exists is also a live
+ * door into a customer's invoice, so the ones that exist should be the ones
+ * the shop deliberately handed out.
+ *
+ * Under the lock, and re-read inside it: two writers texting the same job in
+ * the same minute must end up handing out the same code, not two doors to the
+ * same invoice.
+ */
+function invoiceCodeFor_(job) {
+  const existing = String(job.invoice_code || '').trim().toUpperCase();
+  if (existing) return existing;
+  requireColumn_('Jobs', 'invoice_code');
+  return withLock_(function () {
+    // The re-read has to be a real one. Rows are cached per execution and
+    // this execution's copy was taken before the lock, so without dropping it
+    // first the "has somebody else minted one" check would be answered from
+    // the same stale picture that sent us in here.
+    forget_('Jobs');
+    const fresh = jobRow_(job.id);
+    const already = String((fresh && fresh.invoice_code) || '').trim().toUpperCase();
+    if (already) return already;
+    let code = newInvoiceCode_();
+    // A collision is somewhere around one in a trillion, and the cost of
+    // checking is a tab already in the row cache. Two jobs sharing a code
+    // would hand one customer the other's invoice.
+    while (jobByInvoiceCode_(code)) code = newInvoiceCode_();
+    updateRow_('Jobs', fresh._row, { invoice_code: code, updated_at: nowIso_() });
+    return code;
+  });
 }
 
 /** Money to the cent, so a sum of three payments is not 0.30000000000000004. */
@@ -930,6 +1017,11 @@ function jobSummary_(job) {
     partsOrderedAt: job.parts_ordered_at || null,
     paidAt: job.paid_at || null,
     trackingUrl: trackingUrl_(job),
+    // The texted invoice page, once a writer has asked for one. Null until
+    // then, because the code is only minted when somebody texts the job —
+    // see invoiceCodeFor_.
+    invoiceCode: job.invoice_code || null,
+    invoiceUrl: job.invoice_code ? invoiceUrl_(job.invoice_code) : null,
     createdAt: job.created_at,
     updatedAt: job.updated_at,
     doneAt: job.done_at || null,
@@ -3987,6 +4079,179 @@ function sendInvoiceEmail(token, id) {
     throw new Error('This job has no customer email address, so there is nobody to send the invoice to.');
   }
   return { emailed: sendInvoiceEmail_(job), testMode: testMode_(), sentTo: testMode_() ? testEmail_() : job.customer_email };
+}
+
+/* ========================= the invoice by text ========================= */
+
+/**
+ * BiT can text a customer; this app cannot, and must not try to.
+ *
+ * Plenty of customers here never give an email address — they give a phone
+ * number at the counter and that is the whole of it. So the shop needs the
+ * same thing the invoice email says, in a form a writer can send from BiT:
+ * a short message and a link to a page that carries the invoice, the balance
+ * and the payment button.
+ *
+ * The app composes the message and mints the code. A person copies it into
+ * BiT and presses send there — exactly like every other exchange with BiT,
+ * and for the same reason. Nothing here dials out.
+ */
+
+/**
+ * Anything outside plain ASCII, spelled the way a phone can carry it.
+ *
+ * Not fussiness. A text made only of GSM-7 characters fits 160 to a segment;
+ * ONE character outside that set — a curly apostrophe pasted from a document,
+ * an em dash, an accented name — switches the whole message to UCS-2, where a
+ * segment holds 70. A message that reads fine here silently becomes three
+ * texts on the shop's bill and arrives in pieces on an old handset.
+ *
+ * So the message is kept to ASCII, and the substitutions are made here rather
+ * than by never typing the characters — the wording will be edited one day by
+ * somebody who has no idea this matters.
+ */
+const SMS_SUBSTITUTIONS = [
+  [/[\u2018\u2019\u201B]/g, "'"],
+  [/[\u201C\u201D]/g, '"'],
+  [/[\u2013\u2014]/g, '-'],
+  [/\u2026/g, '...'],
+  [/\u00A0/g, ' ']
+];
+
+function gsmSafe_(text) {
+  let out = String(text == null ? '' : text);
+  SMS_SUBSTITUTIONS.forEach(function (pair) { out = out.replace(pair[0], pair[1]); });
+  // Whatever is left that a GSM-7 alphabet cannot carry. Dropped rather than
+  // guessed at: a mangled word is easier to spot and fix than a message that
+  // quietly costs three segments.
+  return out.replace(/[^\x20-\x7E\n]/g, '');
+}
+
+/** 160 characters in one text, and 153 each once it has to be split. */
+function textSegments_(message) {
+  const length = String(message || '').length;
+  if (!length) return 0;
+  return length <= 160 ? 1 : Math.ceil(length / 153);
+}
+
+/**
+ * What the writer pastes into BiT.
+ *
+ * Short on purpose — everything that needs saying at length is on the page
+ * the link opens. What has to survive the trip is who it is from, which
+ * invoice it is about, what is owed, and where to go.
+ *
+ * The balance is the balance, never the grand total, for the same reason the
+ * email never puts the grand total next to a Pay button: deposits are normal
+ * here, and a customer who has already paid most of it must not be asked for
+ * the lot.
+ */
+function invoiceTextMessage_(job, code) {
+  const due = jobBalance_(job);
+  const owed = due === null || settled_(due) ? '' : money_(due);
+  return gsmSafe_(
+    SHOP_NAME + ': your service is complete. Invoice ' + job.id +
+    (owed ? ', ' + owed + ' due' : '') + '. ' +
+    (owed && job.payment_link ? 'View it and pay here: ' : 'View it here: ') +
+    invoiceUrl_(code));
+}
+
+/**
+ * The text for a finished job: the message, the link, and what it will cost
+ * to send.
+ *
+ * Asking for it mints the code, and that is the only thing that ever does.
+ * Nothing is sent and nothing is logged — the writer has not sent anything
+ * yet, and a job whose text was prepared and never sent must not read as one
+ * the customer has heard from. markInvoiceTexted is that second, separate
+ * act, exactly like the email's own button.
+ */
+function invoiceText(token, id) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such job.');
+  if (job.status !== 'done') throw new Error('That job is not marked done yet.');
+  const code = invoiceCodeFor_(job);
+  const message = invoiceTextMessage_(job, code);
+  return {
+    code: code,
+    url: invoiceUrl_(code),
+    message: message,
+    characters: message.length,
+    segments: textSegments_(message),
+    phone: job.customer_phone || ''
+  };
+}
+
+/**
+ * The writer has sent it from BiT. Recorded on the same log as the mail, so
+ * the job page can say what this customer has been sent without caring which
+ * door it went out of.
+ *
+ * Taken on trust, because it has to be: the sending happens in another
+ * program, and the alternative — inferring it from the copy button — would
+ * mark a job texted because somebody looked at the wording.
+ */
+function markInvoiceTexted(token, id) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such job.');
+  const code = invoiceCodeFor_(job);
+  logEmail_(job.id, 'customer_text', job.customer_phone || '(no number on file)',
+    'Invoice text sent from BiT', 'sent', '');
+  return { code: code, url: invoiceUrl_(code) };
+}
+
+/**
+ * What the texted page is allowed to show. The public door, and the code in
+ * the URL is the whole of the credential.
+ *
+ * It returns NO log entries, at any status — not filtered ones, none. The
+ * customer page's filter (customerView_) exists because that page shows a
+ * job's log; this one shows an invoice, and the safest way to keep hours,
+ * part numbers, internal notes and mechanic names off it is to never put a
+ * log entry within reach of it. Fields are named one at a time here for the
+ * same reason publicJob names them: a row spread into the payload would carry
+ * the shop's alert out of the building.
+ *
+ * Deliberately NOT gated on TEST_MODE or the customer-tracking switch. Both
+ * exist to stop this app sending something to a customer by itself, and this
+ * page sends nothing — a person pressed send, in BiT, having read the message
+ * first. A rehearsal that cannot open the page it is rehearsing is no
+ * rehearsal, and a live link that goes dark because a switch was flipped is
+ * the one failure a customer actually notices.
+ */
+function invoicePage(code) {
+  const job = jobByInvoiceCode_(code);
+  const shop = { name: SHOP_NAME, phone: SHOP_PHONE, email: SERVICE_EMAIL, address: SHOP_ADDRESS };
+  // The same answer for a code that never existed and a code on a job that is
+  // not finished: nothing to be learned by trying codes.
+  if (!job || job.status !== 'done') return { notFound: true, shop: shop };
+
+  const due = jobBalance_(job);
+  return {
+    invoice: {
+      id: job.id,
+      // "Jane", not "Jane Rivers" — it is a greeting, not a record.
+      firstName: String(job.customer_name || '').split(' ')[0],
+      unit: job.boat_info || '',
+      doneAt: job.done_at || '',
+      // Their own balance off their own invoice. Never the grand total: see
+      // invoiceTextMessage_.
+      amountDue: due,
+      settled: settled_(due),
+      deposits: numberOrNull_(job.deposits),
+      paidTotal: money2_(numberOrNull_(job.paid_total) || 0),
+      paymentLink: job.payment_link || '',
+      invoiceFile: job.invoice_file || ''
+    },
+    // The same files the invoice email would carry, decided the same way:
+    // whatever the writer marked for the customer when they added it.
+    files: filesForJob_(job.id)
+      .filter(function (file) { return file.visibility === 'customer'; })
+      .map(function (file) { return { name: file.name, driveFile: file.driveFile }; }),
+    shop: shop
+  };
 }
 
 /**

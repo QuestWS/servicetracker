@@ -1224,3 +1224,21 @@ table.grid .sub { font-size: 12.5px; color: var(--muted); }
 /* What is already on a job's ticket, above the box that adds to it. */
 .ticketparts { margin-bottom: 14px; }
 .ticketparts .kv { align-items: baseline; }
+
+/* ------------------------------------------ the invoice a customer is texted --- */
+/* An h2 inside a card is a section label everywhere else in this app — small,
+   spaced out, in frost blue. On /i/ the first one is the whole point of the
+   page, and the only thing the customer reads before deciding whether to pay
+   it, so it gets the display face at a size worth reading on a phone. The
+   cards below it still want the label. */
+/* Named with .card in front of it because `.card h2` would otherwise win on
+   specificity and this would quietly do nothing. */
+.card h2.invoice-headline {
+  font-family: var(--disp);
+  font-size: 27px;
+  line-height: 1.15;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--navy);
+  margin: 0 0 8px;
+}
