@@ -56,6 +56,21 @@ function openInvoice(id, email, amountDue, fields = {}) {
   return id;
 }
 
+/**
+ * A payload serialised for a substring sweep, with every timestamp blanked.
+ *
+ * Sweeping the whole payload for "1.5" is the honest way to prove an hours
+ * figure is not on it — nothing is trusted to be where it was expected. But
+ * a timestamp is digits too, and a doneAt that landed on ...31.515Z put
+ * "1.5" into the JSON and failed the sweep on the clock rather than on a
+ * leak, roughly once in a hundred runs and never on the machine that wrote
+ * it. The timestamps are not what any of these checks is about.
+ */
+function sweepable(payload) {
+  return JSON.stringify(payload, (key, value) => (
+    typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(value) ? '<time>' : value));
+}
+
 beforeEach(() => {
   backend = loadBackend({ properties: { ADMIN_PASSWORD: 'shop-password' } });
   adminToken = backend.fn('adminSignIn', 'shop-password').token;
@@ -82,7 +97,7 @@ describe('what the customer is allowed to see', () => {
     expect(publicView.entries).toHaveLength(1);
     expect(publicView.entries[0].text).toContain('Impeller was shot');
 
-    const serialised = JSON.stringify(publicView);
+    const serialised = sweepable(publicView);
     expect(serialised).not.toContain('6BH-44352-00-00');
     expect(serialised).not.toContain('Bill the extra hour');
     expect(serialised).not.toContain('Pulled and reset');
@@ -1762,7 +1777,7 @@ describe('the page a texted customer opens', () => {
   it('carries no log entry at all, and none of the shop\'s own figures', () => {
     const { id, code } = texted();
     backend.fn('setJobAlert', adminToken, id, 'Owner is disputing the estimate');
-    const seen = JSON.stringify(backend.fn('invoicePage', code));
+    const seen = sweepable(backend.fn('invoicePage', code));
 
     // Not a filtered log — no log. The customer page has customerView_
     // because it shows a job's log; this one shows an invoice, and the way
