@@ -1497,6 +1497,104 @@ describe('the customer email', () => {
  * BiT sends the text; this app writes it and serves the page the link opens.
  * Nothing here dials out, and nothing here reaches into BiT.
  */
+describe('more than one address on a job', () => {
+  it('keeps the lines the writer typed in the one cell, comma separated', () => {
+    backend.fn('createJob', adminToken, {
+      invoiceNumber: '01-9601',
+      customerName: 'Jane Rivers',
+      customerEmail: 'jane@example.com, mark@example.com',
+      boatInfo: '2019 Yamaha 242X',
+    });
+    expect(backend.fn('jobRow_', '01-9601').customer_email)
+      .toBe('jane@example.com, mark@example.com');
+  });
+
+  it('tidies up whatever was pasted in, because a semicolon would fail the send', () => {
+    const { id } = seedJob();
+    backend.fn('saveJobDetails', adminToken, id, {
+      customerName: 'Jane Rivers',
+      customerEmail: ' jane@example.com ; Jane@example.com,, mark@example.com ',
+    });
+    expect(backend.fn('jobRow_', id).customer_email).toBe('jane@example.com, mark@example.com');
+  });
+
+  it('counts a box holding nothing but punctuation as no address on file', () => {
+    const { id } = seedJob();
+    backend.fn('saveJobDetails', adminToken, id, { customerName: 'Jane Rivers', customerEmail: ' , ; ' });
+    const job = backend.fn('getJob', adminToken, id).job;
+    expect(job.customerEmail).toBe('');
+    expect(job.needsReview).toContain('customerEmail');
+    backend.fn('markDone', adminToken, id);
+    expect(() => backend.fn('sendInvoiceEmail', adminToken, id)).toThrow(/nobody to send/);
+  });
+
+  it('emails the invoice to all of them, with the shop still copied once', () => {
+    goLive();
+    const { id } = seedJob();
+    backend.fn('saveJobDetails', adminToken, id, {
+      customerName: 'Jane Rivers',
+      customerEmail: 'jane@example.com, mark@example.com',
+    });
+    backend.fn('saveInvoice', adminToken, id, 'https://pos.example.com/pay/abc', 'JVBERi0=', {
+      grandTotal: 100, deposits: 0, amountDue: 100,
+    });
+    backend.fn('markDone', adminToken, id);
+    const result = backend.fn('sendInvoiceEmail', adminToken, id);
+
+    // Commas, not semicolons: this string goes straight to GmailApp, and a
+    // semicolon fails the whole message rather than one address.
+    expect(backend.sentMail[0].to).toBe('jane@example.com, mark@example.com');
+    expect(backend.sentMail[0].opts.cc).toBe('service@questwatersports.com');
+    expect(result.sentTo).toBe('jane@example.com, mark@example.com');
+    const logged = backend.fn('getJob', adminToken, id).emails.find((e) => e.kind === 'customer_done');
+    expect(logged.recipient).toContain('mark@example.com');
+  });
+
+  it('sends the receipt to all of them too', () => {
+    goLive();
+    const id = openInvoice('01-9602', 'jane@example.com, mark@example.com', 400, {
+      paymentLink: 'https://pos.example.com/pay/abc',
+    });
+    backend.fn('recordPayment', adminToken, id, {
+      payments: [{ amount: 400, method: 'card' }],
+      paidInFull: true,
+      sendEmail: true,
+    });
+    expect(backend.sentMail[0].to).toBe('jane@example.com, mark@example.com');
+  });
+
+  it('does not copy the desk onto a message it is already on', () => {
+    // The writer put service@ on the job itself — a second copy in the shop's
+    // inbox is a duplicate, not a record, the same as during a rehearsal.
+    goLive();
+    const { id } = seedJob();
+    backend.fn('saveJobDetails', adminToken, id, {
+      customerName: 'Jane Rivers',
+      customerEmail: 'jane@example.com, service@questwatersports.com',
+    });
+    backend.fn('markDone', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id);
+    expect(backend.sentMail[0].opts.cc).toBeFalsy();
+  });
+
+  it('is still one customer on the statements list, addressed as the newest job says', () => {
+    // The second owner was added when the later job was written up. One
+    // customer, one statement, sent to both of them.
+    openInvoice('01-9701', 'jane@example.com', 500);
+    openInvoice('01-9702', 'jane@example.com, mark@example.com', 250);
+
+    const { customers } = backend.fn('listOpenStatements', adminToken);
+    expect(customers).toHaveLength(1);
+    expect(customers[0].customerEmail).toBe('jane@example.com, mark@example.com');
+    expect(customers[0].totalDue).toBe(750);
+
+    // And the page that was open before the address was added still finds them.
+    goLive();
+    backend.fn('sendCustomerStatement', adminToken, 'jane@example.com', false);
+    expect(backend.sentMail[0].to).toBe('jane@example.com, mark@example.com');
+  });
+});
+
 describe('the invoice by text', () => {
   const textable = (id = '01-8886') => {
     const { id: jobId } = seedJob(id);

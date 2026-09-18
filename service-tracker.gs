@@ -1043,6 +1043,48 @@ function numberOrNull_(value) {
   return isFinite(number) ? number : null;
 }
 
+/**
+ * The addresses on a job. There can be several — two owners on a boat, an
+ * office that pays for a fleet — and they share the one `customer_email`
+ * cell, comma separated. Deliberately not a new column: a column the header
+ * does not have yet reads back empty, so a second address would save and
+ * then quietly not be emailed until somebody ran setup().
+ *
+ * Splitting on commas, semicolons and whitespace means whatever the writer
+ * typed or pasted comes apart, and the one thing that goes back is a comma:
+ * GmailApp's recipient field takes commas only, and a semicolon fails the
+ * whole send rather than the address that carried it. Old rows written
+ * before the portal had a line per address are cleaned up on the way past,
+ * which is why sending reads through here too.
+ */
+function emailList_(value) {
+  const seen = {};
+  return String(value || '').split(/[,;\s]+/).filter(function (address) {
+    if (!address) return false;
+    const key = address.toLowerCase();
+    if (seen[key]) return false;
+    seen[key] = true;
+    return true;
+  });
+}
+
+/** The same list as one stored — or sendable — value. */
+function normalizeEmails_(value) {
+  return emailList_(value).join(', ');
+}
+
+/**
+ * The shop's own copy. Skipped when the desk is already on the message,
+ * which is what a rehearsal is, and now also when the writer has put
+ * service@ on the job itself — copying an address onto its own message is a
+ * duplicate rather than a record.
+ */
+function shopCc_(to) {
+  const desk = String(SERVICE_EMAIL).toLowerCase();
+  const already = emailList_(to).some(function (address) { return address.toLowerCase() === desk; });
+  return already ? '' : SERVICE_EMAIL;
+}
+
 const REVIEW_FIELDS = ['customerName', 'customerPhone', 'customerEmail', 'boatInfo'];
 
 function missingFields_(fields) {
@@ -1066,18 +1108,19 @@ function createJob(token, payload) {
       throw new Error('Job ' + id + ' already exists. Open it from the jobs list instead.');
     }
     const at = nowIso_();
+    const fields = Object.assign({}, payload, { customerEmail: normalizeEmails_(payload.customerEmail) });
     const job = {
       id: id,
       token: newTrackingToken_(),
       customer_name: payload.customerName || '',
       customer_phone: payload.customerPhone || '',
-      customer_email: payload.customerEmail || '',
+      customer_email: fields.customerEmail,
       boat_info: payload.boatInfo || '',
       // What the customer asked for, off the body of the work order. This is
       // the one field a mechanic needs before touching the boat.
       work_requested: payload.workRequested || '',
       status: 'received',
-      needs_review: missingFields_(payload).join(','),
+      needs_review: missingFields_(fields).join(','),
       work_order_file: '',
       invoice_file: '',
       payment_link: '',
@@ -1332,9 +1375,12 @@ function openInvoicesByCustomer_() {
     // off the invoice figure would bill them twice for the part they settled.
     const due = jobBalance_(job);
     if (!due || due <= 0) return;
-    const email = String(job.customer_email || '').trim();
+    const email = normalizeEmails_(job.customer_email);
     if (!email) return;
-    const key = email.toLowerCase();
+    // Keyed on the FIRST address, not the whole list. A customer whose newer
+    // job carries their wife's address as well is still one customer with one
+    // statement to settle, and keying on the list would send them two.
+    const key = emailList_(email)[0].toLowerCase();
     if (!groups[key]) {
       groups[key] = {
         customerEmail: email,
@@ -1351,6 +1397,9 @@ function openInvoicesByCustomer_() {
     if (String(job.done_at || '') >= group._doneAt) {
       group.customerName = job.customer_name || group.customerName;
       group.customerPhone = job.customer_phone || group.customerPhone;
+      // Including who else is on it now — the statement goes where the most
+      // recent job says it should.
+      group.customerEmail = email;
       group._doneAt = job.done_at || group._doneAt;
     }
     group.invoices.push({ id: job.id, boatInfo: job.boat_info || '', amountDue: due, doneAt: job.done_at || '' });
@@ -1371,7 +1420,7 @@ function openInvoicesByCustomer_() {
 function openInvoicesMissingEmail_() {
   return rows_('Jobs').filter(function (job) {
     const due = jobBalance_(job);
-    return job.status === 'done' && !job.paid_at && due && due > 0 && !String(job.customer_email || '').trim();
+    return job.status === 'done' && !job.paid_at && due && due > 0 && !normalizeEmails_(job.customer_email);
   }).map(function (job) {
     return { id: job.id, customerName: job.customer_name || '', amountDue: jobBalance_(job) };
   });
@@ -1508,14 +1557,18 @@ function saveJobDetails(token, id, fields) {
   requireAdmin_(token);
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
+  // One line per address on the form, one cell here. Normalised before the
+  // review flags are worked out, so a box holding nothing but punctuation
+  // counts as no address on file rather than as an address.
+  const saved = Object.assign({}, fields, { customerEmail: normalizeEmails_(fields.customerEmail) });
   updateRow_('Jobs', job._row, {
-    customer_name: fields.customerName || '',
-    customer_phone: fields.customerPhone || '',
-    customer_email: fields.customerEmail || '',
-    boat_info: fields.boatInfo || '',
-    work_requested: fields.workRequested || '',
+    customer_name: saved.customerName || '',
+    customer_phone: saved.customerPhone || '',
+    customer_email: saved.customerEmail,
+    boat_info: saved.boatInfo || '',
+    work_requested: saved.workRequested || '',
     // The flag list is derived, never typed: filling a field clears its flag.
-    needs_review: missingFields_(fields).join(','),
+    needs_review: missingFields_(saved).join(','),
     updated_at: nowIso_()
   });
   return { job: jobSummary_(jobRow_(id)) };
@@ -3300,7 +3353,7 @@ function rehearsalStamp_() {
 }
 
 function sendInvoiceEmail_(job) {
-  if (!job.customer_email) {
+  if (!normalizeEmails_(job.customer_email)) {
     logEmail_(job.id, 'customer_done', '(none on file)', 'Service complete', 'skipped', 'No customer email on the job');
     return false;
   }
@@ -3380,7 +3433,7 @@ function sendInvoiceEmail_(job) {
     ? mailBox_('#FBEEE2', '#E4B48F',
       '<div style="' + MAIL_FONT + ';font-size:14px;line-height:21px;color:#A6541F">' +
         '<b>TEST MODE &mdash; not sent to the customer.</b><br>This is what ' +
-        esc_(job.customer_email) + ' would have received for job ' + esc_(job.id) + '.' +
+        esc_(normalizeEmails_(job.customer_email)) + ' would have received for job ' + esc_(job.id) + '.' +
         // Which rehearsal this is. Two copies of the same job an hour apart
         // are otherwise identical to look at, and the whole point of
         // resending one is to see whether something changed.
@@ -3388,18 +3441,18 @@ function sendInvoiceEmail_(job) {
       ';border-left:4px solid #A6541F')
     : '';
 
-  const to = rehearsal ? testEmail_() : job.customer_email;
+  const to = rehearsal ? testEmail_() : normalizeEmails_(job.customer_email);
 
   return send_({
     to: to,
     // The shop keeps a copy of everything that goes to a customer. Skipped
     // when the service desk IS the recipient, which is what a rehearsal is —
     // copying an address to itself is a duplicate, not a record.
-    cc: to === SERVICE_EMAIL ? '' : SERVICE_EMAIL,
+    cc: shopCc_(to),
     jobId: job.id,
     kind: rehearsal ? 'customer_done_test' : 'customer_done',
     suppressed: rehearsal,
-    intendedFor: job.customer_email,
+    intendedFor: normalizeEmails_(job.customer_email),
     // The rehearsal carries its own time. Every test send of the same job
     // used to have an identical subject, so Gmail stacked them into one
     // conversation and hid the repeated body behind its "trimmed content"
@@ -3564,12 +3617,12 @@ function paymentEmailContent_(job, options) {
     ? mailBox_('#FBEEE2', '#E4B48F',
       '<div style="' + MAIL_FONT + ';font-size:14px;line-height:21px;color:#A6541F">' +
         '<b>TEST MODE — not sent to the customer.</b><br>This is what ' +
-        esc_(job.customer_email) + ' would have received for job ' + esc_(job.id) + '.' +
+        esc_(normalizeEmails_(job.customer_email)) + ' would have received for job ' + esc_(job.id) + '.' +
         '<br>Generated ' + esc_(rehearsalStamp_()) + '.</div>',
       ';border-left:4px solid #A6541F')
     : '';
 
-  const to = rehearsal ? testEmail_() : job.customer_email;
+  const to = rehearsal ? testEmail_() : normalizeEmails_(job.customer_email);
   const first = String(job.customer_name || '').split(' ')[0];
   const kind = full ? 'customer_paid' : 'customer_payment';
 
@@ -3593,11 +3646,11 @@ function paymentEmailContent_(job, options) {
     to: to,
     // The shop keeps its own copy of everything that goes to a customer,
     // skipped when the desk is already the recipient — see sendInvoiceEmail_.
-    cc: to === SERVICE_EMAIL ? '' : SERVICE_EMAIL,
+    cc: shopCc_(to),
     jobId: job.id,
     kind: rehearsal ? kind + '_test' : kind,
     suppressed: rehearsal,
-    intendedFor: job.customer_email,
+    intendedFor: normalizeEmails_(job.customer_email),
     subject: (rehearsal ? '[TEST ' + rehearsalStamp_() + '] ' : '') +
       (full ? 'Payment received, paid in full — ' : 'Payment received — ') +
       SHOP_NAME + ' invoice ' + job.id,
@@ -3769,7 +3822,7 @@ function recordPayment(token, id, payload) {
 
   let emailed = null;
   if (payload && payload.sendEmail) {
-    if (!after.customer_email) {
+    if (!normalizeEmails_(after.customer_email)) {
       throw new Error('The payment is recorded, but this job has no customer email address, ' +
         'so there is nobody to send the receipt to.');
     }
@@ -3797,7 +3850,7 @@ function recordPayment(token, id, payload) {
     archived: Boolean(after.paid_at),
     emailed: emailed,
     testMode: testMode_(),
-    sentTo: emailed === null ? '' : (testMode_() ? testEmail_() : after.customer_email),
+    sentTo: emailed === null ? '' : (testMode_() ? testEmail_() : normalizeEmails_(after.customer_email)),
     reviewRequested: Boolean(payload && payload.requestReview && reviewUrl_())
   };
 }
@@ -4075,10 +4128,14 @@ function sendInvoiceEmail(token, id) {
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
   if (job.status !== 'done') throw new Error('That job is not marked done yet.');
-  if (!job.customer_email) {
+  if (!normalizeEmails_(job.customer_email)) {
     throw new Error('This job has no customer email address, so there is nobody to send the invoice to.');
   }
-  return { emailed: sendInvoiceEmail_(job), testMode: testMode_(), sentTo: testMode_() ? testEmail_() : job.customer_email };
+  return {
+    emailed: sendInvoiceEmail_(job),
+    testMode: testMode_(),
+    sentTo: testMode_() ? testEmail_() : normalizeEmails_(job.customer_email)
+  };
 }
 
 /* ========================= the invoice by text ========================= */
@@ -4354,12 +4411,12 @@ function statementEmailContent_(group, followup, linked) {
       ';border-left:4px solid #A6541F')
     : '';
 
-  const to = rehearsal ? testEmail_() : group.customerEmail;
+  const to = rehearsal ? testEmail_() : normalizeEmails_(group.customerEmail);
   const first = String(group.customerName || '').split(' ')[0];
 
   return {
     to: to,
-    cc: to === SERVICE_EMAIL ? '' : SERVICE_EMAIL,
+    cc: shopCc_(to),
     kind: rehearsal ? 'statement_test' : 'statement',
     suppressed: rehearsal,
     intendedFor: group.customerEmail,
@@ -4426,6 +4483,22 @@ function sendCustomerStatementMail_(group, followup) {
 }
 
 /**
+ * The open-invoice group a customer's address belongs to.
+ *
+ * Matched on the first address rather than the whole list, because that is
+ * what the group is keyed on: a page that was loaded before a second address
+ * was added to one of the jobs still finds the right customer instead of
+ * telling the writer their statement has gone away.
+ */
+function statementGroupFor_(customerEmail) {
+  const wanted = String(emailList_(customerEmail)[0] || '').toLowerCase();
+  if (!wanted) return null;
+  return openInvoicesByCustomer_().find(function (g) {
+    return String(emailList_(g.customerEmail)[0] || '').toLowerCase() === wanted;
+  }) || null;
+}
+
+/**
  * The group statementEmailContent_ and statementPdf_ both work from —
  * either a real customer's current open invoices, or the "Create new
  * statement" wizard's own not-yet-created ones, handed over as `draft`:
@@ -4437,8 +4510,7 @@ function resolveStatementGroup_(customerEmail, draft) {
   if (draft && Array.isArray(draft.invoices) && draft.invoices.length) {
     return draftStatementGroup_(draft);
   }
-  const wanted = String(customerEmail || '').trim().toLowerCase();
-  const group = openInvoicesByCustomer_().find(function (g) { return g.customerEmail.toLowerCase() === wanted; });
+  const group = statementGroupFor_(customerEmail);
   if (!group) {
     throw new Error('That customer has no open invoices right now — the list may be out of date. Refresh and try again.');
   }
@@ -4505,9 +4577,8 @@ function statementSummaryPdf(token, customerEmail, draft) {
  */
 function sendCustomerStatement(token, customerEmail, followup) {
   requireAdmin_(token);
-  const wanted = String(customerEmail || '').trim().toLowerCase();
-  if (!wanted) throw new Error('No customer given.');
-  const group = openInvoicesByCustomer_().find(function (g) { return g.customerEmail.toLowerCase() === wanted; });
+  if (!normalizeEmails_(customerEmail)) throw new Error('No customer given.');
+  const group = statementGroupFor_(customerEmail);
   if (!group) {
     throw new Error('That customer has no open invoices right now — the list may be out of date. Refresh and try again.');
   }

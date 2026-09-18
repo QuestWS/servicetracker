@@ -48,6 +48,7 @@ import { parseWorkOrder, FIELD_LABELS } from '../assets/lib/parse-work-order.js'
 import { parseInvoiceTotals, formatMoney } from '../assets/lib/parse-invoice.js';
 import { stampWorkOrder, qrSvg } from '../assets/lib/stamp.js';
 import { trackingUrl } from '../assets/lib/tracking.js';
+import { emailList, joinEmails } from '../assets/lib/emails.js';
 import { $, esc, toast, formatDate, formatDateTime, relativeDays, driveImageUrl, driveFileUrl, bytesToBase64, formatBytes, openBytes } from '../assets/lib/ui.js';
 
 const view = $('view');
@@ -203,6 +204,77 @@ function todayInShop() {
   return new Intl.DateTimeFormat('en-CA', {
     year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'America/Chicago',
   }).format(new Date());
+}
+
+/**
+ * One address on a job, one line on the form.
+ *
+ * The shop asked for a button rather than a separator: two owners on a boat,
+ * or an office that pays for a fleet, and nobody at the counter wanting to
+ * remember whether a comma or a semicolon is the one that works. Each line
+ * holds exactly one address, so `type="email"` still catches a typo — a
+ * comma-separated pair in one box is invalid to a browser, which is what used
+ * to make this impossible to save at all.
+ *
+ * The first line has no Remove: there is always somewhere to type an address,
+ * and emptying it is how you clear it.
+ */
+function emailLineHtml(index, value, flag) {
+  return `
+    <div class="row tight" data-emailline="${index}"
+      style="flex-wrap:nowrap;align-items:flex-end${index ? ';margin-top:6px' : ''}">
+      <input class="txt${flag ? ' field-flag' : ''}" style="flex:1 1 auto" type="email"
+        id="customerEmail${index ? '-' + index : ''}" data-emailfield autocomplete="off"
+        placeholder="name@example.com" value="${esc(value || '')}">
+      ${index === 0 ? '' : `<button class="btn ghost sm" type="button" data-dropemail="${index}"
+        title="Remove this address">Remove</button>`}
+    </div>`;
+}
+
+/**
+ * The whole field: a line per address already on the job, and the button that
+ * adds another. `id` names the box so the two screens that carry one — the
+ * job page and intake — can be wired and read back without colliding.
+ */
+function emailFieldHtml(id, value, flag) {
+  const addresses = emailList(value);
+  const lines = addresses.length ? addresses : [''];
+  return `
+    <div id="${id}">${lines.map((address, i) => emailLineHtml(i, address, flag && i === 0)).join('')}</div>
+    <button class="btn ghost sm" type="button" data-addemail="${id}" style="margin-top:8px">
+      Add another email</button>
+    <p class="hint">One address per line. Everything the shop sends about this job — the invoice,
+      a receipt — goes to all of them.</p>`;
+}
+
+/** Wires the Add and Remove buttons of an email field rendered by emailFieldHtml. */
+function wireEmailField(id) {
+  const box = $(id);
+  if (!box) return;
+  // Only ever counts up, so a line added after one was removed cannot take an
+  // id the page is already using — the same reason the payment form does it.
+  let lineCount = box.children.length;
+  const wireDrop = (row) => {
+    const drop = row.querySelector('[data-dropemail]');
+    if (drop) drop.onclick = () => row.remove();
+  };
+  Array.from(box.children).forEach(wireDrop);
+
+  const add = document.querySelector(`[data-addemail="${id}"]`);
+  if (add) add.onclick = () => {
+    box.insertAdjacentHTML('beforeend', emailLineHtml(lineCount, '', false));
+    const added = box.lastElementChild;
+    wireDrop(added);
+    added.querySelector('[data-emailfield]').focus();
+    lineCount += 1;
+  };
+}
+
+/** What the lines add up to: one stored value, blanks and repeats dropped. */
+function readEmailField(id) {
+  const box = $(id);
+  if (!box) return '';
+  return joinEmails(Array.from(box.querySelectorAll('[data-emailfield]')).map((input) => input.value));
 }
 
 /**
@@ -467,7 +539,7 @@ async function renderJob(id) {
             <label class="fld" for="customerPhone">Phone</label>
             <input class="txt${job.needsReview.includes('customerPhone') ? ' field-flag' : ''}" id="customerPhone" value="${esc(job.customerPhone || '')}">
             <label class="fld" for="customerEmail">Email</label>
-            <input class="txt${job.needsReview.includes('customerEmail') ? ' field-flag' : ''}" id="customerEmail" type="email" value="${esc(job.customerEmail || '')}">
+            ${emailFieldHtml('jobemails', job.customerEmail, job.needsReview.includes('customerEmail'))}
             <label class="fld" for="boatInfo">Boat / engine</label>
             <input class="txt${job.needsReview.includes('boatInfo') ? ' field-flag' : ''}" id="boatInfo" value="${esc(job.boatInfo || '')}">
 
@@ -1242,13 +1314,15 @@ async function renderJob(id) {
     restamp.value = '';
   };
 
+  wireEmailField('jobemails');
+
   $('details').onsubmit = async (event) => {
     event.preventDefault();
     try {
       await api('saveJobDetails', [job.id, {
         customerName: $('customerName').value,
         customerPhone: $('customerPhone').value,
-        customerEmail: $('customerEmail').value,
+        customerEmail: readEmailField('jobemails'),
         boatInfo: $('boatInfo').value,
         workRequested: $('workRequested').value,
       }]);
@@ -1582,7 +1656,9 @@ function renderReview() {
       the highlighted fields are the ones we found nothing for.</div>` : ''}
     ${fields.map(([key, label, extra]) => `
       <label class="fld" for="${key}">${label}</label>
-      <input class="txt ${extra} ${parsed.missing.includes(key) ? 'field-flag' : ''}" id="${key}" value="${esc(parsed[key] || '')}">
+      ${key === 'customerEmail'
+        ? emailFieldHtml('intakeemails', parsed[key], parsed.missing.includes(key))
+        : `<input class="txt ${extra} ${parsed.missing.includes(key) ? 'field-flag' : ''}" id="${key}" value="${esc(parsed[key] || '')}">`}
     `).join('')}
     <label class="fld" for="workRequested">What needs doing</label>
     <textarea class="txt" id="workRequested" rows="3">${esc(parsed.workRequested || '')}</textarea>
@@ -1596,6 +1672,7 @@ function renderReview() {
     <p class="msg" id="createmsg"></p>`;
   showStage('review');
 
+  wireEmailField('intakeemails');
   $('restart').onclick = () => { intake = null; renderIntake(); };
   $('create').onclick = createJob;
 }
@@ -1620,7 +1697,7 @@ async function createJob() {
       invoiceNumber,
       customerName: $('customerName').value.trim(),
       customerPhone: $('customerPhone').value.trim(),
-      customerEmail: $('customerEmail').value.trim(),
+      customerEmail: readEmailField('intakeemails'),
       boatInfo: $('boatInfo').value.trim(),
       workRequested: $('workRequested').value.trim(),
     }]);

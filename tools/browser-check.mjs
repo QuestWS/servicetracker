@@ -137,6 +137,35 @@ await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { wa
 check('the job page opens', (await admin.textContent('.page-title')).includes(invoiceNumber));
 check('the stamped work order is linked', await admin.locator('text=Open stamped work order').count() > 0);
 
+// Several addresses on one job — two owners on a boat, or an office that pays
+// for a fleet. The shop asked for a button rather than a separator, so each
+// line holds one address and type="email" still catches a typo in it.
+await admin.click('[data-addemail="jobemails"]');
+await admin.fill('#customerEmail-1', 'partner@example.com');
+await Promise.all([
+  admin.waitForResponse((response) => response.url().endsWith('/exec')),
+  admin.click('#details button[type="submit"]'),
+]);
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
+const bothEmails = await admin.locator('#jobemails [data-emailfield]')
+  .evaluateAll((inputs) => inputs.map((input) => input.value));
+check('a second email saves and comes back on its own line',
+  bothEmails.length === 2 && bothEmails[0] === parsed.customerEmail
+    && bothEmails[1] === 'partner@example.com', JSON.stringify(bothEmails));
+
+// And taking it off again, which leaves the job the way the rest of this run
+// expects to find it.
+await admin.click('#jobemails [data-dropemail]');
+await Promise.all([
+  admin.waitForResponse((response) => response.url().endsWith('/exec')),
+  admin.click('#details button[type="submit"]'),
+]);
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
+const oneEmail = await admin.locator('#jobemails [data-emailfield]')
+  .evaluateAll((inputs) => inputs.map((input) => input.value));
+check('removing a line takes that address off the job',
+  oneEmail.length === 1 && oneEmail[0] === parsed.customerEmail, JSON.stringify(oneEmail));
+
 // The jobs list is read on a phone as often as a desk. The name column used to
 // be handed whatever the pills left over — which at 390px was nothing — and
 // then clipped, so the row showed an invoice number and no customer at all.
