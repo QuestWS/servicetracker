@@ -3073,6 +3073,25 @@ describe('picking a job off a list', () => {
     expect(backend.fn('openJobs', mech).jobs.map((j) => j.id)).toEqual(['01-8891']);
   });
 
+  it('drops a job the moment the floor marks the work finished', () => {
+    // The mechanic is off that boat; the writer's list still carries it.
+    const mech = seedFloor();
+    const token = backend.fn('jobRow_', '01-8892').token;
+    backend.fn('finishWork', mech, token);
+    expect(backend.fn('openJobs', mech).jobs.map((j) => j.id)).toEqual(['01-8891']);
+  });
+
+  it('but scanning the work order still opens a finished job', () => {
+    // The paper is the way back in — dropping it off the list is not locking
+    // the mechanic out of it.
+    const mech = seedFloor();
+    const token = backend.fn('jobRow_', '01-8892').token;
+    backend.fn('finishWork', mech, token);
+    const answer = backend.fn('lookupJob', token, 'scan', mech);
+    expect(answer.job.id).toBe('01-8892');
+    expect(answer.job.status).toBe('work_finished');
+  });
+
   it('puts the boats being worked on at the top', () => {
     const mech = seedFloor();
     const token = backend.fn('jobRow_', '01-8892').token;

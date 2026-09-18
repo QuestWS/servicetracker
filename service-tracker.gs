@@ -2885,13 +2885,18 @@ function transcriptsFor(token, jobToken) {
  * anyone who can reach the endpoint. Same information, very different
  * disclosure, so the roster is the gate.
  *
- * Done jobs are left out: the list is "what could I be working on", not an
- * archive.
+ * Finished and done jobs are left out: the list is "what could I be working
+ * on", not an archive. A mechanic who taps Work finished is telling the shop
+ * they are off that boat, so the job leaves their list the moment they do —
+ * what happens to it after that is the writer's, and the writer's own list
+ * still carries it. Nothing is lost by dropping it here: scanning the work
+ * order still opens the job, so a mechanic who has more to add gets at it the
+ * same way they got at it the first time.
  */
 function openJobs(token) {
   requireMechanic_(token);
   const jobs = rows_('Jobs')
-    .filter(function (job) { return job.status !== 'done'; })
+    .filter(function (job) { return job.status !== 'done' && job.status !== 'work_finished'; })
     .map(function (job) {
       return {
         id: job.id,
@@ -2908,8 +2913,8 @@ function openJobs(token) {
     });
 
   // Underway first — that is the boat someone is standing next to — then
-  // waiting, then finished but not yet written up.
-  const rank = { work_underway: 0, received: 1, work_finished: 2 };
+  // waiting. Finished never reaches here.
+  const rank = { work_underway: 0, received: 1 };
   jobs.sort(function (a, b) {
     // A job carrying an alert goes to the top whatever its status, because the
     // whole point of the alert is that it is read before work starts.

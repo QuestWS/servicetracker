@@ -1476,6 +1476,29 @@ const finishedJob = await admin.evaluate(async ({ base, id }) => {
 check('and the backend actually recorded it, not just the screen',
   finishedJob && finishedJob.status === 'work_finished', JSON.stringify(finishedJob && finishedJob.status));
 
+// Finishing means the mechanic is off that boat, so it leaves their list —
+// the list is what could I be working on, not an archive. The writer's own
+// list still carries it, because writing it up is their half of the job, and
+// the paper still opens it if the mechanic has more to add.
+await mech.click('#navhome');
+await mech.waitForSelector('#openjobs', { timeout: 20000 });
+await mech.click('#openjobs');
+await mech.waitForFunction(() => /Open jobs \(/.test(document.body.innerText), null, { timeout: 20000 });
+check('a finished job drops off the floor\'s open jobs list',
+  !(await mech.evaluate(() => document.body.innerText)).includes(FINISH_JOB));
+
+const stillFiled = await admin.evaluate(async ({ base }) => {
+  const shop = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const res = await fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn: 'listJobs', token: shop, args: [{ status: 'open' }] }),
+  }).then((r) => r.json());
+  return (res.jobs || []).map((job) => job.id);
+}, { base: BASE });
+check('but the writer\'s open jobs still has it to write up',
+  stillFiled.includes(FINISH_JOB), stillFiled.join(', '));
+
 console.log('\n== putting a misfiled entry right ==');
 // Two scratch jobs of its own, so nothing here disturbs the counts the rest of
 // this run asserts on. A mechanic scanning the work order next to the one they
