@@ -3,9 +3,24 @@
  *
  * Scope is deliberately narrow: keep the app installable and openable in a
  * shop with patchy wifi, and stay out of the way of everything that touches
- * job data. Log entries are never queued offline — a mechanic needs to know
- * their note actually landed, so a failed save surfaces as a visible error
- * instead of a silent "saved".
+ * job data. A mechanic needs to know their note actually landed, so a failed
+ * save surfaces as a visible error instead of a silent "saved".
+ *
+ * That rule used to be enforced by refusing to hold an unsent entry anywhere,
+ * which inverted it. The queue lived in the page, so backing out of the app
+ * destroyed the note AND the evidence of it — the feed had already said
+ * "saved" and nobody ever found out otherwise. Refusing to persist did not
+ * make the failure visible; it made it invisible.
+ *
+ * An unsent entry is now kept on the device in an IndexedDB outbox
+ * (assets/lib/outbox.js) and, on the next launch, is retried AND shown with
+ * its time and job. That is the rule above finally honoured: persist and
+ * surface. Nothing is queued *silently* — which is what it was always
+ * actually about.
+ *
+ * Note this is not Background Sync and deliberately not: that is Chrome and
+ * Android only, and half the shop is on iOS. The outbox is plain IndexedDB
+ * and the retry is the app opening.
  *
  * EVERYTHING SAME-ORIGIN IS NETWORK-FIRST, and that is the whole point of
  * this file. It used to serve the page network-first and the JS cache-first,
@@ -36,6 +51,7 @@ const SHELL = [
   'assets/lib/api.js',
   'assets/lib/config.js',
   'assets/lib/entry-types.js',
+  'assets/lib/outbox.js',
   'assets/lib/tracking.js',
   'assets/lib/ui.js',
   'manifest.webmanifest',

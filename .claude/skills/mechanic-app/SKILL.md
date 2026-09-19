@@ -77,8 +77,36 @@ actually outstanding.
 
 **Back and Home take two taps while one is in the air.** The first arms and
 says so in the band, which sits directly beneath both buttons — the rule about
-where a warning renders relative to its control, applied. `beforeunload` covers
-the case that actually loses a note: the app closed mid-save.
+where a warning renders relative to its control, applied.
+
+## The outbox is what actually stops a note being lost
+
+**An entry is written to IndexedDB (`assets/lib/outbox.js`) BEFORE the network
+call, and deleted only once the server's answer is in hand.** That `await` is
+the durability point; everything before it lives only in the page.
+
+It had to exist because the queue used to be a promise chain in a module
+variable and a `pending` object in `state`. Both die when the page unloads —
+backing out of the installed PWA, the phone reclaiming it, the screen locking
+at the wrong moment. The feed had already said "saved", so nobody found out.
+
+`beforeunload` is **not** the defence and never could be here: iOS Safari
+largely ignores it, an installed PWA backed out of on Android often never
+fires it, and when it does fire it is a dialog somebody taps through. It is
+kept as a desktop courtesy. `visibilitychange` and `pagehide` are the signals
+that do fire, and by the time they run the record is already on disk.
+
+**On launch `resumeOutbox()` drains it, retries in the background, and shows
+what is waiting** with its time and job and a Send/Discard pair. That is the
+`sw.js` rule — "a mechanic needs to know their note actually landed" — finally
+honoured. Refusing to persist did not make failures visible, it destroyed the
+evidence; persist *and* surface is what that rule was always asking for.
+
+**Every record carries a `clientId`, and a retry says so.** The backend writes
+it onto the row and matches a retry against it, so asking twice cannot make two
+entries — hours are money. Only a retry pays for the look-up; see
+`backend-data`. Background Sync is deliberately not used: Chrome/Android only,
+and half the shop is on iOS.
 
 ## No confirmation dialogs on this screen
 

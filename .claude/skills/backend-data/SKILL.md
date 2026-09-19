@@ -88,6 +88,34 @@ Other things already paid for, which will come back if undone:
   answer going back.** The row is marked `pending` with no transcript id,
   which is the queue; `sweepTranscripts_` is the net under it.
 
+## Asking twice must not write twice
+
+The mechanic app keeps an unsent save in an outbox on the phone and sends it
+again when it next opens, so the same note genuinely arrives twice: once from
+a request whose answer was lost, once from the retry. A second copy of a labor
+entry is hours, and hours are money. Two things stop it, covering different
+windows on purpose:
+
+- **`rid`, around the dispatch in `doPost`.** The phone stamps one on the saves
+  it will retry; the answer is cached for fifteen minutes and replayed to a
+  repeat. Claimed under the script lock so two copies of one tap cannot both
+  win it, and it reads no rows at all. A call with no `rid` behaves exactly as
+  it always did. Borrowed from `rid` in the winter services console — **with
+  one deliberate difference: a failure is not cached.** There a person reads
+  the error and decides; here the outbox retries on its own, so caching "lock
+  timed out" would replay that failure to every retry and the note would never
+  land. `releaseRid_` lets the claim go.
+- **`client_id`, a column on LogEntries and PropRepairs.** The durable half. A
+  phone that spent the night in a locker retries long after any cache entry has
+  gone, and only the sheet still knows. Written on *every* entry.
+
+**The look-up is on retries only, and that is load-bearing.** Finding a row by
+its client id reads every entry in the shop — the exact read taken off this
+path because it grows every week. A first attempt has nothing to find, so it
+goes straight through; `payload.retry` is what tells the backend to look first.
+It happens before the Drive upload, so a duplicate does not push two more
+photos up on its way to being discarded.
+
 ## Derived totals
 
 **`entry_count` and `minutes_total` on Jobs are derived**, so the jobs list and

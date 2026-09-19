@@ -39,6 +39,10 @@
        buttons that leave the job: a mechanic who taps Back mid-save is
        looking at this exact spot when it tells them to wait. -->
   <div id="saving" class="saving" role="status" aria-live="polite" hidden></div>
+  <!-- Notes from a previous session that never reached the backend. Outside
+       #view with the rest of the furniture: it has to be able to say so on
+       whatever screen the app happens to open on. -->
+  <div id="outstanding" class="outstanding" role="status" aria-live="polite" hidden></div>
   <main id="view"><p class="loading" style="color:#9fc3dc">Starting up…</p></main>
   <!-- Sits outside #view on purpose: every screen redraws that, and the one
        time this is needed most is the time a screen did not draw. A phone
@@ -100,6 +104,7 @@ import { api, ApiError, storeSession, storedWho, clearSession, storedToken, onAp
 import { ENTRY_LABEL, formatHours, formatMinutes } from '../assets/lib/entry-types.js';
 import { tokenFromScan } from '../assets/lib/tracking.js';
 import { $, esc, toast, formatDateTime, fileToBase64, preparePhoto, driveImageUrl, driveFileUrl } from '../assets/lib/ui.js';
+import * as outbox from '../assets/lib/outbox.js';
 
 // The module evaluated, so the watchdog above has nothing to recover from.
 window.__questBooted = true;
@@ -1372,14 +1377,25 @@ async function loadProps() {
   if (state.tab === 'prop') drawFields();
 }
 
-async function sendProp(tagPhoto, description) {
+async function sendProp(record) {
   try {
-    const result = await api('addPropRepair', [state.job.token, { tagPhoto, description }]);
-    state.props = result.props;
-    if (state.tab === 'prop') drawFields();
+    const result = await api('addPropRepair', [record.jobToken, {
+      ...record.payload,
+      clientId: record.clientId,
+      retry: Number(record.attempts || 0) > 0,
+    }]);
+    await forgetQuietly(record.clientId);
+    // Only if the mechanic is still looking at the job it belongs to.
+    if (state.job && state.job.token === record.jobToken) {
+      state.props = result.props;
+      if (state.tab === 'prop') drawFields();
+    }
     toast('On the list for pick-up.');
   } catch (error) {
+    await outbox.markAttempt(record.clientId, error.message).catch(() => {});
+    record.attempts = Number(record.attempts || 0) + 1;
     toast(error.message);
+    drawOutstanding();
   }
 }
 
@@ -1490,16 +1506,54 @@ async function saveEntry() {
     return;
   }
 
-  filled.forEach((tab) => {
+  /**
+   * Written to the outbox BEFORE anything touches the network.
+   *
+   * That await is the durability point. Up to it, a note lives only in this
+   * page and dies with it — which is exactly what was happening when a
+   * mechanic backed out of the app and the feed had already told them it
+   * saved. After it, the note is on the device and the worst case is a late
+   * save the app can tell them about, rather than one nobody ever knew about.
+   *
+   * Saving is still not something the mechanic waits on: this is a local
+   * write, it is milliseconds, and the feed and the form move on directly
+   * afterwards exactly as they did.
+   */
+  for (const tab of filled) {
     if (tab === 'prop') {
       const d = draft('prop');
-      queueSend(() => sendProp(d.tagPhoto, d.description.trim()));
-      return;
+      const record = {
+        clientId: outbox.newClientId(),
+        kind: 'prop',
+        jobToken: state.job.token,
+        jobId: state.job.id,
+        payload: { tagPhoto: d.tagPhoto, description: d.description.trim() },
+        createdAt: new Date().toISOString(),
+        attempts: 0,
+      };
+      await rememberOrWarn(record);
+      queueSend(() => sendProp(record));
+      continue;
     }
     pendingSeq += 1;
     const payload = payloads[tab];
+    const record = {
+      clientId: outbox.newClientId(),
+      kind: 'entry',
+      jobToken: state.job.token,
+      jobId: state.job.id,
+      payload: payload,
+      createdAt: new Date().toISOString(),
+      attempts: 0,
+      // Enough to redraw the entry in a feed on a later launch, when the page
+      // that created it is long gone.
+      mechanicName: state.who.name,
+      entryType: tab,
+    };
+    payload.clientId = record.clientId;
     const pending = {
       id: `pending-${pendingSeq}`,
+      clientId: record.clientId,
       saveState: 'saving',
       payload: payload,
       entryType: tab,
@@ -1508,7 +1562,7 @@ async function saveEntry() {
       partIdentifier: payload.partIdentifier || '',
       quantity: payload.quantity ? Number(payload.quantity) : null,
       mechanicName: state.who.name,
-      createdAt: new Date().toISOString(),
+      createdAt: record.createdAt,
       audioFile: '',
       transcriptStatus: '',
       photos: [],
@@ -1516,10 +1570,11 @@ async function saveEntry() {
       // has heard of it.
       localPhotos: payload.photos || [],
     };
+    await rememberOrWarn(record);
     // The feed is oldest first, so the new one goes on the end.
     state.entries = state.entries.concat([pending]);
-    queueSend(() => sendEntry(pending));
-  });
+    queueSend(() => sendEntry(pending, record));
+  }
 
   clearDrafts();
   // A full redraw here is right: nothing is being typed at the instant the
@@ -1601,37 +1656,77 @@ function mayLeave() {
   return false;
 }
 
-// The one case that genuinely loses a note: the app closed with a save in
-// the air. The phone's own "leave site?" prompt is the only thing that can
-// stand in front of that.
+/**
+ * Leaving with a save in the air.
+ *
+ * `beforeunload` is kept, but it is no longer the thing standing between a
+ * mechanic and a lost note, because on these phones it cannot be: iOS Safari
+ * largely ignores it, an installed PWA backed out of on Android often never
+ * fires it, and when it does fire it is a dialog somebody taps through. It is
+ * a desktop courtesy now, nothing more.
+ *
+ * What actually protects the note is that it is already in the outbox on the
+ * device before any of this runs. `visibilitychange` and `pagehide` are the
+ * signals that do fire on mobile, and all they have to do is make sure what
+ * is on disk is current — the save itself carries on if the app lives, and
+ * resumes on the next launch if it does not.
+ */
 window.addEventListener('beforeunload', (event) => {
   if (!sending) return;
   event.preventDefault();
   event.returnValue = '';
 });
 
-async function sendEntry(pending) {
+function parked() {
+  // Belt and braces: by the time this runs the record is already written.
+  // It exists so that an attempt counted in memory is not the only copy.
+  outstanding.forEach((row) => {
+    outbox.markAttempt(row.clientId, row.lastError || '').catch(() => {});
+  });
+}
+
+window.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') parked();
+});
+window.addEventListener('pagehide', parked);
+
+async function sendEntry(pending, record) {
   try {
-    const result = await api('addEntry', [state.job.token, pending.payload]);
+    const result = await api('addEntry', [record.jobToken, {
+      ...record.payload,
+      clientId: record.clientId,
+      // Told plainly rather than inferred, because it decides whether the
+      // backend pays for a look-up. A first attempt has nothing to find.
+      retry: Number(record.attempts || 0) > 0,
+    }]);
+    // Out of the outbox only now, with the answer in hand. Anything short of
+    // this — a timeout, a dropped connection, the app dying — leaves it
+    // queued, which is the whole point of it being there.
+    await forgetQuietly(record.clientId);
+
     const index = state.entries.findIndex((entry) => entry.id === pending.id);
     // The save does not hand back the whole log — reading it cost a full scan
     // of every entry in the shop to return a list this page already has.
     if (index !== -1) state.entries[index] = result.entry;
-    if (result.job) state.job = result.job;
-    if (result.hours) state.hours = result.hours;
+    if (result.job && state.job && state.job.token === record.jobToken) state.job = result.job;
+    if (result.hours && state.job && state.job.token === record.jobToken) state.hours = result.hours;
     // Only the feed and the running total, never the form: the mechanic may
     // be halfway through typing the next entry by now.
     drawFeed();
     drawHint();
+    drawOutstanding();
     // The words land a moment after the entry does, and the mechanic is
     // still standing there — so watch for them rather than making them
     // reload to find out whether the recording came out.
-    if (result.entry.transcriptStatus === 'pending') watchTranscript(result.entry.id);
+    if (result.entry && result.entry.transcriptStatus === 'pending') watchTranscript(result.entry.id);
   } catch (error) {
+    await outbox.markAttempt(record.clientId, error.message).catch(() => {});
+    record.attempts = Number(record.attempts || 0) + 1;
     pending.saveState = 'failed';
     pending.saveError = error.message;
     drawFeed();
     toast(error.message);
+    drawOutstanding();
   }
 }
 
@@ -1641,7 +1736,154 @@ function retryEntry(pending) {
   drawFeed();
   // Through the queue, so a retry counts in the band at the top like any
   // other save — it is the one most worth not walking away from.
-  queueSend(() => sendEntry(pending));
+  queueSend(() => sendEntry(pending, {
+    clientId: pending.clientId,
+    jobToken: state.job.token,
+    payload: pending.payload,
+    attempts: 1,
+  }));
+}
+
+/* ----------------------------------------------------------- the outbox --- */
+
+/**
+ * Put a save on the device, and say so plainly if that is not possible.
+ *
+ * A browser with storage blocked — private browsing, a locked-down profile —
+ * cannot give the guarantee, and the one thing this app must never do is
+ * imply a note is safe when it is not. The save still goes; the mechanic is
+ * told it is only as good as this session.
+ */
+async function rememberOrWarn(record) {
+  try {
+    await outbox.put(record);
+  } catch (err) {
+    toast('This phone will not let the app hold unsent notes. Stay on this screen until it saves.');
+  }
+}
+
+/** Taking a landed save out of the outbox must never fail a save that worked. */
+async function forgetQuietly(clientId) {
+  try {
+    await outbox.remove(clientId);
+  } catch (err) {
+    // It will come back on the next launch, be found already saved by its
+    // client id, and be dropped then. A duplicate is impossible either way.
+  }
+}
+
+/**
+ * What is still waiting, said at the top of the screen.
+ *
+ * This is the half the service worker's rule was really asking for. A note
+ * that has not landed is now both kept AND visible — the mechanic finds out
+ * now, with a way to do something about it, instead of the shop finding out
+ * in February that it never existed.
+ */
+let outstanding = [];
+
+/** Said the way the floor says it, not the way the column is named. */
+const OUTBOX_LABEL = {
+  labor: 'Time',
+  part: 'A part',
+  internal_note: 'A note',
+  customer_note: 'A note',
+  prop: 'A prop for repair',
+};
+
+function drawOutstanding() {
+  const band = $('outstanding');
+  if (!band) return;
+  if (!outstanding.length) {
+    band.hidden = true;
+    band.innerHTML = '';
+    return;
+  }
+  band.hidden = false;
+  band.innerHTML = outstanding.map((row) => {
+    const when = formatDateTime(row.createdAt);
+    const job = row.jobId ? ` on job ${esc(String(row.jobId))}` : '';
+    return `<div class="outrow">
+      <span class="grow">${esc(OUTBOX_LABEL[row.kind === 'prop' ? 'prop' : row.entryType] || 'A note')} from ${esc(when)}${job} has not saved yet.</span>
+      <button type="button" data-outretry="${esc(row.clientId)}">Send it now</button>
+      <button type="button" data-outdrop="${esc(row.clientId)}" class="drop">${
+        row.confirmDrop ? 'Throw it away?' : 'Discard'}</button>
+    </div>`;
+  }).join('');
+  band.querySelectorAll('[data-outretry]').forEach((button) => {
+    button.onclick = () => retryOutstanding(button.dataset.outretry);
+  });
+  band.querySelectorAll('[data-outdrop]').forEach((button) => {
+    button.onclick = () => discardOutstanding(button.dataset.outdrop);
+  });
+}
+
+/**
+ * Read the outbox on launch and pick up where the last session left off.
+ *
+ * Retried in the background, and shown while it is happening. The retry is
+ * safe to send whether or not the original landed: the backend matches it on
+ * the client id and hands back the entry it already has rather than writing
+ * a second one.
+ */
+async function resumeOutbox() {
+  try {
+    outstanding = await outbox.drain();
+  } catch (err) {
+    outstanding = [];
+    return;
+  }
+  if (!outstanding.length) return;
+  drawOutstanding();
+  outstanding.forEach((row) => queueSend(() => sendOutstanding(row)));
+}
+
+async function sendOutstanding(row) {
+  try {
+    const fn = row.kind === 'prop' ? 'addPropRepair' : 'addEntry';
+    await api(fn, [row.jobToken, {
+      ...row.payload,
+      clientId: row.clientId,
+      // Anything coming back off the outbox has been tried at least once, or
+      // died trying — either way the backend has to check before it writes.
+      retry: true,
+    }]);
+    await forgetQuietly(row.clientId);
+    outstanding = outstanding.filter((r) => r.clientId !== row.clientId);
+    drawOutstanding();
+    if (!outstanding.length) toast('Everything that was waiting has saved.');
+    // If the mechanic happens to be looking at that job with its log open,
+    // put the recovered entry on screen where they can see it landed.
+    if (state.job && state.job.token === row.jobToken && state.logLoaded) await loadLog();
+  } catch (error) {
+    await outbox.markAttempt(row.clientId, error.message).catch(() => {});
+    row.attempts = Number(row.attempts || 0) + 1;
+    row.lastError = error.message;
+    drawOutstanding();
+  }
+}
+
+function retryOutstanding(clientId) {
+  const row = outstanding.find((r) => r.clientId === clientId);
+  if (!row) return;
+  queueSend(() => sendOutstanding(row));
+}
+
+async function discardOutstanding(clientId) {
+  const row = outstanding.find((r) => r.clientId === clientId);
+  if (!row) return;
+  // Throwing away somebody's written work is the one thing on this screen
+  // worth a second tap.
+  if (!row.confirmDrop) {
+    row.confirmDrop = true;
+    drawOutstanding();
+    toast('Tap Discard again to throw that note away for good.');
+    setTimeout(() => { row.confirmDrop = false; drawOutstanding(); }, 5000);
+    return;
+  }
+  await outbox.discard(clientId).catch(() => {});
+  outstanding = outstanding.filter((r) => r.clientId !== clientId);
+  drawOutstanding();
 }
 
 /**
@@ -1746,6 +1988,9 @@ function warm() {
 
 warm();
 renderHome();
+// After the first screen is up, never before it: recovering an old note must
+// not be able to hold up the app opening.
+resumeOutbox();
 </script>
 </body>
 </html>

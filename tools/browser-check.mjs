@@ -721,6 +721,86 @@ await mech.waitForSelector('#saving', { state: 'hidden', timeout: 20000 });
 check('then clears when the save it was holding lands', true);
 await mech.unroute('**/exec');
 
+/* ------------------------------------------- a note that outlives the app */
+console.log('\n== a note that outlives the app ==');
+// The save queue used to live only in memory, so backing out of the app threw
+// the note away AND the evidence of it — the feed had already said "saved".
+// It is written to an IndexedDB outbox before the network call now, and the
+// next launch finds it, says so, and sends it again.
+await mech.click('#manual');
+await mech.fill('#code', invoiceNumber);
+await mech.click('button[type=submit]');
+await mech.waitForSelector('.segmented', { timeout: 20000 });
+
+// Kill the request outright, the way a phone reclaimed mid-save does. The
+// entry is already on disk by the time this matters.
+await mech.route('**/exec', (route) => route.abort());
+await mech.fill('#minutes', '25');
+await mech.fill('#text', 'Written while the app was about to die.');
+await mech.click('#save');
+await mech.waitForSelector('.entry.failed', { timeout: 15000 });
+
+const queued = await mech.evaluate(() => new Promise((resolve) => {
+  const request = indexedDB.open('quest-outbox', 1);
+  request.onsuccess = () => {
+    const rows = request.result.transaction('outbox', 'readonly').objectStore('outbox').getAll();
+    rows.onsuccess = () => resolve(rows.result.map((r) => ({
+      clientId: r.clientId, text: (r.payload || {}).text, kind: r.kind,
+    })));
+    rows.onerror = () => resolve([]);
+  };
+  request.onerror = () => resolve([]);
+}));
+check('an unsent note is on the device, not just on the screen',
+  queued.some((r) => (r.text || '').includes('about to die')),
+  JSON.stringify(queued));
+check('and it carries the id that makes sending it again safe',
+  queued.every((r) => /^c_/.test(r.clientId || '')), JSON.stringify(queued));
+
+// Now do what the mechanic does: the app goes away entirely, and comes back.
+// The network stays down across the relaunch, so the band is still there to
+// be read rather than clearing the instant the retry succeeds.
+await mech.goto(`${BASE}/m/`, { waitUntil: 'domcontentloaded' });
+await mech.waitForSelector('#outstanding .outrow', { timeout: 20000 });
+check('the next launch says the note is still waiting',
+  /has not saved yet/.test(await mech.textContent('#outstanding')),
+  await mech.textContent('#outstanding'));
+check('and says which job and when, not just that something is wrong',
+  (await mech.textContent('#outstanding')).includes(invoiceNumber),
+  await mech.textContent('#outstanding'));
+check('and offers to send it, rather than only reporting it',
+  await mech.locator('#outstanding [data-outretry]').count() === 1);
+
+// Let it through, and it goes.
+await mech.unroute('**/exec');
+await mech.click('#outstanding [data-outretry]');
+await mech.waitForSelector('#outstanding', { state: 'hidden', timeout: 30000 });
+check('and it sends once the wifi is back', true);
+const afterRecovery = await mech.evaluate(() => new Promise((resolve) => {
+  const request = indexedDB.open('quest-outbox', 1);
+  request.onsuccess = () => {
+    const rows = request.result.transaction('outbox', 'readonly').objectStore('outbox').getAll();
+    rows.onsuccess = () => resolve(rows.result.length);
+    rows.onerror = () => resolve(-1);
+  };
+  request.onerror = () => resolve(-1);
+}));
+check('and comes out of the outbox once it has', afterRecovery === 0, String(afterRecovery));
+
+// The one that catches the real bug: the note must be in the log ONCE.
+await mech.click('#manual');
+await mech.fill('#code', invoiceNumber);
+await mech.click('button[type=submit]');
+await mech.waitForSelector('.segmented', { timeout: 20000 });
+await mech.click('#showlog');
+await mech.waitForFunction(() => document.querySelectorAll('.entry').length > 1, null, { timeout: 20000 });
+const recoveredCount = (await mech.textContent('.feed')).split('about to die').length - 1;
+check('the recovered note is in the log exactly once', recoveredCount === 1,
+  `${recoveredCount} copies`);
+
+// Back to the scan screen, which is where the next section starts from.
+await mech.click('#navhome');
+
 // And a stock request with no job behind it.
 await mech.waitForSelector('#reqpart');
 await mech.click('#reqpart');

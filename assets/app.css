@@ -663,6 +663,42 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
 }
 .mech .saving.holding .spinner { border-color: rgba(255, 255, 255, 0.4); border-top-color: #fff; }
 
+/* Notes from an earlier session that never reached the backend. Amber, not
+   red: nothing is lost — it is on the phone — but somebody has to know. */
+.mech .outstanding {
+  position: sticky;
+  top: 0;
+  z-index: 149;
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-bottom: 1px solid #e0bb92;
+  padding: 10px 14px;
+  font-size: 14px;
+}
+.mech .outstanding[hidden] { display: none; }
+.mech .outstanding .outrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 3px 0;
+}
+.mech .outstanding .outrow .grow { flex: 1 1 200px; min-width: 0; font-weight: 600; }
+.mech .outstanding button {
+  flex: none;
+  font-family: var(--body);
+  font-size: 13px;
+  font-weight: 700;
+  border: 1.5px solid var(--warn);
+  background: #fff;
+  color: var(--warn);
+  border-radius: 9px;
+  padding: 7px 11px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.mech .outstanding button.drop { border-color: #c8ad90; color: var(--muted); }
+
 .mech main { flex: 1; padding: 16px; max-width: 680px; width: 100%; margin: 0 auto; }
 .mech .card { background: #fff; color: var(--ink); }
 .mech a { color: #9fc3dc; }

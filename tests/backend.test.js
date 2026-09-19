@@ -2350,6 +2350,142 @@ describe('statement drafts', () => {
   });
 });
 
+describe('a save the phone sends twice', () => {
+  // The app now keeps an entry it could not send in an outbox on the device
+  // and sends it again when it next opens. That is what stops a note dying
+  // with the page — and it is also what makes the same note arrive twice:
+  // once from a request whose answer was lost on the way back, once from the
+  // retry. A second copy of a labor entry is hours, and hours are money.
+
+  it('writes the phone\'s own id onto the row', () => {
+    const { token, mech } = seedJob();
+    backend.fn('addEntry', mech, token, {
+      entryType: 'labor', minutes: 30, text: 'Stint.', clientId: 'c_abc',
+    });
+    const rows = backend.fn('rows_', 'LogEntries').filter((r) => r.client_id === 'c_abc');
+    expect(rows).toHaveLength(1);
+  });
+
+  it('does not write a second entry when the same save comes back', () => {
+    const { id, token, mech } = seedJob();
+    const before = Number(backend.fn('jobRow_', id).entry_count);
+    const first = backend.fn('addEntry', mech, token, {
+      entryType: 'labor', minutes: 30, text: 'Counted once.', clientId: 'c_dup',
+    });
+    // The phone never heard the answer, so it asks again — flagged as a retry,
+    // which is what tells the backend to look before it writes.
+    const again = backend.fn('addEntry', mech, token, {
+      entryType: 'labor', minutes: 30, text: 'Counted once.', clientId: 'c_dup', retry: true,
+    });
+
+    expect(again.duplicate).toBe(true);
+    expect(again.entry.id).toBe(first.entry.id);
+    expect(Number(backend.fn('jobRow_', id).entry_count)).toBe(before + 1);
+  });
+
+  it('and the hours are not counted twice either', () => {
+    const { id, token, mech } = seedJob();
+    const before = Number(backend.fn('jobRow_', id).minutes_total);
+    backend.fn('addEntry', mech, token, {
+      entryType: 'labor', minutes: 45, text: 'Money.', clientId: 'c_hours',
+    });
+    backend.fn('addEntry', mech, token, {
+      entryType: 'labor', minutes: 45, text: 'Money.', clientId: 'c_hours', retry: true,
+    });
+    expect(Number(backend.fn('jobRow_', id).minutes_total)).toBe(before + 45);
+  });
+
+  it('leaves the first attempt alone — it has nothing to look up', () => {
+    // The look-up reads every entry in the shop, which is the read this path
+    // works to avoid. A first attempt must not pay for it.
+    const { token, mech } = seedJob();
+    const one = backend.fn('addEntry', mech, token, {
+      entryType: 'internal_note', text: 'One.', clientId: 'c_one',
+    });
+    const two = backend.fn('addEntry', mech, token, {
+      entryType: 'internal_note', text: 'Two.', clientId: 'c_two',
+    });
+    expect(two.entry.id).not.toBe(one.entry.id);
+    expect(two.duplicate).toBeUndefined();
+  });
+
+  it('a prop sent twice only goes on the list once', () => {
+    const { token, mech } = seedJob();
+    backend.fn('addPropRepair', mech, token, { description: 'Bent blade', clientId: 'c_prop' });
+    const again = backend.fn('addPropRepair', mech, token, {
+      description: 'Bent blade', clientId: 'c_prop', retry: true,
+    });
+    expect(again.duplicate).toBe(true);
+    expect(backend.fn('rows_', 'PropRepairs').filter((r) => r.client_id === 'c_prop')).toHaveLength(1);
+  });
+});
+
+describe('the request id around the dispatch', () => {
+  // The cheap half of the same guarantee: a duplicate that arrives while the
+  // first copy is still in flight, or minutes later, is settled without
+  // reading a single row.
+
+  function save(rid, mech, token, text) {
+    return backend.api({
+      fn: 'addEntry',
+      token: mech,
+      rid: rid,
+      args: [token, { entryType: 'internal_note', text: text, clientId: 'c_' + rid }],
+    });
+  }
+
+  it('replays the first answer rather than doing the work again', () => {
+    const { id, token, mech } = seedJob();
+    const before = Number(backend.fn('jobRow_', id).entry_count);
+    const first = save('r1', mech, token, 'Once.');
+    const second = save('r1', mech, token, 'Once.');
+
+    expect(second.replayed).toBe(true);
+    expect(second.entry.id).toBe(first.entry.id);
+    expect(Number(backend.fn('jobRow_', id).entry_count)).toBe(before + 1);
+  });
+
+  it('a call with no request id behaves exactly as it always did', () => {
+    const { id, token, mech } = seedJob();
+    const before = Number(backend.fn('jobRow_', id).entry_count);
+    backend.api({ fn: 'addEntry', token: mech, args: [token, { entryType: 'internal_note', text: 'A.' }] });
+    backend.api({ fn: 'addEntry', token: mech, args: [token, { entryType: 'internal_note', text: 'B.' }] });
+    expect(Number(backend.fn('jobRow_', id).entry_count)).toBe(before + 2);
+  });
+
+  it('a failure is not what gets remembered', () => {
+    // The outbox retries on its own. Caching "lock timed out" would replay
+    // that failure to every retry for the life of the entry and the note
+    // would never land — which is why a failed call lets go of its claim.
+    const { token, mech } = seedJob();
+    const bad = backend.api({
+      fn: 'addEntry', token: mech, rid: 'r2',
+      args: [token, { entryType: 'labor', text: 'No time on it.' }],
+    });
+    expect(bad.error).toMatch(/How long/);
+
+    const good = backend.api({
+      fn: 'addEntry', token: mech, rid: 'r2',
+      args: [token, { entryType: 'labor', minutes: 20, text: 'Fixed it.' }],
+    });
+    expect(good.error).toBeUndefined();
+    expect(good.entry.hours).toBe(0.3333);
+  });
+
+  it('says a save still running has not been lost', () => {
+    const { token, mech } = seedJob();
+    // What the cache looks like between a first copy claiming the work and
+    // that copy finishing.
+    backend.cache.set('RID_r3', '\u0000running');
+    const answer = backend.api({
+      fn: 'addEntry', token: mech, rid: 'r3',
+      args: [token, { entryType: 'internal_note', text: 'In flight.' }],
+    });
+    expect(answer.pending).toBe(true);
+    expect(answer.error).toMatch(/not been lost/);
+  });
+});
+
 describe('a voice note coming back with its words', () => {
   // AssemblyAI: upload the audio, ask for a transcript, then it calls back.
   function assemblyBackend(options = {}) {

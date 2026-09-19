@@ -114,6 +114,7 @@ export function loadBackend(options = {}) {
   const sentMail = [];
   const trashed = [];
   const triggers = [];
+  const cache = new Map();
   const driveFiles = new Map();
   const fetched = [];
   const sharing = new Map();
@@ -229,7 +230,18 @@ export function loadBackend(options = {}) {
       },
     },
     LockService: {
-      getScriptLock: () => ({ waitLock: () => {}, releaseLock: () => {} }),
+      getScriptLock: () => ({ waitLock: () => {}, releaseLock: () => {}, tryLock: () => true }),
+    },
+    // Real enough for the request-id replay: a store that answers what was
+    // put in it. A stub that always answered null would let the duplicate
+    // guard "pass" by never being exercised, which is the failure mode the
+    // guard exists to prevent.
+    CacheService: {
+      getScriptCache: () => ({
+        get: (key) => (cache.has(key) ? cache.get(key) : null),
+        put: (key, value) => { cache.set(key, String(value)); },
+        remove: (key) => { cache.delete(key); },
+      }),
     },
     // Records what setup() actually schedules. A trigger nobody installs is
     // a feature that silently never runs.
@@ -322,6 +334,16 @@ export function loadBackend(options = {}) {
     trashed,
     /** Which folder a Drive file is sitting in right now. */
     parentOf: (id) => fileParent.get(id) || null,
+    /**
+     * A call the way the pages actually make it — through doPost, so the
+     * request-id layer around the dispatch is in the path. `fn` above calls
+     * the backend function directly and goes round it.
+     */
+    api: (body) => {
+      context.__event = { parameter: {}, postData: { contents: JSON.stringify(body) } };
+      return JSON.parse(vm.runInContext('doPost(__event).getContent()', context));
+    },
+    cache,
     /** Deliver a webhook the way AssemblyAI does: POST, id in the body. */
     post: (parameter, body) => {
       context.__event = { parameter: parameter, postData: { contents: JSON.stringify(body) } };

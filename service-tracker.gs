@@ -312,7 +312,15 @@ const SHEETS = {
                // are actually sitting in, and ONLY while that is not the job
                // the entry is on. Empty means they are where they belong,
                // which is the answer for every entry that has never moved.
-               'files_job'],
+               'files_job',
+               // The id the PHONE gave this entry, before it ever reached the
+               // wire. It is what makes a retry safe: the app now keeps an
+               // unsent entry in an outbox on the device and sends it again
+               // when it next opens, which means the same note can arrive
+               // twice — once from a request whose answer was lost, once from
+               // the retry. Hours are money, so a second copy is not a
+               // cosmetic problem. See the duplicate check in addEntry.
+               'client_id'],
   // A part somebody needs: off a work order, or a bare stock request. One row
   // per part; rows ordered together share a vendor and order number, and the
   // group is done when every row in it has been received.
@@ -324,7 +332,10 @@ const SHEETS = {
   // own part leaving the building and coming back, and its stages say so.
   // What identifies it is a photograph of the tag tied to it, not a number.
   PropRepairs: ['id', 'job_id', 'tag_photo', 'description', 'status', 'vendor',
-                'notes', 'requested_by', 'created_at', 'picked_up_at', 'returned_at'],
+                'notes', 'requested_by', 'created_at', 'picked_up_at', 'returned_at',
+                // Same as on LogEntries: a prop goes through the same outbox
+                // and can be sent twice for the same reason.
+                'client_id'],
   // Documents on a job that are not the work order and not the invoice: a
   // photo of the damage for the customer, a supplier quote for the shop.
   // `visibility` is the whole point of the tab — see addJobFile.
@@ -804,11 +815,120 @@ function doPost(e) {
   // and the wire, and knowing which of the two is the problem is the
   // difference between fixing "it feels slow" and guessing at it.
   const started = Date.now();
+
+  // A call with no `rid` behaves exactly as it always did; the phone only
+  // stamps one on the saves it will retry. See claimRid_.
+  const rid = String(data.rid || '');
+  if (!rid) {
+    try {
+      return json_(timed_(FNS[data.fn](data.args || []), started));
+    } catch (err) {
+      return json_(timed_({ error: String(err && err.message ? err.message : err) }, started));
+    }
+  }
+
+  const claim = claimRid_(rid);
+  if (claim.prior) {
+    claim.prior.replayed = true;
+    return json_(timed_(claim.prior, started));
+  }
+  if (claim.running) {
+    // The first copy is still working. Saying so is not an error the mechanic
+    // should see as a failed save — the outbox holds the entry and asks again.
+    return json_(timed_({ error: 'That save is still going through. It has not been lost.', pending: true }, started));
+  }
+
+  let out;
   try {
-    return json_(timed_(FNS[data.fn](data.args || []), started));
+    out = FNS[data.fn](data.args || []);
   } catch (err) {
+    // A failure does NOT become the stored answer. This is the one place this
+    // deliberately departs from the console in winter-quotes, and the reason
+    // is what is retrying: there, a person reads the error and decides; here,
+    // the outbox asks again on its own. Caching "lock timed out" would replay
+    // that same failure to every retry for the life of the entry, and the note
+    // would never land. Releasing the claim makes the next attempt real work.
+    releaseRid_(rid);
     return json_(timed_({ error: String(err && err.message ? err.message : err) }, started));
   }
+  finishRid_(rid, out);
+  return json_(timed_(out, started));
+}
+
+/* ------------------------- write once, answer twice --------------------- */
+/*
+ * The mechanic app keeps an entry it has not managed to send in an outbox on
+ * the phone, and sends it again when the app next opens. That is what stops a
+ * note dying with the page — and it is also what makes the same note arrive
+ * twice: once from a request whose answer never got back, once from the retry.
+ *
+ * So every save the phone will retry carries a `rid` it generated, and the
+ * answer to that rid is kept for a quarter of an hour:
+ *
+ *   - first time we see it, claim it and do the work;
+ *   - see it again while the work is still running, say so rather than
+ *     starting a second copy;
+ *   - see it again after it finished, hand back the SAME answer.
+ *
+ * The claim is taken under the script lock, so two copies of one tap cannot
+ * both win it. Nothing depends on the cache existing: if CacheService is
+ * unavailable the claim fails open to "do the work", which is the behaviour
+ * from before this existed.
+ *
+ * This covers the fast case — a duplicate minutes apart — and costs no sheet
+ * read at all. It is NOT the whole guarantee: a phone that has been in a
+ * locker overnight retries long after any cache entry has gone, so the
+ * durable half is the `client_id` column and the check in addEntry.
+ *
+ * Borrowed, with its reasoning, from `rid` in the winter services console —
+ * same shape, already load-tested in the yard.
+ */
+const RID_TTL_ = 900;          // how long an answer stays replayable, seconds
+const RID_RUNNING_TTL_ = 400;  // just over the Apps Script execution ceiling
+const RID_RUNNING_ = '\u0000running';
+
+function ridKey_(rid) { return 'RID_' + String(rid || ''); }
+
+/**
+ * {prior} when this rid has already been answered, {running:true} when it is
+ * in flight, {} when the caller now owns it and should do the work.
+ */
+function claimRid_(rid) {
+  let cache = null;
+  try { cache = CacheService.getScriptCache(); } catch (err) { return {}; }
+  const key = ridKey_(rid);
+  let lock = null;
+  let held = false;
+  try { lock = LockService.getScriptLock(); held = lock.tryLock(10000); } catch (err) { held = false; }
+  try {
+    const prior = cache.get(key);
+    if (prior === RID_RUNNING_) return { running: true };
+    if (prior) {
+      try { return { prior: JSON.parse(prior) }; } catch (err) { return {}; }
+    }
+    cache.put(key, RID_RUNNING_, RID_RUNNING_TTL_);
+    return {};
+  } catch (err) {
+    return {};
+  } finally {
+    if (held) { try { lock.releaseLock(); } catch (err) { /* already gone */ } }
+  }
+}
+
+/** Park the answer where a retry of the same rid will find it. */
+function finishRid_(rid, out) {
+  try {
+    CacheService.getScriptCache().put(ridKey_(rid), JSON.stringify(out || {}), RID_TTL_);
+  } catch (err) {
+    // Too big to cache, or no cache at all. The claim stays "running" until it
+    // expires, and the durable client_id check is what catches a retry — the
+    // answer being replayable was only ever the cheap half.
+  }
+}
+
+/** Let go of a claim whose work failed, so the next attempt is real work. */
+function releaseRid_(rid) {
+  try { CacheService.getScriptCache().remove(ridKey_(rid)); } catch (err) { /* nothing held */ }
 }
 
 function timed_(out, started) {
@@ -1804,8 +1924,28 @@ function jobForMechanic(token, jobToken) {
  * One entry against a job: typed or spoken, with photos, from a phone in a
  * shop. Photos arrive already shrunk by the browser in two sizes.
  */
+/**
+ * The entry the phone gave this client id, if it ever landed.
+ *
+ * Only ever called on a retry — it reads the whole LogEntries tab, which is
+ * the read every other path here works to avoid.
+ */
+function entryByClientId_(clientId) {
+  if (!clientId) return null;
+  const all = rows_('LogEntries');
+  for (let i = 0; i < all.length; i++) {
+    if (String(all[i].client_id) === String(clientId)) return all[i];
+  }
+  return null;
+}
+
 function addEntry(token, jobToken, payload) {
   const who = requireMechanic_(token);
+
+  // The phone's own id for this entry, and whether this is the phone asking
+  // again. Both come off the outbox — see the client_id column.
+  const clientId = String((payload && payload.clientId) || '');
+  const isRetry = Boolean(payload && payload.retry);
 
   const type = payload.entryType;
   if (!ENTRY_LABEL[type]) throw new Error('Pick what kind of entry this is.');
@@ -1872,6 +2012,48 @@ function addEntry(token, jobToken, payload) {
   const hasFiles = Boolean(photos.length || hasAudio);
   let stored = [];
   let audioFile = '';
+  /**
+   * A retry asks first, and only a retry.
+   *
+   * The phone keeps an entry it could not send in an outbox and sends it
+   * again when it next opens, so the same note can arrive twice — once from a
+   * request whose answer was lost on the way back, once from the retry. A
+   * second copy of a labor entry is money, so this has to be impossible
+   * rather than unlikely.
+   *
+   * The `rid` claim in doPost covers duplicates minutes apart without reading
+   * anything. It cannot cover a phone that spent the night in a locker: by
+   * morning the cached answer is long gone. That is what this is for, and why
+   * it reads the sheet rather than a cache.
+   *
+   * **It is deliberately not on the first attempt.** Finding one entry by its
+   * client id means reading every entry in the shop — the exact read that was
+   * taken off this path because it grows every week — and a first attempt has
+   * nothing to find. A retry is rare enough to pay for it.
+   *
+   * Before the upload, not inside the lock, so a duplicate does not push two
+   * more photos into Drive on its way to being thrown away. The concurrent
+   * case — two copies of one tap in the same moment — is the rid claim's, and
+   * it takes the script lock to settle it.
+   */
+  if (isRetry && clientId) {
+    const already = entryByClientId_(clientId);
+    if (already) {
+      const onJob = jobRow_(already.job_id);
+      return {
+        entry: entryView_(already),
+        job: onJob ? jobSummary_(onJob) : null,
+        hours: {
+          total: hoursFromMinutes_(Number((onJob && onJob.minutes_total) || 0)),
+          totalMinutes: Number((onJob && onJob.minutes_total) || 0)
+        },
+        // The phone clears it out of the outbox on this exactly as it would on
+        // a fresh save. Saying which it was is for the log, not the mechanic.
+        duplicate: true
+      };
+    }
+  }
+
   if (hasFiles) {
     const unlocked = jobByToken_(jobToken);
     if (!unlocked) throw new Error('No such job.');
@@ -1920,7 +2102,11 @@ function addEntry(token, jobToken, payload) {
       transcript_id: '',
       transcript_error: '',
       notified_at: '',
-      created_at: nowIso_()
+      created_at: nowIso_(),
+      // Written on every entry, not only the ones that get retried: it is
+      // what a later retry looks itself up by, and the row has to carry it
+      // before anybody knows whether the answer got home.
+      client_id: clientId
     };
     appendRow_('LogEntries', entry);
 
@@ -2353,6 +2539,16 @@ function propRow_(id) {
  * camera that will not focus should still be able to get it onto the list, so
  * long as they say in words which prop it is.
  */
+/** The prop the phone gave this client id, if it ever landed. Retries only. */
+function propByClientId_(clientId) {
+  if (!clientId) return null;
+  const all = rows_('PropRepairs');
+  for (let i = 0; i < all.length; i++) {
+    if (String(all[i].client_id) === String(clientId)) return all[i];
+  }
+  return null;
+}
+
 function addPropRepair(token, jobToken, payload) {
   const who = requireMechanic_(token);
   const job = jobByToken_(jobToken);
@@ -2362,6 +2558,16 @@ function addPropRepair(token, jobToken, payload) {
   const photo = (payload && payload.tagPhoto) || null;
   if (!photo && !description) {
     throw new Error('Photograph the tag, or say which prop this is.');
+  }
+
+  // Same bargain as addEntry: only a retry pays for the look-up, and it
+  // happens before the tag photo goes to Drive.
+  const clientId = String((payload && payload.clientId) || '');
+  if (payload && payload.retry && clientId) {
+    const already = propByClientId_(clientId);
+    if (already) {
+      return { prop: propView_(already), props: propsForJob_(already.job_id), duplicate: true };
+    }
   }
 
   return withLock_(function () {
@@ -2383,7 +2589,8 @@ function addPropRepair(token, jobToken, payload) {
       requested_by: who.name,
       created_at: nowIso_(),
       picked_up_at: '',
-      returned_at: ''
+      returned_at: '',
+      client_id: clientId
     };
     appendRow_('PropRepairs', row);
     return { prop: propView_(row), props: propsForJob_(job.id) };
