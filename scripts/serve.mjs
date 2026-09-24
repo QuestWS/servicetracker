@@ -74,6 +74,10 @@ const server = http.createServer(async (request, response) => {
     const body = await readBody(request);
     let out;
     try {
+      // Every call to Apps Script is a fresh execution with nothing memoised,
+      // so every call here starts the same way — otherwise the preview would
+      // be quietly faster, and quietly more forgiving, than the real thing.
+      backend.call('forget_(); _props = null; _headers = {};');
       backend.context.__event = { postData: { contents: body }, parameter: Object.fromEntries(url.searchParams) };
       out = backend.call('doPost(__event)').getContent();
     } catch (error) {

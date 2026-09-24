@@ -512,6 +512,137 @@ describe('what a job page costs to open', () => {
   });
 });
 
+describe('round trips a request no longer makes', () => {
+  const SHEET_COLUMN = (tab, column) => backend.call(`SHEETS[${JSON.stringify(tab)}]`).indexOf(column);
+  /** A fresh web request: nothing memoised, exactly as production starts. */
+  const freshRequest = () => backend.call('forget_(); _props = null;');
+
+  it('fetches every tab a job page needs in one Sheets call', () => {
+    const { id } = seedJob();
+    freshRequest();
+    backend.batchGets.length = 0;
+    const page = backend.fn('getJob', adminToken, id);
+    expect(backend.batchGets).toHaveLength(1);
+    expect(backend.batchGets[0].map((r) => r.replace(/'/g, '')).sort()).toEqual(
+      ['EmailLog', 'JobFiles', 'Jobs', 'LogEntries', 'PartsOrders', 'Payments', 'PropRepairs']);
+    expect(page.job.id).toBe(id);
+    expect(page.entries).toHaveLength(4);
+  });
+
+  it('draws the same page whether or not the Sheets service is there', () => {
+    // The batch is an optimisation. A deployment where the advanced service
+    // was never enabled must open the job page exactly as it always did.
+    const build = (sheetsApi) => {
+      backend = loadBackend({ sheetsApi, properties: { ADMIN_PASSWORD: 'shop-password' } });
+      adminToken = backend.fn('adminSignIn', 'shop-password').token;
+      const { id } = seedJob();
+      backend.fn('addWriterNote', adminToken, id, 'Customer called.');
+      backend.fn('addJobPart', adminToken, id, { partIdentifier: '6BH-1', quantity: 1 });
+      freshRequest();
+      return JSON.parse(sweepable(backend.fn('getJob', adminToken, id))
+        .replace(/"serverMs":\d+,?/g, ''));
+    };
+    const batched = build(undefined);
+    expect(backend.batchGets.length).toBeGreaterThan(0);
+    const plain = build(false);
+    expect(batched).toEqual(plain);
+  });
+
+  it('falls back to reading tab by tab when the batch cannot be answered', () => {
+    const { id } = seedJob();
+    // A deployment that has not had setup() run for the newest tab.
+    backend.call("ss_().deleteSheet(ss_().getSheetByName('Payments'))");
+    freshRequest();
+    const page = backend.fn('getJob', adminToken, id);
+    expect(page.job.id).toBe(id);
+    expect(page.payments).toEqual([]);
+    expect(page.entries).toHaveLength(4);
+  });
+
+  it('reads an old sheet the old way rather than get a date wrong', () => {
+    const { id } = seedJob();
+    // A timestamp written before every cell was text: Sheets holds a Date, and
+    // the API would hand it back as `9/1/2026` instead of an ISO string.
+    const entries = backend.sheet('LogEntries');
+    const created = SHEET_COLUMN('LogEntries', 'created_at');
+    entries.rows[1][created] = new Date(Date.UTC(2026, 8, 1, 15, 0, 0));
+    freshRequest();
+    const page = backend.fn('getJob', adminToken, id);
+    expect(page.entries.map((e) => e.createdAt)).toContain('2026-09-01T15:00:00.000Z');
+  });
+
+  it('sees what this same request has just written', () => {
+    const { id } = seedJob();
+    freshRequest();
+    backend.fn('addWriterNote', adminToken, id, 'Written a moment ago.');
+    const page = backend.fn('getJob', adminToken, id);
+    expect(page.entries.some((e) => e.text === 'Written a moment ago.')).toBe(true);
+  });
+
+  it('reads the script properties once, and a write reads back', () => {
+    let reads = 0;
+    const real = backend.context.PropertiesService.getScriptProperties;
+    backend.context.PropertiesService.getScriptProperties = () => {
+      const store = real();
+      return { ...store, getProperties: () => { reads++; return store.getProperties(); },
+        getProperty: () => { throw new Error('one property at a time is a round trip each'); } };
+    };
+    freshRequest();
+    const { id } = seedJob();
+    backend.fn('getJob', adminToken, id);
+    expect(reads).toBe(1);
+    backend.fn('setTestMode', adminToken, false);
+    expect(backend.fn('testMode_')).toBe(false);
+    backend.context.PropertiesService.getScriptProperties = real;
+  });
+
+  it('does not ask where the tab ends after it has just read the tab', () => {
+    const { id } = seedJob();
+    freshRequest();
+    const sheet = backend.sheet('Jobs');
+    let asked = 0;
+    const real = sheet.getLastRow;
+    sheet.getLastRow = () => { asked++; return real(); };
+    backend.fn('rows_', 'Jobs');
+    backend.fn('createJob', adminToken, { invoiceNumber: '01-9999', customerName: 'Pat Doe' });
+    expect(asked).toBe(0);
+    expect(backend.fn('jobRow_', '01-9999').customer_name).toBe('Pat Doe');
+    expect(backend.fn('jobRow_', id).id).toBe(id);
+    sheet.getLastRow = real;
+  });
+});
+
+describe('a save and the job page it lands on, in one call', () => {
+  it('hands the fresh page back with the save', () => {
+    const { id } = seedJob();
+    const out = backend.api({ fn: 'setJobAlert', token: adminToken, args: [id, 'Do not start.'], jobPage: id });
+    expect(out.error).toBeUndefined();
+    expect(out.jobPage.job.id).toBe(id);
+    expect(out.jobPage.job.alert).toBe('Do not start.');
+  });
+
+  it('goes without it when nobody asked', () => {
+    const { id } = seedJob();
+    const out = backend.api({ fn: 'setJobAlert', token: adminToken, args: [id, 'Do not start.'] });
+    expect(out.jobPage).toBeUndefined();
+  });
+
+  it('never lends the page to a caller who could not open it', () => {
+    const { id, mech } = seedJob();
+    // A mechanic's token can call ping; it still cannot read the writer's page.
+    const out = backend.api({ fn: 'ping', token: mech, args: [], jobPage: id });
+    expect(out.ok).toBe(true);
+    expect(out.jobPage).toBeUndefined();
+  });
+
+  it('does not dress a failed save up with a page', () => {
+    const { id } = seedJob();
+    const out = backend.api({ fn: 'setJobAlert', token: 'rubbish', args: [id, 'x'], jobPage: id });
+    expect(out.error).toMatch(/Sign in/);
+    expect(out.jobPage).toBeUndefined();
+  });
+});
+
 describe('how long the backend says it took', () => {
   it('answers a warm-up call without touching anything', () => {
     // The mechanic app calls this as it opens, so that Google has a container

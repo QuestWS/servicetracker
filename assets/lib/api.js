@@ -87,7 +87,13 @@ function record(entry) {
   });
 }
 
-export async function api(fn, args) {
+/**
+ * `options.jobPage` is a job id: the writer's job page, read fresh after the
+ * call, comes back on the answer as `jobPage`. One round trip for a save and
+ * the page it lands on, instead of the save and then a getJob. See
+ * withJobPage_ in the backend.
+ */
+export async function api(fn, args, options) {
   if (!API_URL || API_URL.indexOf('PASTE') === 0) {
     throw new ApiError('This site is not connected to its backend yet — see assets/lib/config.js.');
   }
@@ -97,7 +103,10 @@ export async function api(fn, args) {
     res = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ fn, token: storedToken(), args: args || [] }),
+      body: JSON.stringify(Object.assign(
+        { fn, token: storedToken(), args: args || [] },
+        options && options.jobPage ? { jobPage: options.jobPage } : {},
+      )),
     });
   } catch {
     record({ fn, ms: Date.now() - started, serverMs: null, ok: false });

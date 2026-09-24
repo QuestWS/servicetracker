@@ -135,6 +135,56 @@ dozen calls. If the round trip is four seconds and the sheet's share is half a
 second, the remaining work is not in this file — it is the decision about
 Apps Script.
 
+## The writer's side (24 Sep 2026)
+
+Everything above was the floor. The office had not been looked at, and it
+turned out to be paying for the same round trip twice on nearly every click.
+
+**Every button on the job page was two calls.** The save, then `getJob` for
+the whole page again, with the page blanked to "Loading job…" in between and
+the writer thrown back to the top. A call can now carry `jobPage: id` and the
+fresh page comes back on the same answer (`withJobPage_` in `doPost`), read
+after the write in the same execution. The page redraws in place and keeps
+its scroll. One trip per click instead of two.
+
+**Every link was a full page load.** List to job, job back to list, a status
+chip, a change of sort: each reloaded the portal and asked for the list again.
+Links that stay on the page now draw in place (`navigate` in
+`admin/index.html`) with the address still carrying the whole state. The jobs
+list keeps the last copy the backend sent — every job, not a filtered slice —
+draws it at once, and refreshes it behind; chips, search and sort are worked
+out in the browser from that one list. An answer for a page the writer has
+already left is dropped rather than drawn over the page they are on.
+
+**pdf-lib is loaded only to stamp.** Half a megabyte (about 200KB over the
+wire) that `stamp.js` imported up front, so every portal page downloaded and
+parsed it. The on-screen QR on the setup page needs only the small qrcode
+module.
+
+**The job page reads its seven tabs in one trip.** `prefetch_` asks the Sheets
+advanced service for them in a single `values.batchGet` and drops the answer
+into the same row cache `rows_` reads. It fails safe: no service, no
+authorisation or a missing tab, and every `rows_` reads its own tab as before.
+It flushes SpreadsheetApp first, because the API reads the server directly and
+would not see a write this execution is still holding. The mechanic's log,
+the Prop tab, the transcript poll and the parts list use it too.
+
+**Script properties are read once per request**, with `getProperties()`,
+rather than one call each for the spreadsheet id, the token secret, test mode,
+the tracking switch and the review link. And an append straight after a read
+of the same tab no longer asks where the tab ends — the read already said.
+
+```
+                             ops before   ops after
+  getJob (writer job page)        7            1
+  a writer save + its page     2 calls      1 call
+  jobLog (mechanic's log)         2            1
+  listParts                       2            1
+```
+
+The advanced service is switched on in `apps-script/appsscript.json`. Nothing
+needs `setup()`.
+
 ## The one that was not about reading at all (10 Sep 2026)
 
 The shop reported a save on one job taking **minutes** — long enough to walk

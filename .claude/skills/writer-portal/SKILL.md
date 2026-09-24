@@ -11,6 +11,24 @@ a customer in front of them.
 
 **Test with:** `npm run serve`, then `node tools/browser-check.mjs`.
 
+## Moving around is in-page
+
+Links that start `?` are caught by `navigate` and drawn in place — no reload —
+with the address kept as the whole state, so refresh, bookmarks and Back all
+still work. Two things follow from that and both matter:
+
+- **An answer for a page the writer has left is never delivered.** The page's
+  `api` wraps the shared one and drops any answer to a call made before the
+  last navigation. Without it, a slow `getJob` would draw a job over the list
+  the writer had already gone back to. Use that `api`, never `callBackend`.
+- **A save on the job page asks for the page back:** `api(fn, args,
+  withPage(job.id))` then `renderJob(job.id, result.jobPage)`. That is one
+  trip, and `renderJob` redraws in place and keeps the scroll. Plain
+  `renderJob(id)` still works — it just costs the second call.
+
+`stamp.js` loads pdf-lib only when a work order is actually stamped. Do not
+import pdf-lib anywhere at the top of a module the portal loads.
+
 ## The jobs list
 
 Defaults to **Open jobs**, and open means *not (done AND paid)* — see
@@ -24,6 +42,11 @@ The chip order is Open jobs, the four statuses, **All**, Done. All sits next to
 Done at the far end on purpose: those two are what you go looking for, not what
 you should land on. Open carries no query parameter, being the default, so `?`
 is the working list and `?status=all` is everything.
+
+**The list is fetched whole and filtered in the browser.** `jobsCache` keeps
+the last copy, drawn at once when the writer comes back to the list and
+refreshed behind; the chips and the search apply `filterJobs`, which must stay
+in step with `listJobs`' own rules.
 
 **Three orders, sorted in the browser off the one fetch** — the same reasoning
 as the parts archive: Apps Script charges per round trip, and re-asking the

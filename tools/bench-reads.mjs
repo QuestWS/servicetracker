@@ -74,11 +74,27 @@ for (const name of ['Jobs', 'LogEntries', 'PartsOrders', 'PropRepairs',
   };
 }
 
+// The Sheets advanced service: several whole tabs in one call. One op, and
+// every tab it brings back counts as a whole-tab read.
+const values = backend.context.Sheets && backend.context.Sheets.Spreadsheets.Values;
+if (values) {
+  const realBatch = values.batchGet.bind(values);
+  values.batchGet = (id, request) => {
+    const answer = realBatch(id, request);
+    stats.ops++;
+    answer.valueRanges.forEach((range) => {
+      stats.reads++;
+      stats.cells += range.values.reduce((n, row) => n + row.length, 0);
+    });
+    return answer;
+  };
+}
+
 console.log(`\n  ${JOBS} jobs, ${JOBS * ENTRIES} log entries.`);
 console.log('  Each line is ONE fresh web request — the row cache starts empty, as in production.\n');
 
 function measure(label, fn) {
-  backend.fn('forget_');                    // what a new execution begins with
+  backend.call('forget_(); _props = null;'); // what a new execution begins with
   stats.reads = 0; stats.cells = 0; stats.writes = 0; stats.ops = 0;
   fn();
   console.log(`  ${label.padEnd(32)} ops ${String(stats.ops).padStart(3)}`
@@ -94,6 +110,9 @@ measure('lookupJob (scan, signed in)', () => backend.fn('lookupJob', '01-9000', 
 measure('jobForMechanic (open a job)', () => backend.fn('jobForMechanic', mech, token));
 measure('listJobs (writer jobs list)', () => backend.fn('listJobs', admin, {}));
 measure('getJob (writer job page)', () => backend.fn('getJob', admin, '01-9000'));
+measure('a writer save + its job page', () => backend.api({
+  fn: 'setJobAlert', token: admin, args: ['01-9000', 'Hold.'], jobPage: '01-9000' }));
+measure('jobLog (mechanic opens the log)', () => backend.fn('jobLog', mech, token));
 measure('openJobs (mechanic job list)', () => backend.fn('openJobs', mech));
 measure('listParts (parts list)', () => backend.fn('listPartsOrders', admin));
 console.log('');

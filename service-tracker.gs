@@ -376,8 +376,41 @@ const SHEETS = {
 
 /* ============================== plumbing =============================== */
 
+/**
+ * Script properties, read ONCE per execution.
+ *
+ * Every getProperty is its own call out to Google, and an ordinary request
+ * asks for several: the spreadsheet id, the token secret, test mode, the
+ * tracking switch, the review link. getProperties() brings the lot back in
+ * one call, and they are a handful of short strings.
+ *
+ * Writes go straight through to the real store and update the copy, so a
+ * value set in this execution reads back as set. Another execution's write
+ * is not seen until the next request, which is no change: every request is
+ * its own execution, and none of them read a property twice expecting it to
+ * have moved underneath them.
+ */
+let _props = null;
 function props_() {
-  return PropertiesService.getScriptProperties();
+  if (_props) return _props;
+  const store = PropertiesService.getScriptProperties();
+  const values = store.getProperties() || {};
+  _props = {
+    getProperty: function (key) {
+      return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null;
+    },
+    setProperty: function (key, value) {
+      store.setProperty(key, value);
+      values[key] = String(value);
+      return _props;
+    },
+    deleteProperty: function (key) {
+      store.deleteProperty(key);
+      delete values[key];
+      return _props;
+    }
+  };
+  return _props;
 }
 
 function nowIso_() {
@@ -479,6 +512,18 @@ let _rowCache = {};
 function rows_(name) {
   if (_rowCache[name]) return _rowCache[name];
   const values = sheet_(name).getDataRange().getValues();
+  // The data range ends at the last row with anything in it, which is exactly
+  // what getLastRow would answer — so an append after a read does not have to
+  // ask again.
+  if (_lastRow[name] === undefined && values.length > 1) _lastRow[name] = values.length;
+  return parseRows_(name, values);
+}
+
+/**
+ * Turns a tab's raw values into row objects and memoises them — shared by
+ * rows_ and by prefetch_, which fetches several tabs in one call.
+ */
+function parseRows_(name, values) {
   if (values.length < 2) {
     _rowCache[name] = [];
     return _rowCache[name];
@@ -493,6 +538,70 @@ function rows_(name) {
   }
   _rowCache[name] = out;
   return out;
+}
+
+/**
+ * Several tabs in ONE round trip, where a page needs them all at once.
+ *
+ * rows_ reads a tab per call, and each call is its own trip to Google. The
+ * writer's job page wants seven tabs; fetched one by one that was the bulk of
+ * its wait. The Sheets advanced service can hand them all back from a single
+ * `values.batchGet`, and the answer lands in the same row cache rows_ reads
+ * from — so nothing downstream knows or cares how the rows arrived.
+ *
+ * Purely an optimisation, and it fails safe. If the advanced service is not
+ * enabled, not authorised, or any tab is missing, this does nothing and each
+ * rows_ call reads its own tab exactly as before.
+ *
+ * Cells are plain text, so the formatted value IS the value — except a date
+ * left over from before that was true. getValues hands that back as a Date,
+ * which asText_ turns into ISO; the API hands back how Sheets displays it,
+ * `9/1/2026 10:00:00`, which sorts and parses as something else entirely. So
+ * an answer holding anything shaped like a displayed date is thrown away and
+ * the tabs are read the old way. The price of an old sheet is the old speed,
+ * never a different answer.
+ */
+// `9/1/2026`, `1.9.2026`, `9/1/2026 10:00:00`, or a dashed date only when a
+// time follows it — a bare `2026-09-01` is how this app writes a payment date
+// as text, and must not send every job with a payment down the slow path.
+const DISPLAYED_DATE_ = new RegExp('^(\\d{1,4}[/.]\\d{1,2}[/.]\\d{1,4}(\\s+\\d{1,2}:\\d{2}(:\\d{2})?(\\s*[AP]M)?)?' +
+  '|\\d{1,4}-\\d{1,2}-\\d{1,4}\\s+\\d{1,2}:\\d{2}(:\\d{2})?(\\s*[AP]M)?)$');
+
+function holdsDisplayedDate_(values) {
+  for (let r = 0; r < values.length; r++) {
+    const row = values[r];
+    for (let c = 0; c < row.length; c++) {
+      if (typeof row[c] === 'string' && row[c].length <= 22 && DISPLAYED_DATE_.test(row[c])) return true;
+    }
+  }
+  return false;
+}
+
+function prefetch_(names) {
+  const wanted = names.filter(function (name) { return !_rowCache[name]; });
+  if (wanted.length < 2) return;
+  if (typeof Sheets === 'undefined' || !Sheets.Spreadsheets || !Sheets.Spreadsheets.Values) return;
+  let answer;
+  try {
+    // SpreadsheetApp holds writes back and sends them in bulk; the Sheets API
+    // reads the server directly and would not see them. Anything this
+    // execution has written — the save before a jobPage read, say — has to
+    // land first.
+    SpreadsheetApp.flush();
+    answer = Sheets.Spreadsheets.Values.batchGet(ss_().getId(), {
+      ranges: wanted.map(function (name) { return "'" + name + "'"; }),
+      valueRenderOption: 'FORMATTED_VALUE',
+      majorDimension: 'ROWS'
+    });
+  } catch (err) {
+    return;
+  }
+  const ranges = (answer && answer.valueRanges) || [];
+  if (ranges.length !== wanted.length) return;
+  if (ranges.some(function (range) { return holdsDisplayedDate_(range.values || []); })) return;
+  wanted.forEach(function (name, i) {
+    parseRows_(name, ranges[i].values || []);
+  });
 }
 
 /**
@@ -821,7 +930,7 @@ function doPost(e) {
   const rid = String(data.rid || '');
   if (!rid) {
     try {
-      return json_(timed_(FNS[data.fn](data.args || []), started));
+      return json_(timed_(withJobPage_(FNS[data.fn](data.args || []), data), started));
     } catch (err) {
       return json_(timed_({ error: String(err && err.message ? err.message : err) }, started));
     }
@@ -929,6 +1038,30 @@ function finishRid_(rid, out) {
 /** Let go of a claim whose work failed, so the next attempt is real work. */
 function releaseRid_(rid) {
   try { CacheService.getScriptCache().remove(ridKey_(rid)); } catch (err) { /* nothing held */ }
+}
+
+/**
+ * A save on the writer's job page, and the page it lands on, in ONE call.
+ *
+ * Every button on that page used to save and then ask getJob for the whole
+ * page again — two trips to Apps Script, each paying start-up and the
+ * redirect, for one click. A page that asks `jobPage: id` alongside the call
+ * gets the fresh page back in the same answer, read after the write in the
+ * same execution, so it cannot be staler than a second call would have been.
+ *
+ * Only after the call itself succeeded, and only ever getJob, which checks
+ * the writer's token for itself. If the read fails the save still stands and
+ * the answer simply goes without it; the page then fetches the job the old
+ * way.
+ */
+function withJobPage_(out, data) {
+  if (!data.jobPage || !out || typeof out !== 'object' || Array.isArray(out)) return out;
+  try {
+    out.jobPage = getJob(data.token, String(data.jobPage));
+  } catch (err) {
+    // The save is what matters; the page can ask again.
+  }
+  return out;
 }
 
 function timed_(out, started) {
@@ -1620,8 +1753,12 @@ function listSentStatements(token) {
   return { sends: sends };
 }
 
+/** Every tab the writer's job page draws from, fetched in one trip. */
+const JOB_PAGE_TABS_ = ['Jobs', 'LogEntries', 'PropRepairs', 'PartsOrders', 'JobFiles', 'Payments', 'EmailLog'];
+
 function getJob(token, id) {
   requireAdmin_(token);
+  prefetch_(JOB_PAGE_TABS_);
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
   const entries = entriesForJob_(id);
@@ -1896,6 +2033,7 @@ function mechanicPayload_(who, job) {
 /** The log itself, when the mechanic asks to see it. */
 function jobLog(token, jobToken) {
   requireMechanic_(token);
+  prefetch_(['Jobs', 'LogEntries']);
   const job = jobByToken_(jobToken);
   if (!job) throw new Error('No such job.');
   const entries = entriesForJob_(job.id);
@@ -1908,6 +2046,7 @@ function jobLog(token, jobToken) {
 /** What is already away at the prop shop, for the Prop tab. */
 function jobProps(token, jobToken) {
   requireMechanic_(token);
+  prefetch_(['Jobs', 'PropRepairs']);
   const job = jobByToken_(jobToken);
   if (!job) throw new Error('No such job.');
   return { props: propsForJob_(job.id) };
@@ -2326,6 +2465,7 @@ function partsForJob_(jobId) {
 /** Needed, on order, and the completed orders behind them. */
 function listPartsOrders(token) {
   requireAdmin_(token);
+  prefetch_(['PartsOrders', 'Jobs']);
   const all = rows_('PartsOrders').map(partView_);
   const jobs = {};
   rows_('Jobs').forEach(function (job) { jobs[job.id] = job.customer_name || ''; });
@@ -3061,6 +3201,7 @@ function lookupJob(code, source, token) {
  */
 function transcriptsFor(token, jobToken) {
   requireMechanic_(token);
+  prefetch_(['Jobs', 'LogEntries']);
   const job = jobByToken_(jobToken);
   if (!job) throw new Error('No such job.');
 

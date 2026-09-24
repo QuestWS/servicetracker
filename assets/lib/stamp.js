@@ -1,4 +1,3 @@
-import { PDFDocument, StandardFonts, rgb } from '../vendor/pdf-lib.esm.min.js';
 import QRCode from '../vendor/qrcode.min.mjs';
 
 /**
@@ -13,7 +12,18 @@ const QR_SIZE = 92;
 const PADDING = 6;
 const CAPTION_HEIGHT = 22;
 const MARGIN = 14;
-const NAVY = rgb(0x14 / 255, 0x29 / 255, 0x3e / 255);
+
+/**
+ * pdf-lib is half a megabyte, and the portal only needs it at the moment a
+ * work order is stamped. Imported statically it was downloaded and parsed on
+ * every page of the portal, the jobs list included; the on-screen QR on the
+ * setup page needs only the small qrcode module above.
+ */
+let pdfLib = null;
+async function loadPdfLib() {
+  if (!pdfLib) pdfLib = await import(new URL('../vendor/pdf-lib.esm.min.js', import.meta.url).href);
+  return pdfLib;
+}
 
 /**
  * Picks where the QR goes. The work order must stay visually identical, so we
@@ -94,7 +104,7 @@ export function drawQr(page, options) {
           y: options.y + options.size - (quiet + row + 1) * scale,
           width: run * scale,
           height: scale,
-          color: options.color || NAVY,
+          color: options.color,
         });
         run = 0;
       }
@@ -107,6 +117,8 @@ export function drawQr(page, options) {
  * page one. Nothing else about the document is touched.
  */
 export async function stampWorkOrder(input) {
+  const { PDFDocument, StandardFonts, rgb } = await loadPdfLib();
+  const NAVY = rgb(0x14 / 255, 0x29 / 255, 0x3e / 255);
   const doc = await PDFDocument.load(input.pdfBytes);
   const page = doc.getPage(0);
   const { width, height } = page.getSize();
@@ -130,6 +142,7 @@ export async function stampWorkOrder(input) {
     x: box.x + PADDING,
     y: box.y + CAPTION_HEIGHT + PADDING - 4,
     size: QR_SIZE,
+    color: NAVY,
   });
 
   const caption = 'SCAN TO LOG WORK';

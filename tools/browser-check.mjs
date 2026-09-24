@@ -1228,6 +1228,105 @@ await admin.fill('#alerttext', ALERT);
 await admin.click('#setalert');
 await admin.waitForSelector('.alertbox', { timeout: 20000 });
 
+console.log('\n== getting around the portal ==');
+{
+  const fnOf = (request) => { try { return JSON.parse(request.postData() || '{}').fn; } catch { return '?'; } };
+  const calls = [];
+  const onCall = (request) => { if (request.url().includes('/exec')) calls.push(fnOf(request)); };
+  const pdfLib = [];
+  const onAsset = (request) => { if (request.url().includes('pdf-lib')) pdfLib.push(request.url()); };
+
+  // A save on the job page is ONE trip: the page it lands on comes back with
+  // it, and the writer stays where they were on the page.
+  // Scrolled to the box first, so the click itself has no scrolling to do.
+  await admin.locator('#ck-parts').scrollIntoViewIfNeeded();
+  await admin.evaluate(() => window.scrollBy(0, 200));
+  await admin.locator('#ck-parts').scrollIntoViewIfNeeded();
+  const before = await admin.evaluate(() => window.scrollY);
+  admin.on('request', onCall);
+  const wasTicked = await admin.isChecked('#ck-parts');
+  await admin.click('#ck-parts');
+  await admin.waitForFunction((was) => document.getElementById('ck-parts')?.checked === !was
+    && !document.querySelector('.loading'), wasTicked, { timeout: 20000 });
+  await admin.waitForTimeout(300);
+  admin.off('request', onCall);
+  check('a save on the job page is one call to the backend, not a save and a reload',
+    calls.length === 1 && calls[0] === 'setJobFlag', calls.join(', '));
+  const after = await admin.evaluate(() => window.scrollY);
+  check('and the writer stays where they were on the page', before > 0 && Math.abs(after - before) < 5,
+    `${before} -> ${after}`);
+  // Leave the tick as it was.
+  await admin.click('#ck-parts');
+  await admin.waitForFunction((was) => document.getElementById('ck-parts')?.checked === was,
+    wasTicked, { timeout: 20000 });
+
+  // Opening the portal does not download the PDF stamper.
+  admin.on('request', onAsset);
+  await admin.goto(`${BASE}/admin/`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('.jobrow', { timeout: 20000 });
+  check('the jobs list opens without downloading pdf-lib', pdfLib.length === 0, pdfLib.join(', '));
+
+  // Moving about is in-page: nothing reloads, and the address still says where you are.
+  await admin.evaluate(() => { window.__samePage = true; });
+  await admin.click(`a.jobrow[href="?job=${encodeURIComponent(invoiceNumber)}"]`);
+  await admin.waitForFunction((id) => document.querySelector('.page-title')?.textContent.includes(id),
+    invoiceNumber, { timeout: 20000 });
+  check('opening a job does not reload the portal', await admin.evaluate(() => window.__samePage === true));
+  check('and the address names the job',
+    new URL(admin.url()).searchParams.get('job') === invoiceNumber, admin.url());
+
+  // The backend is held back on purpose here: the list that was already
+  // fetched has to be on screen while the fresh one is still on its way.
+  calls.length = 0;
+  admin.on('request', onCall);
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  await admin.route('**/exec', async (route) => {
+    if (fnOf(route.request()) === 'listJobs') await held;
+    await route.continue().catch(() => {});
+  });
+  await admin.goBack();
+  await admin.waitForSelector('.jobrow', { timeout: 5000 });
+  check('Back returns to the list, still without a reload', await admin.evaluate(() => window.__samePage === true));
+  check('and the list is drawn from what it already had, before the backend has answered',
+    await admin.locator('.jobrow').count() > 0);
+  release();
+  await admin.waitForTimeout(800);
+  await admin.unroute('**/exec');
+  admin.off('request', onCall);
+  check('which it then asks once, for everything', calls.join(',') === 'listJobs', calls.join(', '));
+
+  // The chips and the sort are worked out from the list already in hand.
+  calls.length = 0;
+  admin.on('request', onCall);
+  await admin.selectOption('#sortby', 'number');
+  await admin.waitForFunction(() => new URL(location.href).searchParams.get('sort') === 'number');
+  await admin.click('a.chip[href*="status=all"]');
+  await admin.waitForFunction(() => document.querySelector('a.chip.on')?.textContent.trim() === 'All');
+  const searchFor = invoiceNumber.slice(-4);
+  await admin.fill('#q', searchFor);
+  await admin.press('#q', 'Enter');
+  await admin.waitForFunction((q) => new URL(location.href).searchParams.get('q') === q, searchFor);
+  await admin.waitForTimeout(500);
+  admin.off('request', onCall);
+  const rows = await admin.locator('.jobrow').count();
+  check('search, sort and the chips still find the job',
+    rows >= 1 && (await admin.locator(`a.jobrow[href="?job=${encodeURIComponent(invoiceNumber)}"]`).count()) === 1,
+    `${rows} rows`);
+  check('and a refresh keeps them, the address being the whole state',
+    await (async () => {
+      await admin.reload({ waitUntil: 'networkidle' });
+      await admin.waitForSelector('.jobrow', { timeout: 20000 });
+      return (await admin.inputValue('#q')) === searchFor
+        && (await admin.inputValue('#sortby')) === 'number';
+    })());
+  admin.off('request', onAsset);
+  check('none of that stamped a PDF, so none of it fetched pdf-lib', pdfLib.length === 0, pdfLib.join(', '));
+
+  await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('.alertbox', { timeout: 20000 });
+}
+
 console.log('\n== close out ==');
 // The writer's checklist: everything logged so far moves behind the line.
 check('entries start as needing writing up', (await admin.textContent('.card')).length > 0);

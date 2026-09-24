@@ -45,6 +45,15 @@ function sheetsDate(value) {
   return null;
 }
 
+/** A cell as the Sheets API's FORMATTED_VALUE hands it back. */
+function displayed(value) {
+  if (value === null || value === undefined) return '';
+  if (value instanceof Date) {
+    return `${value.getMonth() + 1}/${value.getDate()}/${value.getFullYear()}`;
+  }
+  return String(value);
+}
+
 function fakeSheet(name) {
   const rows = [];
   const formats = [];                            // formats[row][col], '@' = text
@@ -115,6 +124,7 @@ export function loadBackend(options = {}) {
   const trashed = [];
   const triggers = [];
   const cache = new Map();
+  const batchGets = [];
   const driveFiles = new Map();
   const fetched = [];
   const sharing = new Map();
@@ -172,6 +182,7 @@ export function loadBackend(options = {}) {
     PropertiesService: {
       getScriptProperties: () => ({
         getProperty: (key) => (properties.has(key) ? properties.get(key) : null),
+        getProperties: () => Object.fromEntries(properties),
         setProperty: (key, value) => properties.set(key, value),
         deleteProperty: (key) => properties.delete(key),
       }),
@@ -179,6 +190,36 @@ export function loadBackend(options = {}) {
     SpreadsheetApp: {
       openById: () => spreadsheet,
       create: () => spreadsheet,
+      flush: () => {},
+    },
+    // The Sheets advanced service, as far as prefetch_ uses it: several whole
+    // tabs in one call. It answers the way the real API does, not the way
+    // getValues does — every cell as the string Sheets would display, trailing
+    // empty cells and rows dropped — so a backend that leans on getValues'
+    // shape here fails a test rather than the shop. `options.sheetsApi: false`
+    // is a deployment where the service was never enabled.
+    Sheets: options.sheetsApi === false ? undefined : {
+      Spreadsheets: {
+        Values: {
+          batchGet: (id, request) => {
+            batchGets.push(request.ranges.slice());
+            return {
+              valueRanges: request.ranges.map((range) => {
+                const name = String(range).replace(/^'|'$/g, '');
+                const sheet = sheets.get(name);
+                if (!sheet) throw new Error(`Unable to parse range: ${range}`);
+                const values = sheet.rows.map((row) => {
+                  const out = row.map(displayed);
+                  while (out.length && out[out.length - 1] === '') out.pop();
+                  return out;
+                });
+                while (values.length && !values[values.length - 1].length) values.pop();
+                return { range, majorDimension: 'ROWS', values };
+              }),
+            };
+          },
+        },
+      },
     },
     DriveApp: {
       Access: { ANYONE_WITH_LINK: 'ANYONE_WITH_LINK' },
@@ -344,6 +385,8 @@ export function loadBackend(options = {}) {
       return JSON.parse(vm.runInContext('doPost(__event).getContent()', context));
     },
     cache,
+    /** Every Sheets API batchGet, as the list of ranges it asked for. */
+    batchGets,
     /** Deliver a webhook the way AssemblyAI does: POST, id in the body. */
     post: (parameter, body) => {
       context.__event = { parameter: parameter, postData: { contents: JSON.stringify(body) } };

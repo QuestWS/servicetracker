@@ -39,7 +39,7 @@
 <main class="wrap" id="view"><p class="loading">Loading…</p></main>
 
 <script type="module">
-import { api, storeSession, storedToken, clearSession, timings } from '../assets/lib/api.js';
+import { api as callBackend, storeSession, storedToken, clearSession, timings } from '../assets/lib/api.js';
 import { byLastName } from '../assets/lib/names.js';
 import { SITE_URL } from '../assets/lib/config.js';
 import { ENTRY_LABEL, STATUSES, STATUS_LABEL, STATUS_PILL, formatHours, decimalHours } from '../assets/lib/entry-types.js';
@@ -52,7 +52,57 @@ import { emailList, joinEmails } from '../assets/lib/emails.js';
 import { $, esc, toast, formatDate, formatDateTime, relativeDays, driveImageUrl, driveFileUrl, bytesToBase64, formatBytes, openBytes } from '../assets/lib/ui.js';
 
 const view = $('view');
-const params = new URLSearchParams(location.search);
+let params = new URLSearchParams(location.search);
+
+/**
+ * Moving around the portal no longer reloads it.
+ *
+ * Every link used to be a full page load: the whole portal, its modules and a
+ * fresh jobs list, fetched again to go from the list to a job and back, or
+ * just to change the sort. Links that stay on this page (`?…`) now change the
+ * address and draw the new view in place; the address still says where you
+ * are, so a refresh, a bookmark and the Back button all behave as before.
+ *
+ * Which raises the one thing a full reload used to guarantee for free: an
+ * answer arriving for a page the writer has already left must not draw over
+ * the page they are on now. `navigation` counts the moves, and an answer to a
+ * call made before the latest one is simply never delivered — see api below.
+ */
+let navigation = 0;
+
+function api(fn, args, options) {
+  const asked = navigation;
+  return callBackend(fn, args, options).then(
+    (result) => (asked === navigation ? result : new Promise(() => {})),
+    (error) => (asked === navigation ? Promise.reject(error) : new Promise(() => {})),
+  );
+}
+
+/** A save on a job page that wants that page back in the same answer. */
+const withPage = (id) => ({ jobPage: id });
+
+function navigate(href, replace) {
+  history[replace ? 'replaceState' : 'pushState'](null, '', href || location.pathname);
+  params = new URLSearchParams(location.search);
+  window.scrollTo(0, 0);
+  route();
+}
+
+document.addEventListener('click', (event) => {
+  const link = event.target.closest && event.target.closest('a[href]');
+  if (!link || event.defaultPrevented || event.button !== 0) return;
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  if (link.target || link.hasAttribute('download')) return;
+  const href = link.getAttribute('href');
+  if (!href || href[0] !== '?') return;
+  event.preventDefault();
+  navigate(href);
+});
+
+window.addEventListener('popstate', () => {
+  params = new URLSearchParams(location.search);
+  route();
+});
 let intake = null;
 let testMode = null;
 
@@ -80,7 +130,7 @@ function showTestBanner(on) {
   </div>`;
 }
 
-const go = (query) => { location.search = query; };
+const go = (query) => navigate(query ? `?${query}` : '');
 
 /* ------------------------------------------------------------- sign in --- */
 
@@ -337,99 +387,141 @@ function sortJobs(jobs, sort) {
   return rows;                                  // as the backend sent it
 }
 
+/**
+ * The last jobs list the backend sent, whole — every job, every status.
+ *
+ * Coming back to the list draws this at once and asks the backend again
+ * behind it, so the list is on screen the moment it is clicked and settles to
+ * the latest a second or two later. The chips, the search and the sort are
+ * all worked out here from the one list rather than by asking again: the
+ * whole shop's jobs are a few hundred short rows.
+ */
+let jobsCache = null;
+
+/** The same rules listJobs applies on the backend, applied to the cached list. */
+function filterJobs(all, status, search) {
+  const wanted = search.trim().toLowerCase();
+  return all.filter((job) => {
+    if (status === 'open') {
+      if (job.status === 'done' && job.paidAt) return false;
+    } else if (status && status !== 'all' && job.status !== status) {
+      return false;
+    }
+    if (!wanted) return true;
+    return [job.id, job.customerName, job.boatInfo, job.customerPhone]
+      .join(' ').toLowerCase().indexOf(wanted) !== -1;
+  });
+}
+
 async function renderJobs() {
   // Open is the default, so it is the one that carries no parameter.
   const status = params.get('status') || 'open';
   const search = params.get('q') || '';
   const sort = JOB_SORTS[params.get('sort')] ? params.get('sort') : 'newest';
-  view.innerHTML = `<p class="loading">Loading jobs…</p>`;
-  const { jobs: fetched, counts, testMode: mode } = await api('listJobs', [{ status, search }]);
-  showTestBanner(mode);
-  const jobs = sortJobs(fetched, sort);
 
-  const href = (value) => {
-    const next = new URLSearchParams();
-    if (value !== 'open') next.set('status', value);
-    if (search) next.set('q', search);
-    // The order carries across the chips: picking a different stage should
-    // not quietly put the list back into date order.
-    if (sort !== 'newest') next.set('sort', sort);
-    const query = next.toString();
-    return query ? `?${query}` : '?';
-  };
+  if (jobsCache) draw(jobsCache, true);
+  else view.innerHTML = `<p class="loading">Loading jobs…</p>`;
+  const answer = await api('listJobs', [{ status: 'all' }]);
+  jobsCache = answer;
+  draw(answer, false);
 
-  view.innerHTML = `
-    <div class="row" style="justify-content:space-between;margin-bottom:14px">
-      <h1 class="page-title">Jobs</h1>
-      <a class="btn navy" href="?view=intake">New work order</a>
-    </div>
+  function draw({ jobs: everything, counts, testMode: mode }, stale) {
+    // Somebody may already be typing a search into the list drawn from the
+    // cache; the fresh copy landing must not take the words out from under them.
+    const typing = !stale && document.activeElement && document.activeElement.id === 'q'
+      ? { value: $('q').value, at: $('q').selectionStart } : null;
+    showTestBanner(mode);
+    const jobs = sortJobs(filterJobs(everything, status, search), sort);
 
-    <div class="stats" style="margin-bottom:16px">
-      ${STATUSES.map((value) => `<a class="stat" href="${href(value)}">
-        <div class="v">${counts[value] || 0}</div><div class="k">${STATUS_LABEL[value]}</div></a>`).join('')}
-    </div>
+    const href = (value) => {
+      const next = new URLSearchParams();
+      if (value !== 'open') next.set('status', value);
+      if (search) next.set('q', search);
+      // The order carries across the chips: picking a different stage should
+      // not quietly put the list back into date order.
+      if (sort !== 'newest') next.set('sort', sort);
+      const query = next.toString();
+      return query ? `?${query}` : '?';
+    };
 
-    <form class="row" id="searchform" style="margin-bottom:14px">
-      <input class="txt" id="q" placeholder="Invoice #, customer or boat" value="${esc(search)}" style="flex:1 1 240px">
-      <button class="btn ghost" type="submit">Search</button>
-      ${search || status !== 'open' ? `<a class="btn ghost" href="?">Clear</a>` : ''}
-    </form>
-
-    <div class="row filterbar" style="margin-bottom:14px">
-      <div class="row tight" style="flex:1 1 auto">
-        ${JOB_FILTERS.map((value) => `<a class="chip${status === value ? ' on' : ''}" href="${href(value)}">${
-          JOB_FILTER_LABEL[value]}${value === 'open' ? ` (${counts.open || 0})` : ''}</a>`).join('')}
+    view.innerHTML = `
+      <div class="row" style="justify-content:space-between;margin-bottom:14px">
+        <h1 class="page-title">Jobs</h1>
+        <a class="btn navy" href="?view=intake">New work order</a>
       </div>
-      <label class="sortby" for="sortby">Sort
-        <select id="sortby">
-          ${Object.keys(JOB_SORTS).map((value) => `<option value="${value}"${
-            sort === value ? ' selected' : ''}>${JOB_SORTS[value]}</option>`).join('')}
-        </select>
-      </label>
-    </div>
 
-    ${jobs.length ? `<div class="joblist">${jobs.map((job) => `
-      <a class="jobrow" href="?job=${encodeURIComponent(job.id)}">
-        <div style="min-width:84px">
-          <div class="num">${esc(job.id)}</div>
-          <div class="sub">${formatDate(job.createdAt)}</div>
-        </div>
-        <div class="grow">
-          <div class="who">${esc(job.customerName || '(no name on file)')}</div>
-          <div class="sub">${esc(job.boatInfo || '(no boat details)')}</div>
-        </div>
-        <div class="row tight jobmeta">
-          ${job.needsReview.length ? `<span class="pill red">${job.needsReview.length} to fill in</span>` : ''}
-          ${job.hours ? `<span class="pill frost">${formatHours(job.hours)}</span>` : ''}
-          <span class="pill grey">${job.entryCount} log</span>
-          <span class="pill ${STATUS_PILL[job.status]}">${STATUS_LABEL[job.status]}</span>
-          <span class="sub" style="min-width:78px;text-align:right">${relativeDays(job.updatedAt)}</span>
-        </div>
-      </a>`).join('')}</div>`
-    : `<div class="empty">${
-        search ? 'No jobs match that search.'
-        : status === 'open' ? 'Nothing open. Every job is done and paid.'
-        : status !== 'all' ? 'No jobs at that stage.'
-        : 'No jobs yet. Upload a BiT work order to create the first one.'}</div>`}`;
+      <div class="stats" style="margin-bottom:16px">
+        ${STATUSES.map((value) => `<a class="stat" href="${href(value)}">
+          <div class="v">${counts[value] || 0}</div><div class="k">${STATUS_LABEL[value]}</div></a>`).join('')}
+      </div>
 
-  $('searchform').onsubmit = (event) => {
-    event.preventDefault();
-    const next = new URLSearchParams();
-    if (status !== 'all') next.set('status', status);
-    if ($('q').value.trim()) next.set('q', $('q').value.trim());
-    if (sort !== 'newest') next.set('sort', sort);
-    go(next.toString());
-  };
+      <form class="row" id="searchform" style="margin-bottom:14px">
+        <input class="txt" id="q" placeholder="Invoice #, customer or boat" value="${esc(search)}" style="flex:1 1 240px">
+        <button class="btn ghost" type="submit">Search</button>
+        ${search || status !== 'open' ? `<a class="btn ghost" href="?">Clear</a>` : ''}
+      </form>
 
-  // In the address, so it survives a refresh and the browser's Back button
-  // walks the list the way the writer walked it.
-  $('sortby').onchange = (event) => {
-    const next = new URLSearchParams();
-    if (status !== 'open') next.set('status', status);
-    if (search) next.set('q', search);
-    if (event.target.value !== 'newest') next.set('sort', event.target.value);
-    go(next.toString());
-  };
+      <div class="row filterbar" style="margin-bottom:14px">
+        <div class="row tight" style="flex:1 1 auto">
+          ${JOB_FILTERS.map((value) => `<a class="chip${status === value ? ' on' : ''}" href="${href(value)}">${
+            JOB_FILTER_LABEL[value]}${value === 'open' ? ` (${counts.open || 0})` : ''}</a>`).join('')}
+        </div>
+        <label class="sortby" for="sortby">Sort
+          <select id="sortby">
+            ${Object.keys(JOB_SORTS).map((value) => `<option value="${value}"${
+              sort === value ? ' selected' : ''}>${JOB_SORTS[value]}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+
+      ${jobs.length ? `<div class="joblist">${jobs.map((job) => `
+        <a class="jobrow" href="?job=${encodeURIComponent(job.id)}">
+          <div style="min-width:84px">
+            <div class="num">${esc(job.id)}</div>
+            <div class="sub">${formatDate(job.createdAt)}</div>
+          </div>
+          <div class="grow">
+            <div class="who">${esc(job.customerName || '(no name on file)')}</div>
+            <div class="sub">${esc(job.boatInfo || '(no boat details)')}</div>
+          </div>
+          <div class="row tight jobmeta">
+            ${job.needsReview.length ? `<span class="pill red">${job.needsReview.length} to fill in</span>` : ''}
+            ${job.hours ? `<span class="pill frost">${formatHours(job.hours)}</span>` : ''}
+            <span class="pill grey">${job.entryCount} log</span>
+            <span class="pill ${STATUS_PILL[job.status]}">${STATUS_LABEL[job.status]}</span>
+            <span class="sub" style="min-width:78px;text-align:right">${relativeDays(job.updatedAt)}</span>
+          </div>
+        </a>`).join('')}</div>`
+      : `<div class="empty">${
+          search ? 'No jobs match that search.'
+          : status === 'open' ? 'Nothing open. Every job is done and paid.'
+          : status !== 'all' ? 'No jobs at that stage.'
+          : 'No jobs yet. Upload a BiT work order to create the first one.'}</div>`}`;
+
+    $('searchform').onsubmit = (event) => {
+      event.preventDefault();
+      const next = new URLSearchParams();
+      if (status !== 'all') next.set('status', status);
+      if ($('q').value.trim()) next.set('q', $('q').value.trim());
+      if (sort !== 'newest') next.set('sort', sort);
+      go(next.toString());
+    };
+
+    // In the address, so it survives a refresh and the browser's Back button
+    // walks the list the way the writer walked it.
+    $('sortby').onchange = (event) => {
+      const next = new URLSearchParams();
+      if (status !== 'open') next.set('status', status);
+      if (search) next.set('q', search);
+      if (event.target.value !== 'newest') next.set('sort', event.target.value);
+      go(next.toString());
+    };
+    if (typing) {
+      $('q').value = typing.value;
+      $('q').focus();
+      $('q').setSelectionRange(typing.at, typing.at);
+    }
+  }
 }
 
 /* ---------------------------------------------------------- job detail --- */
@@ -468,9 +560,23 @@ function entryHtml(entry) {
   </article>`;
 }
 
-async function renderJob(id) {
-  view.innerHTML = `<p class="loading">Loading job ${esc(id)}…</p>`;
-  const data = await api('getJob', [id]);
+/**
+ * The job currently drawn, so redrawing it after a save can keep the writer
+ * where they were on the page instead of blanking it to "Loading…" and
+ * throwing them back to the top.
+ */
+let shownJob = null;
+
+/**
+ * `fresh` is the page as a save already handed it back (see withPage). Then
+ * there is nothing to fetch: the save and the page it lands on were one trip.
+ */
+async function renderJob(id, fresh) {
+  const redraw = shownJob === id;
+  const scrolled = redraw ? window.scrollY : 0;
+  if (!redraw) view.innerHTML = `<p class="loading">Loading job ${esc(id)}…</p>`;
+  const data = fresh || await api('getJob', [id]);
+  shownJob = id;
   showTestBanner(data.testMode);
   const { job, entries, hours, props, parts, emails } = data;
   // Older deployments have no JobFiles tab until setup() has been run; the
@@ -928,6 +1034,8 @@ async function renderJob(id) {
         </section>` : ''}
       </div>
     </div>`;
+  // Back to where the writer was, not the top of the page they just saved on.
+  if (redraw) window.scrollTo(0, scrolled);
 
   const notice = (tone, message) => {
     $('notice').innerHTML = `<div class="banner ${tone}" style="margin:14px 0">${esc(message)}</div>`;
@@ -961,8 +1069,8 @@ async function renderJob(id) {
         $('movego').disabled = true;
         $('movego').textContent = 'Moving…';
         try {
-          const result = await api('moveEntry', [button.dataset.move, to]);
-          await renderJob(job.id);
+          const result = await api('moveEntry', [button.dataset.move, to], withPage(job.id));
+          await renderJob(job.id, result.jobPage);
           toast(`Moved to ${result.to}.`);
         } catch (error) {
           $('movego').disabled = false;
@@ -980,8 +1088,8 @@ async function renderJob(id) {
       if (!confirm('Delete this entry? This cannot be undone.')) return;
       button.disabled = true;
       try {
-        const result = await api('deleteEntry', [button.dataset.del]);
-        await renderJob(job.id);
+        const result = await api('deleteEntry', [button.dataset.del], withPage(job.id));
+        await renderJob(job.id, result.jobPage);
         toast(result.removedParts
           ? `Entry deleted, and ${result.removedParts} part line with it.`
           : 'Entry deleted.');
@@ -1109,9 +1217,9 @@ async function renderJob(id) {
           requestReview: review,
           sendEmail: sendEmail,
           files: files,
-        }]);
+        }], withPage(job.id));
 
-        await renderJob(job.id);
+        await renderJob(job.id, result.jobPage);
         const what = `${formatMoney(result.received)} recorded`;
         const closed = result.archived ? ', ticket closed' : '';
         toast(result.emailed === false
@@ -1134,8 +1242,8 @@ async function renderJob(id) {
   const marklogged = $('marklogged');
   if (marklogged) marklogged.onclick = async () => {
     try {
-      const result = await api('markLogged', [job.id]);
-      renderJob(job.id);
+      const result = await api('markLogged', [job.id], withPage(job.id));
+      renderJob(job.id, result.jobPage);
       toast(`${result.logged} written up.`);
     } catch (error) { notice('warn', error.message); }
   };
@@ -1150,8 +1258,8 @@ async function renderJob(id) {
     if (!box) return;
     box.onchange = async () => {
       try {
-        await api('setJobFlag', [job.id, flag, box.checked]);
-        renderJob(job.id);
+        const { jobPage } = await api('setJobFlag', [job.id, flag, box.checked], withPage(job.id));
+        renderJob(job.id, jobPage);
       } catch (error) { box.checked = !box.checked; notice('warn', error.message); }
     };
   });
@@ -1206,13 +1314,13 @@ async function renderJob(id) {
       filebuttons.forEach((b) => { b.disabled = true; });
       button.textContent = 'Attaching…';
       try {
-        await api('addJobFile', [job.id, {
+        const { jobPage } = await api('addJobFile', [job.id, {
           name: file.name,
           mime: file.type || 'application/octet-stream',
           visibility: visibility,
           base64: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
-        }]);
-        renderJob(job.id);
+        }], withPage(job.id));
+        renderJob(job.id, jobPage);
         toast(visibility === 'customer'
           ? 'Attached. It goes with the invoice email.'
           : 'Attached, internal only.');
@@ -1231,8 +1339,8 @@ async function renderJob(id) {
       if (!confirm('Remove this attachment? It goes to the Drive bin, where it can be recovered for thirty days.')) return;
       button.disabled = true;
       try {
-        await api('deleteJobFile', [button.dataset.delfile]);
-        renderJob(job.id);
+        const { jobPage } = await api('deleteJobFile', [button.dataset.delfile], withPage(job.id));
+        renderJob(job.id, jobPage);
         toast('Attachment removed.');
       } catch (error) {
         button.disabled = false;
@@ -1293,14 +1401,14 @@ async function renderJob(id) {
       if (usedesc) usedesc.onclick = async () => {
         usedesc.disabled = true;
         try {
-          await api('saveJobDetails', [job.id, {
+          const { jobPage } = await api('saveJobDetails', [job.id, {
             customerName: job.customerName || '',
             customerPhone: job.customerPhone || '',
             customerEmail: job.customerEmail || '',
             boatInfo: job.boatInfo || '',
             workRequested: fresh,
-          }]);
-          renderJob(job.id);
+          }], withPage(job.id));
+          renderJob(job.id, jobPage);
           toast('What needs doing now matches the new work order.');
         } catch (error) {
           usedesc.disabled = false;
@@ -1319,14 +1427,14 @@ async function renderJob(id) {
   $('details').onsubmit = async (event) => {
     event.preventDefault();
     try {
-      await api('saveJobDetails', [job.id, {
+      const { jobPage } = await api('saveJobDetails', [job.id, {
         customerName: $('customerName').value,
         customerPhone: $('customerPhone').value,
         customerEmail: readEmailField('jobemails'),
         boatInfo: $('boatInfo').value,
         workRequested: $('workRequested').value,
-      }]);
-      renderJob(job.id);
+      }], withPage(job.id));
+      renderJob(job.id, jobPage);
       toast('Customer details saved.');
     } catch (error) { notice('warn', error.message); }
   };
@@ -1376,12 +1484,12 @@ async function renderJob(id) {
         });
       }
       const number = (id) => ($(id).value.trim() === '' ? null : Number($(id).value));
-      await api('saveInvoice', [job.id, $('paymentLink').value.trim(), base64, {
+      const { jobPage } = await api('saveInvoice', [job.id, $('paymentLink').value.trim(), base64, {
         grandTotal: number('grandTotal'),
         deposits: number('deposits'),
         amountDue: number('amountDue'),
-      }]);
-      renderJob(job.id);
+      }], withPage(job.id));
+      renderJob(job.id, jobPage);
       toast('Invoice and payment link saved.');
     } catch (error) {
       button.disabled = false;
@@ -1419,12 +1527,12 @@ async function renderJob(id) {
     addjobpart.disabled = true;
     addjobpart.textContent = 'Adding…';
     try {
-      await api('addJobPart', [job.id, {
+      const { jobPage } = await api('addJobPart', [job.id, {
         partIdentifier, description,
         quantity: $('jobpartqty').value.trim(),
         notes: $('jobpartnote').value.trim(),
-      }]);
-      renderJob(job.id);
+      }], withPage(job.id));
+      renderJob(job.id, jobPage);
       toast('On the parts list.');
     } catch (error) {
       addjobpart.disabled = false;
@@ -1440,8 +1548,8 @@ async function renderJob(id) {
     setalert.disabled = true;
     setalert.textContent = 'Putting it up…';
     try {
-      await api('setJobAlert', [job.id, text]);
-      renderJob(job.id);
+      const { jobPage } = await api('setJobAlert', [job.id, text], withPage(job.id));
+      renderJob(job.id, jobPage);
       toast('Alert is up on the mechanic\u2019s screen.');
     } catch (error) {
       setalert.disabled = false;
@@ -1455,8 +1563,8 @@ async function renderJob(id) {
     clearalert.disabled = true;
     clearalert.textContent = 'Taking it down…';
     try {
-      await api('setJobAlert', [job.id, '']);
-      renderJob(job.id);
+      const { jobPage } = await api('setJobAlert', [job.id, ''], withPage(job.id));
+      renderJob(job.id, jobPage);
       toast('Alert taken down.');
     } catch (error) {
       clearalert.disabled = false;
@@ -1473,9 +1581,9 @@ async function renderJob(id) {
     addnote.disabled = true;
     addnote.textContent = 'Adding…';
     try {
-      await api('addWriterNote', [job.id, text]);
+      const { jobPage } = await api('addWriterNote', [job.id, text], withPage(job.id));
       box.value = '';
-      renderJob(job.id);
+      renderJob(job.id, jobPage);
       toast('Note added to the shop log.');
     } catch (error) {
       addnote.disabled = false;
@@ -1489,8 +1597,8 @@ async function renderJob(id) {
     markdone.disabled = true;
     markdone.textContent = 'Closing…';
     try {
-      await api('markDone', [job.id]);
-      renderJob(job.id);
+      const { jobPage } = await api('markDone', [job.id], withPage(job.id));
+      renderJob(job.id, jobPage);
       toast('Marked done. Nothing has been emailed.');
     } catch (error) {
       markdone.disabled = false;
@@ -1506,8 +1614,8 @@ async function renderJob(id) {
     sendinvoice.disabled = true;
     sendinvoice.textContent = 'Sending…';
     try {
-      const result = await api('sendInvoiceEmail', [job.id]);
-      renderJob(job.id);
+      const result = await api('sendInvoiceEmail', [job.id], withPage(job.id));
+      renderJob(job.id, result.jobPage);
       toast(!result.emailed ? 'That email did not send — check the log.'
         : result.testMode ? `Test mode: it went to ${result.sentTo}, not the customer.`
         : `Invoice emailed to ${result.sentTo}.`);
@@ -1551,8 +1659,8 @@ async function renderJob(id) {
       $('marktexted').onclick = async () => {
         if (!confirm(`Record that the invoice text for ${job.id} has been sent?`)) return;
         try {
-          await api('markInvoiceTexted', [job.id]);
-          renderJob(job.id);
+          const { jobPage } = await api('markInvoiceTexted', [job.id], withPage(job.id));
+          renderJob(job.id, jobPage);
           toast('Logged against the job.');
         } catch (error) { notice('warn', error.message); }
       };
@@ -1569,8 +1677,8 @@ async function renderJob(id) {
   if (statusform) statusform.onsubmit = async (event) => {
     event.preventDefault();
     try {
-      await api('setStatus', [job.id, $('status').value]);
-      renderJob(job.id);
+      const { jobPage } = await api('setStatus', [job.id, $('status').value], withPage(job.id));
+      renderJob(job.id, jobPage);
       toast('Status updated.');
     } catch (error) { notice('warn', error.message); }
   };
@@ -3284,6 +3392,8 @@ async function renderSetup() {
 /* -------------------------------------------------------------- route --- */
 
 async function route() {
+  navigation += 1;
+  shownJob = null;
   if (!storedToken()) return renderSignIn();
   $('topbar').hidden = false;
   view.className = 'wrap';

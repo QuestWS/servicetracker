@@ -71,6 +71,21 @@ Three rules came out of counting them, and all three are load-bearing:
 
 Other things already paid for, which will come back if undone:
 
+- **`prefetch_` reads several tabs in one Sheets API call** (`getJob`,
+  `jobLog`, `jobProps`, `transcriptsFor`, `listPartsOrders`). It lands in the
+  same `_rowCache`, and it must `SpreadsheetApp.flush()` first: the API reads
+  the server, not SpreadsheetApp's unsent writes. It fails safe to per-tab
+  reads, so never make anything depend on it having run. An answer holding a
+  cell shaped like a displayed date (`9/1/2026`) is discarded: that is a
+  legacy Date cell, which `rows_` would have turned into ISO. The test stub
+  answers the way the API does — every cell a display string, trailing blanks
+  dropped — and `sheetsApi: false` is a deployment without the service.
+- **`props_()` reads every script property once per execution** and writes
+  through. Reach for `props_().getProperty`, never
+  `PropertiesService...getProperty`, or the round trip comes back.
+- **`jobPage` on a request** (`withJobPage_`) answers a writer's save with the
+  fresh job page, so the portal makes one call per click, not two.
+
 - `updateRow_` writes the changed span in ONE call. It used to be one
   `setValue` per field, so a status change cost three round trips.
 - `jobFolder_` is memoised, and the **folder** is link-shared once rather than
