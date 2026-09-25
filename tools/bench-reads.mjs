@@ -115,4 +115,10 @@ measure('a writer save + its job page', () => backend.api({
 measure('jobLog (mechanic opens the log)', () => backend.fn('jobLog', mech, token));
 measure('openJobs (mechanic job list)', () => backend.fn('openJobs', mech));
 measure('listParts (parts list)', () => backend.fn('listPartsOrders', admin));
+// The customer's invoice page, on the last job so the earlier measurements
+// stay on an untouched one. Done first — the page answers notFound otherwise.
+const lastId = `01-${9000 + JOBS - 1}`;
+backend.fn('markDone', admin, lastId);
+const invoiceCode = backend.fn('invoiceCodeFor_', backend.fn('jobRow_', lastId));
+measure('invoicePage (customer invoice)', () => backend.fn('invoicePage', invoiceCode));
 console.log('');

@@ -180,6 +180,7 @@ of the same tab no longer asks where the tab ends — the read already said.
   a writer save + its page     2 calls      1 call
   jobLog (mechanic's log)         2            1
   listParts                       2            1
+  invoicePage (customer)          2            1   (25 Sep)
 ```
 
 The advanced service is switched on in `apps-script/appsscript.json`. Nothing

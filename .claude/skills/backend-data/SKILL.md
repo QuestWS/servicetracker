@@ -72,7 +72,7 @@ Three rules came out of counting them, and all three are load-bearing:
 Other things already paid for, which will come back if undone:
 
 - **`prefetch_` reads several tabs in one Sheets API call** (`getJob`,
-  `jobLog`, `jobProps`, `transcriptsFor`, `listPartsOrders`). It lands in the
+  `jobLog`, `jobProps`, `transcriptsFor`, `listPartsOrders`, `invoicePage`). It lands in the
   same `_rowCache`, and it must `SpreadsheetApp.flush()` first: the API reads
   the server, not SpreadsheetApp's unsent writes. It fails safe to per-tab
   reads, so never make anything depend on it having run. An answer holding a

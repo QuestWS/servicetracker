@@ -4632,6 +4632,9 @@ function markInvoiceTexted(token, id) {
  * the one failure a customer actually notices.
  */
 function invoicePage(code) {
+  // The one page a texted customer waits on. Both tabs it reads in one trip;
+  // like every prefetch_, it fails safe to the per-tab reads.
+  prefetch_(['Jobs', 'JobFiles']);
   const job = jobByInvoiceCode_(code);
   const shop = { name: SHOP_NAME, phone: SHOP_PHONE, email: SERVICE_EMAIL, address: SHOP_ADDRESS };
   // The same answer for a code that never existed and a code on a job that is
