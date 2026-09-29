@@ -370,6 +370,7 @@ function payLineHtml(index, amount) {
 
 const JOB_SORTS = {
   newest: 'Newest first',
+  updated: 'Recently updated',
   number: 'Work order number',
   customer: 'Customer last name',
 };
@@ -383,6 +384,12 @@ function sortJobs(jobs, sort) {
   if (sort === 'customer') {
     return rows.sort((a, b) => byLastName(a.customerName, b.customerName)
       || String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+  }
+  if (sort === 'updated') {
+    // ISO stamps compare as text; a row that never recorded one falls back to
+    // when it was created, so it lands where it was added rather than last.
+    const stamp = (job) => String(job.updatedAt || job.createdAt || '');
+    return rows.sort((a, b) => stamp(b).localeCompare(stamp(a)));
   }
   return rows;                                  // as the backend sent it
 }

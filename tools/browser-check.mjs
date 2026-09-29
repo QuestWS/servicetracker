@@ -1776,6 +1776,11 @@ check('by work order number, counting rather than spelling',
 check('and the order is in the address, so a refresh keeps it',
   new URL(admin.url()).searchParams.get('sort') === 'number', admin.url());
 
+await admin.selectOption('#sortby', 'updated');
+await admin.waitForSelector('.jobrow', { timeout: 20000 });
+check('by most recent update is offered and kept in the address',
+  new URL(admin.url()).searchParams.get('sort') === 'updated' && (await rowIds()).length > 1, admin.url());
+
 await admin.selectOption('#sortby', 'customer');
 await admin.waitForSelector('.jobrow', { timeout: 20000 });
 const byCustomer = (await rowNames()).filter((name) => !name.startsWith('('));
