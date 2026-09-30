@@ -4358,3 +4358,141 @@ describe("the writer's portal on the fast roads", () => {
     expect(backend.api({ fn: 'openJobs', token: mech, args: [] }).fromCache).toBeUndefined();
   });
 });
+
+describe('winter work, from the winter services system', () => {
+  const KEY = 'k'.repeat(40);
+  const UNIT = {
+    qn: 'QW-26-1255', name: 'White, John', unit: 'Boat', ymm: '2019 Malibu 22 VLX', dims: "22' x 8'6\"",
+    tab: 'Inside', slip: 'B-12', keys: 'front desk', trailerLoc: '', state: 'pulled',
+    stateLabel: 'Pulled', stateAt: '2026-10-01T12:00:00Z', alert: '', cnote: 'Check the bilge pump',
+    work: [
+      { sec: 'Engine winterization', label: 'Full service — Inboard' },
+      { sec: 'Shrinkwrap', label: 'Shrinkwrap package (standard)' },
+      { sec: 'Quote requested', label: 'Impeller change', requested: true },
+    ],
+  };
+  let winter;
+  let calls;
+
+  function withWinter(answer, properties = { WINTER_KEY: KEY }) {
+    winter = answer;
+    calls = [];
+    backend = loadBackend({
+      properties: { ADMIN_PASSWORD: 'shop-password', ...properties },
+      fetch: (url, opts) => {
+        calls.push({ url, body: JSON.parse(opts.payload) });
+        return typeof winter === 'function' ? winter(url, opts) : winter;
+      },
+    });
+    adminToken = backend.fn('adminSignIn', 'shop-password').token;
+    return backend.fn('mechanicSignIn', 'Dale', true).token;
+  }
+  const ok = (units, extra = {}) => ({ code: 200, body: { ok: 1, _api: 'tracker', at: '2026-10-01T13:00:00Z', units, ...extra } });
+
+  it('lists the units the winter system has pulled or had dropped off, with their work', () => {
+    const mech = withWinter(ok([UNIT]));
+    const out = backend.fn('winterWork', mech);
+    expect(out.configured).toBe(true);
+    expect(out.units).toHaveLength(1);
+    expect(out.units[0].qn).toBe('QW-26-1255');
+    expect(out.units[0].work.map((w) => w.label)).toEqual(
+      ['Full service — Inboard', 'Shrinkwrap package (standard)', 'Impeller change']);
+    expect(out.units[0].work[2].requested).toBe(true);
+    expect(out.units[0].left).toBe(3);
+    // It asked with the shared key, and asked for nothing else.
+    expect(calls[0].body).toEqual({ api: 'tracker', fn: 'winterWork', key: KEY });
+  });
+
+  it('is behind a sign-in, like the open-jobs list', () => {
+    withWinter(ok([UNIT]));
+    expect(() => backend.fn('winterWork', '')).toThrow(/Sign in/);
+    expect(backend.fn('winterWork', adminToken).units).toHaveLength(1);
+  });
+
+  it('says it is not connected, and fetches nothing, until the key is in', () => {
+    const mech = withWinter(ok([UNIT]), {});
+    const out = backend.fn('winterWork', mech);
+    expect(out.configured).toBe(false);
+    expect(out.units).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('asks the winter system once in five minutes, and again on Refresh', () => {
+    const mech = withWinter(ok([UNIT]));
+    backend.fn('winterWork', mech);
+    backend.call('forget_(); _props = null;');
+    backend.fn('winterWork', mech);
+    expect(calls).toHaveLength(1);
+    backend.fn('winterWork', mech, true);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('keeps showing the last good list, marked stale, when the winter system is down', () => {
+    const mech = withWinter(ok([UNIT]));
+    backend.fn('winterWork', mech);
+    winter = { code: 500, body: 'oops' };
+    const out = backend.fn('winterWork', mech, true);
+    expect(out.stale).toBe(true);
+    expect(out.error).toMatch(/did not answer/);
+    expect(out.units).toHaveLength(1);
+  });
+
+  it('says plainly when the keys do not match', () => {
+    const mech = withWinter({ code: 200, body: { ok: 0, _api: 'tracker', error: 'Not authorised.' } });
+    const out = backend.fn('winterWork', mech);
+    expect(out.units).toEqual([]);
+    expect(out.error).toMatch(/WINTER_KEY here and TRACKER_KEY there/);
+  });
+
+  it('refuses an answer that is not the winter feed', () => {
+    const mech = withWinter({ code: 200, body: { ok: 1, units: [UNIT] } });
+    expect(backend.fn('winterWork', mech).units).toEqual([]);
+  });
+
+  it('passes on only the fields it names — a price added over there does not reach the phone', () => {
+    const mech = withWinter(ok([{ ...UNIT, balance: '$1,234.00', phone: '(815) 555-0142',
+      work: [{ sec: 'Shrinkwrap', label: 'Shrinkwrap package (standard)', amt: 500 }] }]));
+    const text = JSON.stringify(backend.fn('winterWork', mech));
+    expect(text).not.toContain('1,234');
+    expect(text).not.toContain('555-0142');
+    expect(text).not.toContain('500');
+  });
+
+  it('ticks an item off as whoever is signed in, and puts it back', () => {
+    const mech = withWinter(ok([UNIT]));
+    backend.api({ fn: 'setWinterItem', token: mech, args: ['QW-26-1255', 'Full service — Inboard', true] });
+    let unit = backend.fn('winterWork', mech).units[0];
+    expect(unit.work[0]).toMatchObject({ done: true, doneBy: 'Dale' });
+    expect(unit.left).toBe(2);
+
+    backend.api({ fn: 'setWinterItem', token: mech, args: ['QW-26-1255', 'Full service — Inboard', false] });
+    unit = backend.fn('winterWork', mech).units[0];
+    expect(unit.work[0].done).toBe(false);
+    expect(unit.left).toBe(3);
+    // One row per item, rewritten — not a new row per tap.
+    expect(backend.sheet('WinterWork').rows).toHaveLength(2);
+  });
+
+  it('never ticks anything off over GET', () => {
+    const mech = withWinter(ok([UNIT]));
+    const out = backend.get({ fn: 'setWinterItem', token: mech,
+      args: JSON.stringify(['QW-26-1255', 'Full service — Inboard', true]) });
+    expect(out.error).toMatch(/sent, not fetched/);
+    expect(backend.fn('winterWork', mech).units[0].work[0].done).toBe(false);
+  });
+
+  it('puts units with work left ahead of finished ones, and an alert ahead of both', () => {
+    const done = { ...UNIT, qn: 'QW-26-0001', stateAt: '2026-09-01T00:00:00Z',
+      work: [{ sec: 'Shrinkwrap', label: 'Shrinkwrap package (standard)' }] };
+    const alerted = { ...UNIT, qn: 'QW-26-0002', stateAt: '2026-10-05T00:00:00Z', alert: 'no keys, do not tow' };
+    const mech = withWinter(ok([done, UNIT, alerted]));
+    backend.fn('setWinterItem', mech, 'QW-26-0001', 'Shrinkwrap package (standard)', true);
+    const order = backend.fn('winterWork', mech).units.map((u) => u.qn);
+    expect(order).toEqual(['QW-26-0002', 'QW-26-1255', 'QW-26-0001']);
+  });
+
+  it('has a tab for the ticks, and setup() makes it', () => {
+    expect(backend.sheet('WinterWork').rows[0]).toEqual(
+      ['id', 'quote_no', 'item', 'done', 'done_by', 'done_at', 'created_at']);
+  });
+});

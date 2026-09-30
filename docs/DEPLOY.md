@@ -62,6 +62,10 @@ trigger is the one step a web app may not be authorised for, and running
 | `ASSEMBLYAI_API_KEY` | the AssemblyAI key (optional — without it, voice notes keep the audio but get no text) |
 | `WEB_APP_URL` | the `/exec` URL from step 4, so AssemblyAI can call back |
 | `TEST_EMAIL` | where a held customer email goes to be read (defaults to the service desk) |
+| `WINTER_KEY` | the shared key for **Winter work** — the same string as `TRACKER_KEY` in the winter services script. At least 24 characters. Without it the mechanic app's Winter work list says it is not connected and fetches nothing |
+
+`WINTER_URL` is optional and normally left unset: it overrides the winter
+services `/exec` URL written in `service-tracker.gs` (`WINTER_EXEC_URL`).
 
 `SITE_URL` is **not** a script property — it is a constant at the top of
 `service-tracker.gs`, deliberately. It is printed into every QR code, so

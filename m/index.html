@@ -101,7 +101,7 @@
 
 <script type="module">
 import { api, ApiError, NoAnswer, storeSession, storedWho, clearSession, storedToken, onApiTiming,
-         savedOpenJobs, saveOpenJobs, savedJob, saveJob } from '../assets/lib/api.js';
+         savedOpenJobs, saveOpenJobs, savedJob, saveJob, savedCopy, saveCopy } from '../assets/lib/api.js';
 import { ENTRY_LABEL, formatHours, formatMinutes } from '../assets/lib/entry-types.js';
 import { tokenFromScan } from '../assets/lib/tracking.js';
 import { $, esc, toast, formatDateTime, fileToBase64, preparePhoto, driveImageUrl, driveFileUrl } from '../assets/lib/ui.js';
@@ -437,6 +437,7 @@ function renderHome(message) {
       <button class="btn gold big block" type="button" id="scan">Scan work order</button>
       <button class="btn ghost big block" type="button" id="manual">Type invoice number instead</button>
       <button class="btn ghost big block" type="button" id="openjobs">Pick from open jobs</button>
+      <button class="btn ghost big block" type="button" id="winter">Winter work</button>
       <button class="btn ghost block" type="button" id="reqpart">Request a part for stock</button>
       <p style="color:#9fc3dc;font-size:14px;line-height:1.5">
         Scan the QR code printed on the paper work order. Scanning starts the job — you will be
@@ -458,6 +459,7 @@ function renderHome(message) {
   $('scan').onclick = renderScanning;
   $('manual').onclick = renderManual;
   $('openjobs').onclick = renderOpenJobs;
+  $('winter').onclick = renderWinter;
   $('reqpart').onclick = renderPartRequest;
 }
 
@@ -546,6 +548,167 @@ function drawOpenJobs(jobs, strip, tone) {
       loadJob();
     };
   });
+}
+
+/**
+ * Winter work: every boat the winter services system says is pulled or
+ * dropped off, and what its quote says is to be done before it goes into
+ * storage. Read from that system by the backend (winterWork) — the only thing
+ * this app writes is a tick against an item.
+ *
+ * Behind the roster for the same reason as the open-jobs list: it is every
+ * winter customer's name at once. Drawn from the phone's last copy first and
+ * refreshed behind, like that list.
+ */
+async function renderWinter(fresh) {
+  stopScanning();
+  screen(renderHome);
+  if (!state.who) return signInThen(renderWinter);
+  const mine = newVisit();
+  const saved = fresh === true ? null : savedCopy('winter');
+  if (saved) drawWinter(saved.value, `List from ${ago(saved.at)} · refreshing…`, 'info');
+  else view.innerHTML = `<p class="loading" style="color:#9fc3dc">Loading winter work…</p>`;
+
+  let out;
+  try {
+    out = await api('winterWork', fresh === true ? [true] : []);
+  } catch (error) {
+    if (mine !== visit) return;
+    if (/Sign in/i.test(error.message)) {
+      state.who = null;
+      return signInThen(renderWinter);
+    }
+    const kept = error instanceof NoAnswer ? saved || savedCopy('winter') : null;
+    if (kept) return drawWinter(kept.value, `Could not refresh — showing the list from ${ago(kept.at)}.`, 'warn');
+    return renderHome(error.message);
+  }
+  if (mine !== visit) return;
+  saveCopy('winter', out);
+  // The server kept its last good list when the winter system would not
+  // answer, and says so; that is worth a strip, not an error screen.
+  drawWinter(out, out.stale && out.error ? `${out.error} Showing the last list it gave.` : '', 'warn');
+}
+
+/** "Pulled Oct 1" — when the unit came in, which is how long it has waited. */
+function winterWhen(unit) {
+  if (!unit.stateAt) return unit.stateLabel || '';
+  const at = new Date(unit.stateAt);
+  if (Number.isNaN(at.getTime())) return unit.stateLabel || '';
+  return `${unit.stateLabel} ${at.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+}
+
+function drawWinter(out, strip, tone) {
+  state.winter = out;
+  const units = out.units || [];
+  view.innerHTML = `
+    <div class="row" style="justify-content:space-between;align-items:center;margin:0 0 10px">
+      <h2 style="margin:0;color:#fff">Winter work (${units.filter((u) => u.left).length})</h2>
+      <button class="btn ghost" type="button" id="refreshwinter" style="padding:6px 12px;font-size:14px">Refresh</button>
+    </div>
+    <p style="color:#9fc3dc;font-size:14px;margin:0 0 12px">Boats pulled or dropped off for winter storage, and what each one needs before it is put away.</p>
+    ${strip ? `<div class="banner ${tone || 'info'}" id="winterstrip" style="margin-bottom:12px">${esc(strip)}</div>` : ''}
+    ${out.configured === false ? `<div class="banner warn" id="winteroff">${esc(out.error || 'Not connected to the winter system yet.')}</div>`
+    : !out.stale && out.error ? `<div class="banner warn">${esc(out.error)}</div>` : ''}
+    ${units.length ? `<div class="stack">
+      ${units.map((unit, index) => `
+        <button class="btn ghost block joblist${unit.alert ? ' flagged' : ''}" type="button" data-unit="${index}"
+                style="display:block;text-align:left;padding:14px${unit.left ? '' : ';opacity:.7'}">
+          <div class="row" style="justify-content:space-between;gap:8px">
+            <span style="font-family:var(--mono);font-weight:bold">${esc(unit.qn)}</span>
+            <span style="font-size:13px;font-weight:600">${unit.left ? `${unit.left} of ${unit.work.length} to do` : (unit.work.length ? 'All done ✓' : 'Nothing listed')}</span>
+          </div>
+          <div style="font-size:15px;margin-top:2px">${esc(unit.name || '(no name)')}</div>
+          <div style="font-size:14px;opacity:.8">${esc([unit.ymm || unit.unit, unit.dims].filter(Boolean).join(' · '))}</div>
+          ${unit.alert ? `<div style="margin-top:7px"><span class="alertflag">${ALERT_MARK} Read first</span></div>
+            <div style="font-size:14px;line-height:1.4;color:var(--alert);font-weight:600;margin-top:5px">${esc(unit.alert)}</div>` : ''}
+          <div style="font-size:12px;opacity:.7;margin-top:4px">${esc([winterWhen(unit), unit.tab].filter(Boolean).join(' · '))}</div>
+        </button>`).join('')}
+    </div>` : out.configured === false ? '' : `<p style="color:#9fc3dc">Nothing pulled or dropped off is waiting right now.</p>`}`;
+
+  $('refreshwinter').onclick = () => renderWinter(true);
+  view.querySelectorAll('[data-unit]').forEach((button) => {
+    button.onclick = () => renderWinterUnit(units[Number(button.dataset.unit)]);
+  });
+}
+
+/** One unit: where it is, what to read first, and the list to work down. */
+function renderWinterUnit(unit) {
+  newVisit();
+  screen(() => (state.winter ? drawWinter(state.winter, '', '') : renderWinter()));
+  const facts = [
+    ['Where', unit.tab],
+    ['Slip', unit.slip],
+    ['Keys', unit.keys],
+    ['Trailer is', unit.trailerLoc],
+    ['Came in', winterWhen(unit)],
+  ].filter((f) => f[1]);
+  view.innerHTML = `
+    <section class="card${unit.alert ? ' alerting' : ''}" id="winterunit">
+      <div style="font-family:var(--mono);font-weight:bold">${esc(unit.qn)}</div>
+      <h2 style="margin:2px 0 0">${esc(unit.name || '(no name)')}</h2>
+      <div style="opacity:.8">${esc([unit.ymm || unit.unit, unit.dims].filter(Boolean).join(' · '))}</div>
+      ${unit.alert ? `<div class="banner warn" style="margin-top:10px;color:var(--alert);border-color:var(--alert)">
+        <span class="alertflag">${ALERT_MARK} Read first</span>
+        <div style="margin-top:5px">${esc(unit.alert)}</div></div>` : ''}
+      <dl style="margin:12px 0 0;display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:15px">
+        ${facts.map((f) => `<dt style="opacity:.7">${esc(f[0])}</dt><dd style="margin:0">${esc(f[1])}</dd>`).join('')}
+      </dl>
+      ${unit.cnote ? `<p style="margin:12px 0 0"><b>Customer's note:</b> ${esc(unit.cnote)}</p>` : ''}
+    </section>
+    <section class="card" style="margin-top:14px">
+      <h2 style="margin-top:0">Before it goes into storage</h2>
+      ${unit.work.length ? `<div class="stack" id="winteritems">
+        ${unit.work.map((item, index) => winterItemHtml(item, index)).join('')}
+      </div>
+      <p class="hint" style="margin-top:10px">Tap an item when it is done. Tap again to put it back.</p>`
+      : `<p>The quote lists no work before storage.</p>`}
+    </section>`;
+  bindWinterItems(unit);
+}
+
+function winterItemHtml(item, index) {
+  return `<button class="btn ${item.done ? 'green' : 'ghost'} block" type="button" data-item="${index}"
+      aria-pressed="${item.done ? 'true' : 'false'}" style="display:block;text-align:left;padding:14px;font-size:16px">
+    <div style="font-weight:700">${item.done ? '✓ ' : '☐ '}${esc(item.label)}</div>
+    ${item.requested ? `<div style="font-size:12.5px;opacity:.85;margin-top:3px">Customer asked for a quote — not priced yet. Check with the office.</div>` : ''}
+    ${item.done ? `<div style="font-size:12.5px;opacity:.9;margin-top:3px">${item.saving ? 'Saving…' : `Done by ${esc(item.doneBy || '')}${item.doneAt ? ` · ${esc(formatDateTime(item.doneAt))}` : ''}`}</div>`
+      : item.saving ? `<div style="font-size:12.5px;margin-top:3px">Saving…</div>` : ''}
+  </button>`;
+}
+
+function bindWinterItems(unit) {
+  view.querySelectorAll('[data-item]').forEach((button) => {
+    button.onclick = () => toggleWinterItem(unit, Number(button.dataset.item));
+  });
+}
+
+/**
+ * Optimistic, like every save on the floor: the tick shows on the tap, and a
+ * failure puts it back and says so where the mechanic is looking.
+ */
+async function toggleWinterItem(unit, index) {
+  const item = unit.work[index];
+  if (item.saving) return;
+  const was = { done: item.done, doneBy: item.doneBy, doneAt: item.doneAt };
+  const want = !item.done;
+  Object.assign(item, { done: want, doneBy: want ? (state.who && state.who.name) || '' : '', doneAt: '', saving: true });
+  const redraw = () => {
+    unit.left = unit.work.filter((w) => !w.done).length;
+    const box = view.querySelector(`[data-item="${index}"]`);
+    if (!box) return;
+    box.outerHTML = winterItemHtml(item, index);
+    bindWinterItems(unit);
+  };
+  redraw();
+  try {
+    const out = await api('setWinterItem', [unit.qn, item.label, want]);
+    Object.assign(item, { done: out.item.done, doneBy: out.item.doneBy, doneAt: out.item.doneAt, saving: false });
+    if (state.winter) saveCopy('winter', state.winter);
+  } catch (error) {
+    Object.assign(item, was, { saving: false });
+    toast(`Not saved — ${error.message}`);
+  }
+  redraw();
 }
 
 /**

@@ -247,6 +247,40 @@ phone** — it comes down when the office takes it down, not when the floor taps
 it away. Setting and clearing it is the writer's; see the `writer-portal`
 skill.
 
+## Winter work — read from the winter services system
+
+**Winter work** on the home screen lists every unit the winter services system
+(QuestWS/winter-quotes_26-27) has marked **pulled** or **dropped off** — its
+Harbor Haul Out *To store* list — with what its quote says is to be done before
+it goes into storage: winterization, water systems, shrinkwrap, washing,
+detailing, staff-priced extras, and open quote requests marked *not priced
+yet*. Storage, retrieval, surcharges, discounts and adjustments are not work
+and do not come across.
+
+- **It is not a job.** No BiT invoice, no work order, no QR. Turning each unit
+  into a job would put every winter boat into the writer's close-out waiting
+  for an invoice that never comes from BiT. The only thing written here is a
+  tick per item, on the `WinterWork` tab, keyed on quote number + the item's
+  words. A line renamed over there drops its tick — towards doing the work,
+  not skipping it.
+- **One direction.** `winterWork` asks the winter backend (`api:'tracker'`)
+  with a shared key — `WINTER_KEY` here, `TRACKER_KEY` there. Nothing here
+  writes to the winter system; a boat is marked stored in Harbor Haul Out,
+  and it then drops off this list.
+- **No money crosses.** The winter side sends labels only and its own check
+  (`tools/check-tracker-feed.js`) asserts it; `fetchWinterFeed_` names every
+  field it passes on, so a figure added over there cannot ride through.
+- **Five minutes of cache**, a day's last good copy when the winter backend
+  cannot be reached (the list says so), Refresh skips it. The phone keeps its
+  own copy under `savedCopy('winter')` and draws it first, like the open-jobs
+  list. Behind the roster for the same reason: it is every winter customer's
+  name at once.
+- Ticks are optimistic like every other save: shown on the tap, put back with
+  a toast if the server refuses.
+
+`scripts/serve.mjs` plays the winter system with two fixed units, so the
+preview and `browser-check.mjs` never reach the real one.
+
 ## The service worker
 
 There is a watchdog behind the boot and an always-present way to throw the

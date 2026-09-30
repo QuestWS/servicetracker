@@ -20,7 +20,32 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT || 8787);
 const PASSWORD = process.env.ADMIN_PASSWORD || 'shop';
 
-const backend = loadBackend({ properties: { ADMIN_PASSWORD: PASSWORD } });
+/*
+ * The winter services system, played locally. The real backend asks that
+ * system's /exec for the units it has pulled or had dropped off; here the
+ * answer is a fixed pair of units, so the Winter work screen has something to
+ * show and browser-check.mjs can tick items off. Never reaches the real one.
+ */
+const WINTER_UNITS = [
+  { qn: 'QW-26-9001', name: 'Harbor, Pat', unit: 'Boat', ymm: '2019 Malibu 22 VLX', dims: "22' x 8'6\"",
+    tab: 'Inside', slip: 'B-12', keys: 'front desk', trailerLoc: '', state: 'pulled', stateLabel: 'Pulled',
+    stateAt: '2026-10-01T15:00:00Z', alert: '', cnote: 'Please check the bilge pump',
+    work: [
+      { sec: 'Engine winterization', label: 'Full service — Inboard' },
+      { sec: 'Shrinkwrap', label: 'Shrinkwrap package (standard)' },
+      { sec: 'Quote requested', label: 'Impeller change', requested: true },
+    ] },
+  { qn: 'QW-26-9002', name: 'Lot, Sam', unit: 'PWC', ymm: '2021 Sea-Doo GTX', dims: '',
+    tab: 'Outside', slip: '', keys: '', trailerLoc: '', state: 'dropped', stateLabel: 'Dropped off',
+    stateAt: '2026-10-02T15:00:00Z', alert: "owner says don't touch the canvas", cnote: '',
+    work: [{ sec: 'Winterization', label: 'Basic — PWC / Jetski' }] },
+];
+const backend = loadBackend({
+  properties: { ADMIN_PASSWORD: PASSWORD, WINTER_KEY: 'preview-winter-key-preview-winter-key' },
+  fetch: (url) => (/script\.google\.com/.test(url)
+    ? { code: 200, body: { ok: 1, _api: 'tracker', at: new Date().toISOString(), units: WINTER_UNITS } }
+    : null),
+});
 
 const CONFIG_JS = path.join(ROOT, 'assets', 'lib', 'config.js');
 

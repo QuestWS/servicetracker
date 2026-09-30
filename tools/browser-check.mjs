@@ -1228,6 +1228,53 @@ await admin.fill('#alerttext', ALERT);
 await admin.click('#setalert');
 await admin.waitForSelector('.alertbox', { timeout: 20000 });
 
+console.log('\n== winter work ==');
+{
+  // The preview plays the winter services system (scripts/serve.mjs): two
+  // units, one pulled with three items, one dropped off with an alert.
+  await mech.goto(`${BASE}/m/`, { waitUntil: 'networkidle' });
+  await mech.click('#winter');
+  await mech.waitForSelector('[data-unit]', { timeout: 20000 });
+  check('the winter list shows the units the winter system brought in',
+    await mech.locator('[data-unit]').count() === 2);
+  check('the alerted unit is flagged and first',
+    (await mech.locator('[data-unit]').first().getAttribute('class')).includes('flagged'));
+  const listText = await mech.textContent('#view');
+  check('each says how much is left to do', listText.includes('0 of 3') === false && listText.includes('3 of 3 to do'));
+  check('and no money is anywhere on it', !/\$\d/.test(listText));
+  await mech.screenshot({ path: `${SHOTS}/60-winter-list.png`, fullPage: true });
+
+  await mech.locator('[data-unit]').nth(1).click();
+  await mech.waitForSelector('#winteritems', { timeout: 20000 });
+  const unitText = await mech.textContent('#view');
+  check('the unit says where it is and where the keys are', unitText.includes('B-12') && unitText.includes('front desk'));
+  check("the customer's note is on it", unitText.includes('bilge pump'));
+  check('an unpriced request is marked as one', unitText.includes('not priced yet'));
+  await mech.locator('[data-item="0"]').click();
+  await mech.waitForFunction(() => {
+    const b = document.querySelector('[data-item="0"]');
+    return b && b.getAttribute('aria-pressed') === 'true' && /Done by/.test(b.textContent);
+  }, null, { timeout: 20000 });
+  check('a tap ticks it off, as whoever is signed in',
+    (await mech.textContent('[data-item="0"]')).includes('Done by Dale'));
+  await mech.screenshot({ path: `${SHOTS}/61-winter-unit.png`, fullPage: true });
+
+  // It stuck on the server, not just on the screen.
+  await mech.click('#navback');
+  await mech.click('#refreshwinter');
+  await mech.waitForFunction(() => /2 of 3 to do/.test(document.getElementById('view').textContent), null, { timeout: 20000 });
+  check('and the list counts it after a refresh', true);
+
+  await mech.locator('[data-unit]').nth(1).click();
+  await mech.waitForSelector('#winteritems', { timeout: 20000 });
+  await mech.locator('[data-item="0"]').click();
+  await mech.waitForFunction(() => {
+    const b = document.querySelector('[data-item="0"]');
+    return b && b.getAttribute('aria-pressed') === 'false' && !/Saving/.test(b.textContent);
+  }, null, { timeout: 20000 });
+  check('and a second tap puts it back', true);
+}
+
 console.log('\n== getting around the portal ==');
 {
   const fnOf = (request) => { try { return JSON.parse(request.postData() || '{}').fn; } catch { return '?'; } };

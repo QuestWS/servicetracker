@@ -458,7 +458,12 @@ const SHEETS = {
   // browser), because the whole point is surviving a reload or a different
   // session before it is finally sent.
   StatementDrafts: ['id', 'customer_name', 'customer_phone', 'customer_email',
-                     'invoices_json', 'created_at', 'updated_at']
+                     'invoices_json', 'created_at', 'updated_at'],
+  // What the floor has ticked off on a winter unit — a boat the winter
+  // services system says is pulled or dropped off. The unit and its list of
+  // work live over there (see winterWork); only the ticks live here. One row
+  // per quote number + item, rewritten in place when it is un-ticked.
+  WinterWork: ['id', 'quote_no', 'item', 'done', 'done_by', 'done_at', 'created_at']
 };
 
 /* ============================== plumbing =============================== */
@@ -1001,6 +1006,8 @@ function apiFns_(data) {
     addEntry:         function (a) { return addEntry(data.token, a[0], a[1]); },
     addPropRepair:    function (a) { return addPropRepair(data.token, a[0], a[1]); },
     finishWork:       function (a) { return finishWork(data.token, a[0]); },
+    winterWork:       function (a) { return winterWork(data.token, a[0] === true); },
+    setWinterItem:    function (a) { return setWinterItem(data.token, a[0], a[1], a[2] === true); },
 
     /* customer page — the token in the URL is the only credential */
     publicJob:        function (a) { return publicJob(a[0], data.token); },
@@ -1074,6 +1081,7 @@ const API_GET_FNS_ = {
   jobProps: true,
   openJobs: true,
   transcriptsFor: true,
+  winterWork: true,
 
   /* the writer's portal */
   listJobs: true,
@@ -3160,6 +3168,195 @@ function cancelPropRepair(token, id) {
   // the memoised rows itself or the next read in this execution is stale.
   forget_('PropRepairs');
   return listPropRepairs(token);
+}
+
+/* ============================ winter work ============================== */
+/*
+ * The work waiting on boats the winter program has brought in.
+ *
+ * The shop asked for it plainly (Sep 2026): when a boat is marked pulled or
+ * dropped off in the winter services system, the mechanics should see what
+ * needs winterizing — or any other job to be done before it goes into
+ * storage. That system (QuestWS/winter-quotes_26-27) already knows both
+ * facts: Harbor Haul Out records the pull and the drop-off, and the customer's
+ * quote says what they paid to have done. So this asks it, rather than asking
+ * somebody to type the same list in twice.
+ *
+ * What decides each piece:
+ *
+ *  - IT IS NOT A JOB. A job here is a BiT invoice with a work order printed
+ *    and a QR code on it; a winter unit is a quote in another system with
+ *    neither. Making one into the other would put forty boats into the
+ *    writer's close-out, where each would want an invoice that is never
+ *    coming from BiT. So it is its own list, and the only thing written on
+ *    this side is which items a mechanic has ticked off.
+ *  - ONE DIRECTION. The winter system answers; nothing here writes back to
+ *    it. A tick is the floor's own record, in the WinterWork tab.
+ *  - A SHARED KEY in script properties — WINTER_KEY here, TRACKER_KEY there,
+ *    the same long random string. Neither repo holds it; both are public. No
+ *    key set means the list says so and fetches nothing.
+ *  - NO MONEY CROSSES. The winter side sends labels only, never an amount, a
+ *    balance, a phone number or an email; it is checked over there
+ *    (tools/check-tracker-feed.js) and asserted again here.
+ *  - CACHED FOR FIVE MINUTES, and the last good answer kept for a day. The
+ *    winter backend is a second cold start and a spreadsheet walk; paying for
+ *    it on every open of the list would make this the slowest screen in the
+ *    app. A pull recorded at the harbor shows here within five minutes, or at
+ *    once on Refresh. When the winter side cannot be reached the last good
+ *    list is shown and says how old it is, like every other list here.
+ *  - A TICK IS KEYED ON THE ITEM'S WORDS. The quote has no line ids. If the
+ *    office renames a line over there, the tick on the old words stops
+ *    matching and the item shows as not done — which fails towards doing the
+ *    work, not towards skipping it.
+ */
+const WINTER_EXEC_URL = 'https://script.google.com/macros/s/AKfycbxv8kqGKXU_4-9TytfWzdrv-QqqmyrYLxRwd8FDfA8b47sX3NlEBNDlIwIHRuQObZbL9w/exec';
+const WINTER_FEED_KEY_ = 'WINTER_FEED_v1';
+const WINTER_LAST_GOOD_KEY_ = 'WINTER_LASTGOOD_v1';
+const WINTER_FEED_TTL_ = 300;
+const WINTER_LAST_GOOD_TTL_ = 21600;
+const WINTER_ITEM_MAX_ = 200;
+
+/** Whether the shop has put the shared key in. */
+function winterKey_() {
+  return String(props_().getProperty('WINTER_KEY') || '').trim();
+}
+
+/**
+ * The winter system's list of units on To store, straight off the wire.
+ * Throws with a sentence a mechanic can read.
+ */
+function fetchWinterFeed_() {
+  const res = UrlFetchApp.fetch(props_().getProperty('WINTER_URL') || WINTER_EXEC_URL, {
+    method: 'post',
+    contentType: 'text/plain',
+    payload: JSON.stringify({ api: 'tracker', fn: 'winterWork', key: winterKey_() }),
+    muteHttpExceptions: true,
+    followRedirects: true
+  });
+  let body = null;
+  try { body = JSON.parse(res.getContentText()); } catch (err) { body = null; }
+  if (res.getResponseCode() !== 200 || !body || body._api !== 'tracker') {
+    throw new Error('The winter system did not answer.');
+  }
+  if (!body.ok) {
+    throw new Error(/authoris/i.test(String(body.error))
+      ? 'The winter system turned the key down. WINTER_KEY here and TRACKER_KEY there have to match.'
+      : 'The winter system said: ' + String(body.error || 'no.'));
+  }
+  // Only what this app shows, named one field at a time. A field added over
+  // there does not ride through to the phone because somebody spread a row.
+  return {
+    at: String(body.at || nowIso_()),
+    units: (body.units || []).map(function (u) {
+      return {
+        qn: String(u.qn || ''), name: String(u.name || ''), unit: String(u.unit || ''),
+        ymm: String(u.ymm || ''), dims: String(u.dims || ''), tab: String(u.tab || ''),
+        slip: String(u.slip || ''), keys: String(u.keys || ''), trailerLoc: String(u.trailerLoc || ''),
+        state: String(u.state || ''), stateLabel: String(u.stateLabel || ''), stateAt: String(u.stateAt || ''),
+        alert: String(u.alert || ''), cnote: String(u.cnote || ''),
+        work: (u.work || []).map(function (w) {
+          return { sec: String(w.sec || ''), label: String(w.label || '').slice(0, WINTER_ITEM_MAX_),
+                   requested: !!w.requested };
+        }).filter(function (w) { return w.label; })
+      };
+    }).filter(function (u) { return u.qn; })
+  };
+}
+
+/** The feed, from the cache when it is fresh enough. {feed, stale, error}. */
+function winterFeed_(fresh) {
+  const cached = fresh ? null : cacheGetBig_(WINTER_FEED_KEY_);
+  if (cached && Array.isArray(cached.units)) return { feed: cached, stale: false, error: '' };
+  try {
+    const feed = fetchWinterFeed_();
+    cachePutBig_(WINTER_FEED_KEY_, feed, WINTER_FEED_TTL_);
+    cachePutBig_(WINTER_LAST_GOOD_KEY_, feed, WINTER_LAST_GOOD_TTL_);
+    return { feed: feed, stale: false, error: '' };
+  } catch (err) {
+    const kept = cacheGetBig_(WINTER_LAST_GOOD_KEY_);
+    return { feed: kept && Array.isArray(kept.units) ? kept : null, stale: true,
+             error: String(err && err.message ? err.message : err) };
+  }
+}
+
+/** Every tick, keyed quote number + item words. Nothing when setup() has not made the tab. */
+function winterTicks_() {
+  const out = {};
+  if (!ss_().getSheetByName('WinterWork')) return out;
+  rows_('WinterWork').forEach(function (row) {
+    out[row.quote_no + '\n' + row.item] = row;
+  });
+  return out;
+}
+
+/**
+ * The list the mechanic app shows: every unit on the winter system's To store
+ * list, with its work and what has been ticked off. Either sign-in opens it —
+ * it is every customer's name at once, same bar as the open-jobs list.
+ */
+function winterWork(token, fresh) {
+  requireShop_(token);
+  if (!winterKey_()) {
+    return { configured: false, units: [],
+             error: 'Not connected to the winter system yet. The office needs to add WINTER_KEY.' };
+  }
+  const got = winterFeed_(fresh === true);
+  if (!got.feed) return { configured: true, units: [], stale: true, error: got.error };
+  const ticks = winterTicks_();
+  const units = got.feed.units.map(function (u) {
+    const work = u.work.map(function (w) {
+      const t = ticks[u.qn + '\n' + w.label];
+      const done = !!(t && t.done === 'yes');
+      return { sec: w.sec, label: w.label, requested: w.requested,
+               done: done, doneBy: done ? t.done_by : '', doneAt: done ? t.done_at : '' };
+    });
+    const left = work.filter(function (w) { return !w.done; }).length;
+    return {
+      qn: u.qn, name: u.name, unit: u.unit, ymm: u.ymm, dims: u.dims, tab: u.tab,
+      slip: u.slip, keys: u.keys, trailerLoc: u.trailerLoc,
+      state: u.state, stateLabel: u.stateLabel, stateAt: u.stateAt,
+      alert: u.alert, cnote: u.cnote, work: work, left: left
+    };
+  });
+  // Work still to do first, oldest arrival first within that — the boat that
+  // has sat longest is the one to start on. Alerted units lead, as on the
+  // open-jobs list: the alert is read before anybody touches the boat.
+  units.sort(function (a, b) {
+    return (b.alert ? 1 : 0) - (a.alert ? 1 : 0) ||
+      (a.left ? 0 : 1) - (b.left ? 0 : 1) ||
+      String(a.stateAt).localeCompare(String(b.stateAt));
+  });
+  return { configured: true, units: units, at: got.feed.at, stale: got.stale, error: got.error };
+}
+
+/**
+ * Tick an item off, or put it back. The floor's record only — nothing goes to
+ * the winter system. Whoever is signed in is who did it.
+ */
+function setWinterItem(token, qn, item, done) {
+  const who = requireShop_(token);
+  const quoteNo = String(qn || '').trim();
+  const label = String(item || '').trim().slice(0, WINTER_ITEM_MAX_);
+  if (!quoteNo || !label) throw new Error('Which unit and which item?');
+  if (!ss_().getSheetByName('WinterWork')) {
+    throw new Error('This needs a one-time setup step: the office has to run setup from the App setup page.');
+  }
+  const by = who.role === 'mechanic' ? who.name : 'Office';
+  return withLock_(function () {
+    const row = rows_('WinterWork').filter(function (r) {
+      return r.quote_no === quoteNo && r.item === label;
+    })[0];
+    const patch = done
+      ? { done: 'yes', done_by: by, done_at: nowIso_() }
+      : { done: '', done_by: '', done_at: '' };
+    if (row) {
+      updateRow_('WinterWork', row._row, patch);
+    } else {
+      appendRow_('WinterWork', Object.assign({ id: newId_('ww'), quote_no: quoteNo, item: label,
+                                               created_at: nowIso_() }, patch));
+    }
+    return { ok: true, item: { label: label, done: !!done, doneBy: patch.done_by, doneAt: patch.done_at } };
+  });
 }
 
 /* ============================= mechanics =============================== */

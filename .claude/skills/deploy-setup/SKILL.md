@@ -65,7 +65,9 @@ and `/t/` answers anyone else with the shop's phone number.
 
 `ADMIN_PASSWORD`, `ASSEMBLYAI_API_KEY`, `TOKEN_SECRET`, `SPREADSHEET_ID`,
 `DRIVE_FOLDER_ID`, `WEB_APP_URL`, `TEST_MODE`, `TEST_EMAIL`,
-`CUSTOMER_TRACKING`, `MAGIC_NONCE`, `MAGIC_EXP`, `MAGIC_SENT_AT`.
+`CUSTOMER_TRACKING`, `MAGIC_NONCE`, `MAGIC_EXP`, `MAGIC_SENT_AT`,
+`WINTER_KEY` (and, rarely, `WINTER_URL`) — see *Winter work* in the
+`mechanic-app` skill.
 
 **No credential ever lands in this repo. It is public.** The code only ever
 names them.

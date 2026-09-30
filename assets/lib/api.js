@@ -262,7 +262,7 @@ const STAMP = 'service-tracker';
  * Everything not named here is a write, and a write is only ever sent once.
  */
 const READS = new Set([
-  'ping', 'roster', 'lookupJob', 'jobForMechanic', 'jobLog', 'jobProps', 'openJobs', 'transcriptsFor',
+  'ping', 'roster', 'lookupJob', 'jobForMechanic', 'jobLog', 'jobProps', 'openJobs', 'transcriptsFor', 'winterWork',
   // the writer's portal
   'listJobs', 'getJob', 'jobHistory', 'listParts', 'listArchivedParts', 'listProps', 'listMechanics',
   'listOpenStatements', 'listSentStatements', 'listStatementDrafts', 'config', 'sheetStatus',
