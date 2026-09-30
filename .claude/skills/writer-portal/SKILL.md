@@ -29,6 +29,30 @@ still work. Two things follow from that and both matter:
 `stamp.js` loads pdf-lib only when a work order is actually stamped. Do not
 import pdf-lib anywhere at the top of a module the portal loads.
 
+## Opening fast, and a saved page never decides anything
+
+The same three answers as the mechanic app (see `mechanic-app` and
+`backend-data`), fitted to a desk:
+
+- **The jobs list and the last dozen job pages are kept in the browser**
+  (`saveCopy('jobs')`, `saveOneOf('jobpage', id, …, 12)` in `api.js`), in the
+  token's bucket, written only from the backend's answers and dropped on sign
+  out. A page load draws them at once, saying how old they are, and replaces
+  them when the backend answers.
+- **A saved job page is inert** (`view.inert`) under a strip saying so, until
+  the real one lands. Whether the invoice has gone, what is owed and which
+  boxes are ticked are what the buttons hang off, and a copy from yesterday
+  must not be pressable. `route()` clears `inert` on every move. If the backend
+  cannot be reached the saved page stays up, still inert, and says so.
+- **A saved copy is only kept up when the server could not be reached**
+  (`NoAnswer`). A real answer — "No such job" — replaces it with the error.
+- **The portal's reads go by GET too** when the POST stalls six seconds.
+  `invoiceText` is not a read: it mints the code.
+- **`listJobs` is answered from the backend's cache** between writes. The first
+  list of a page load passes `fresh: true`, so **reloading the page is how the
+  desk asks for the sheet as it is now** — after editing the Sheet by hand,
+  say. Moving about in-page uses the cache.
+
 ## The jobs list
 
 Defaults to **Open jobs**, and open means *not (done AND paid)* — see

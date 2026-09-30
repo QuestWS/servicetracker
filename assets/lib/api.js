@@ -131,6 +131,44 @@ function writeCopy(key, value) {
   }
 }
 
+/**
+ * A named copy, with when it was saved: {value, at}. What the writer's portal
+ * keeps — the jobs list, the parts list and so on — under one name each.
+ */
+export function savedCopy(name) {
+  const copy = readCopy(`v_${name}`);
+  return copy && copy.value !== undefined ? copy : null;
+}
+
+export function saveCopy(name, value) {
+  writeCopy(`v_${name}`, { value, at: Date.now() });
+}
+
+/**
+ * One of several copies of a kind — a job page per job — keeping only the
+ * `keep` most recently saved. A job page is big, and a browser's storage is
+ * not: the ones the writer is working through are the ones worth keeping.
+ */
+export function savedOneOf(kind, key) {
+  const index = readCopy(`i_${kind}`) || [];
+  if (index.indexOf(String(key)) === -1) return null;
+  return savedCopy(`${kind}_${key}`);
+}
+
+export function saveOneOf(kind, key, value, keep) {
+  const store = tokenBucket();
+  if (!store) return;
+  const wanted = String(key);
+  let index = (readCopy(`i_${kind}`) || []).filter((k) => k !== wanted);
+  index.unshift(wanted);
+  index.slice(keep).forEach((k) => {
+    try { store.removeItem(`${COPY_PREFIX}v_${kind}_${k}`); } catch { /* gone */ }
+  });
+  index = index.slice(0, keep);
+  saveCopy(`${kind}_${wanted}`, value);
+  writeCopy(`i_${kind}`, index);
+}
+
 /** {jobs, at} — the last list the server gave this phone, and when. */
 export function savedOpenJobs() {
   const copy = readCopy('openjobs');
@@ -223,7 +261,12 @@ const STAMP = 'service-tracker';
  * API_GET_FNS_ in the backend, which refuses anything else on GET regardless.
  * Everything not named here is a write, and a write is only ever sent once.
  */
-const READS = new Set(['ping', 'roster', 'lookupJob', 'jobForMechanic', 'jobLog', 'jobProps', 'openJobs', 'transcriptsFor']);
+const READS = new Set([
+  'ping', 'roster', 'lookupJob', 'jobForMechanic', 'jobLog', 'jobProps', 'openJobs', 'transcriptsFor',
+  // the writer's portal
+  'listJobs', 'getJob', 'jobHistory', 'listParts', 'listArchivedParts', 'listProps', 'listMechanics',
+  'listOpenStatements', 'listSentStatements', 'listStatementDrafts', 'config', 'sheetStatus',
+]);
 
 /**
  * How long a read waits on its POST before asking by GET as well.
@@ -236,7 +279,13 @@ const READS = new Set(['ping', 'roster', 'lookupJob', 'jobForMechanic', 'jobLog'
  */
 export const HEDGE_MS = 6000;
 
-class NotAnAnswer extends ApiError {}
+/**
+ * The server could not be reached, or its reply was not an answer — as
+ * opposed to a real answer saying no. Only this is a reason to keep showing a
+ * saved copy: "No such job" from the server means the copy is wrong.
+ */
+export class NoAnswer extends ApiError {}
+const NotAnAnswer = NoAnswer;
 
 /** One road, POST or GET. Resolves only with a stamped reply. */
 async function road(method, fn, args, options) {

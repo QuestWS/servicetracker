@@ -114,21 +114,26 @@ be able to tell that reply from a real one.
 **`API_GET_FNS_` is the definition of a read.** Those functions may be asked
 for by GET (`?fn=…&token=…&args=[…]`), the second road the mechanic app takes
 when a POST stalls. Everything else is a write: **refused on GET by the
-server**, and it drops the open-jobs cache when it runs. One list, not two, so
+server**, and it drops the cached lists when it runs. One list, not two, so
 a function added later is a write until somebody says otherwise. `lookupJob`
 is the one read that can write (a first scan advances the job); on GET it
 never does, and on POST it drops the cache itself. The token rides in the
 query string on GET, visible only in the owner's execution log — accepted
-deliberately; the portal never uses that road.
+deliberately, and the writer's portal uses it too — the only reader of that
+log is the shop's own account.
 
-## `openJobs` answers from CacheService
+## `openJobs` and `listJobs` answer from CacheService
 
-The list every mechanic opens and every save changes. Stored under a
-**generation** that every write replaces (`invalidateOpenJobs_`, called by
-`serve_`), so a list read just before a save lands under a generation nobody
-asks for. **Bump `OPEN_JOBS_V_` whenever a row gains a field.** Ten minutes'
-life covers hand edits to the Sheet; Refresh on the list (`openJobs(token,
-true)`) skips the cache. `cachePutBig_`/`cacheGetBig_` split a value across
+The mechanic's list and the writer's list, the two every save changes. Both are
+stored under one **generation** that every write replaces (`invalidateLists_`,
+called by `serve_` after a flush, and by `setup()`, which runs from the editor
+and never passes through `serve_`), so a list read just before a save lands
+under a generation nobody asks for. **Bump `OPEN_JOBS_V_` / `JOBS_LIST_V_`
+whenever a row gains a field.** Ten minutes' life covers hand edits to the
+Sheet; `fresh` skips the cache (Refresh on the phone, a page load in the
+portal). **A write that bypasses `serve_` must call `invalidateLists_`
+itself** — today only `setup()` and `lookupJob`'s first scan do; no trigger
+touches the Jobs tab. `cachePutBig_`/`cacheGetBig_` split a value across
 entries and read a missing piece as a miss.
 
 ## `diagnoseSpeed()` — the first function in the file

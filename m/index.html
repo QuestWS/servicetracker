@@ -100,7 +100,7 @@
 </script>
 
 <script type="module">
-import { api, ApiError, storeSession, storedWho, clearSession, storedToken, onApiTiming,
+import { api, ApiError, NoAnswer, storeSession, storedWho, clearSession, storedToken, onApiTiming,
          savedOpenJobs, saveOpenJobs, savedJob, saveJob } from '../assets/lib/api.js';
 import { ENTRY_LABEL, formatHours, formatMinutes } from '../assets/lib/entry-types.js';
 import { tokenFromScan } from '../assets/lib/tracking.js';
@@ -493,7 +493,9 @@ async function renderOpenJobs(fresh) {
       state.who = null;
       return signInThen(renderOpenJobs);
     }
-    const kept = saved || savedOpenJobs();
+    // Only when the server could not be reached: a real "no" means the old
+    // list is not something to keep showing.
+    const kept = error instanceof NoAnswer ? saved || savedOpenJobs() : null;
     if (kept) return drawOpenJobs(kept.jobs, `Could not refresh — showing the list from ${ago(kept.at)}.`, 'warn');
     return renderHome(error.message);
   }
@@ -691,7 +693,7 @@ async function openJob(code, source) {
     renderSignIn();
   } catch (error) {
     if (mine !== visit) return;
-    if (saved && !/Sign in/i.test(error.message)) return refreshFailed(saved);
+    if (saved && error instanceof NoAnswer) return refreshFailed(saved);
     renderHome(error.message);
   }
 }
@@ -845,7 +847,7 @@ async function loadJob() {
       state.who = null;
       return renderSignIn();
     }
-    if (saved) return refreshFailed(saved);
+    if (saved && error instanceof NoAnswer) return refreshFailed(saved);
     renderHome(error.message);
   }
 }

@@ -351,6 +351,12 @@ is how to tell whether the shop is in the same place.
 6. **The service worker times a stuck page out after four seconds** and serves
    the whole shell from one cache generation.
 
+**The writer's portal got the same treatment the same day**: the jobs list and
+the last dozen job pages saved in the browser and drawn first (a saved job page
+inert until the real one lands), every portal read on the GET road, and
+`listJobs` from the same cache generation — with a page load asking for the
+sheet fresh. The service worker's timeout stays with the mechanic app.
+
 Test each against the footer: the screen should draw before the round trip
 (2), and the round trip should fall towards `serverMs` (3). `· by GET` in the
 footer means the second road won.

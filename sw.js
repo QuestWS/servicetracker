@@ -118,16 +118,21 @@ function fresh(request, offlineFallback) {
  * cache, for the rest of its life. The late network answer for the page is
  * thrown away rather than cached, so the cache stays one generation.
  *
- * Only where it can be done safely: a navigation with no client id to
- * remember (an older browser) waits for the network as before, and so does
- * one with no exact cached copy to fall back on.
+ * Only where it can be done safely: the mechanic app, whose shell is all
+ * precached — never the portal. A navigation with no client id to remember
+ * (an older browser) waits for the network as before, and so does one with no
+ * exact cached copy to fall back on.
  */
 const NAV_TIMEOUT_MS = 4000;
 const servedFromCache = new Set();
 
 function navigate(event) {
   const request = event.request;
-  const client = event.resultingClientId || '';
+  // The mechanic app only. Its whole shell is precached (SHELL), so its
+  // generation can be served whole; the portal loads modules lazily that may
+  // never have been cached, and would meet the network version of those.
+  const inApp = new URL(request.url).pathname.indexOf(new URL(shellUrl('m/')).pathname) === 0;
+  const client = inApp ? event.resultingClientId || '' : '';
   return new Promise((resolve) => {
     let settled = false;
     const network = fetch(request);

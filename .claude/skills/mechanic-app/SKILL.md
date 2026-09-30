@@ -203,7 +203,9 @@ are and that they are refreshing. The fresh answer replaces them when it lands.
 - **`visit` drops answers the mechanic walked away from.** It goes up on every
   open and on leaving, and every slow answer checks it. It is deliberately not
   in `screen()`: a tab change redraws the job without leaving it.
-- **A refresh that fails leaves the old copy up and says how old it is.**
+- **A refresh that fails leaves the old copy up and says how old it is** —
+  when the server could not be reached (`NoAnswer`). A real "no" from the
+  server is shown as the error it is.
 - **Nothing on a saved copy decides anything.** Every button calls the server.
 - **Same bucket as the token.** The list is every customer's name and boat,
   which is why it is behind sign-in: the shared iPad keeps its token in
@@ -255,7 +257,9 @@ cache, so a stale module planted by an old deploy cannot stop the app starting.
 **A navigation stuck for four seconds is served from the cache — as a unit.**
 The page's client id is remembered and every file it asks for afterwards comes
 from that same cache, so an old page never meets a new module; the late
-network answer is thrown away rather than cached. Without a client id to
+network answer is thrown away rather than cached. **Only for `m/`** — its
+shell is all precached; the portal loads modules lazily that may never have
+been cached, so its pages always wait for the network. Without a client id to
 remember, or an exact cached copy, it waits for the network as before.
 
 ## Doing the work

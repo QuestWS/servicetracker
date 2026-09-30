@@ -39,7 +39,8 @@
 <main class="wrap" id="view"><p class="loading">Loading…</p></main>
 
 <script type="module">
-import { api as callBackend, storeSession, storedToken, clearSession, timings } from '../assets/lib/api.js';
+import { api as callBackend, storeSession, storedToken, clearSession, timings, NoAnswer,
+         savedCopy, saveCopy, savedOneOf, saveOneOf } from '../assets/lib/api.js';
 import { byLastName } from '../assets/lib/names.js';
 import { SITE_URL } from '../assets/lib/config.js';
 import { ENTRY_LABEL, STATUSES, STATUS_LABEL, STATUS_PILL, formatHours, decimalHours } from '../assets/lib/entry-types.js';
@@ -404,6 +405,12 @@ function sortJobs(jobs, sort) {
  * whole shop's jobs are a few hundred short rows.
  */
 let jobsCache = null;
+// When the list on screen came out of the browser's storage rather than this
+// visit: then it says how old it is. Null once the backend has answered.
+let jobsCacheAt = null;
+// The first list of a page load reads the sheet as it is now, skipping the
+// backend's cache: reloading the page is how a desk asks for "really fresh".
+let jobsFreshAsked = false;
 
 /** The same rules listJobs applies on the backend, applied to the cached list. */
 function filterJobs(all, status, search) {
@@ -426,11 +433,42 @@ async function renderJobs() {
   const search = params.get('q') || '';
   const sort = JOB_SORTS[params.get('sort')] ? params.get('sort') : 'newest';
 
-  if (jobsCache) draw(jobsCache, true);
-  else view.innerHTML = `<p class="loading">Loading jobs…</p>`;
-  const answer = await api('listJobs', [{ status: 'all' }]);
+  if (!jobsCache) {
+    const kept = savedCopy('jobs');
+    if (kept) {
+      jobsCache = kept.value;
+      jobsCacheAt = kept.at;
+    }
+  }
+  if (jobsCache) {
+    draw(jobsCache, true);
+    if (jobsCacheAt) listStrip('info', `List from ${ago(jobsCacheAt)} · refreshing…`);
+  } else {
+    view.innerHTML = `<p class="loading">Loading jobs…</p>`;
+  }
+  const fresh = !jobsFreshAsked;
+  jobsFreshAsked = true;
+  let answer;
+  try {
+    answer = await api('listJobs', [{ status: 'all', fresh }]);
+  } catch (error) {
+    // An old list that says how old it is beats a blank page with an error.
+    if (jobsCache && error instanceof NoAnswer) {
+      listStrip('warn', `Could not refresh — showing the list from ${jobsCacheAt ? ago(jobsCacheAt) : 'earlier'}.`);
+      return;
+    }
+    throw error;
+  }
   jobsCache = answer;
+  jobsCacheAt = null;
+  saveCopy('jobs', answer);
   draw(answer, false);
+
+  function listStrip(tone, text) {
+    const old = $('liststrip');
+    if (old) old.remove();
+    view.insertAdjacentHTML('afterbegin', `<div class="banner ${tone}" id="liststrip" style="margin-bottom:12px">${esc(text)}</div>`);
+  }
 
   function draw({ jobs: everything, counts, testMode: mode }, stale) {
     // Somebody may already be typing a search into the list drawn from the
@@ -579,11 +617,57 @@ let shownJob = null;
  * there is nothing to fetch: the save and the page it lands on were one trip.
  */
 async function renderJob(id, fresh) {
+  if (fresh) return drawJob(id, fresh);
+  // The page as the backend last gave it, drawn at once while the real one is
+  // fetched — but only onto a page that is not already showing this job, and
+  // switched off (inert) until the fresh copy lands. Whether the invoice has
+  // gone, what is owed, which boxes are ticked: the send button and the
+  // checklist hang off those, and a copy from yesterday must not decide them.
+  let kept = null;
+  if (shownJob !== id) {
+    kept = savedOneOf('jobpage', id);
+    if (kept) await drawJob(id, kept.value, kept.at);
+    else view.innerHTML = `<p class="loading">Loading job ${esc(id)}…</p>`;
+  }
+  let data;
+  try {
+    data = await api('getJob', [id]);
+  } catch (error) {
+    if (kept && error instanceof NoAnswer) {
+      const strip = $('savedstrip');
+      if (strip) {
+        strip.className = 'banner warn';
+        strip.textContent = `Could not reach the shop server — this is the job as it was ${ago(kept.at)}, `
+          + 'and nothing on it can be changed until it loads. Reload the page to try again.';
+      }
+      return;
+    }
+    throw error;
+  }
+  return drawJob(id, data);
+}
+
+/** "12 min ago", for saying how old a saved copy is. */
+function ago(at) {
+  const mins = Math.round((Date.now() - Number(at || 0)) / 60000);
+  if (!(mins >= 1)) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  return hours < 24 ? `${hours} hr ago` : formatDateTime(new Date(Number(at)).toISOString());
+}
+
+/**
+ * The job page, drawn from `data`. `savedAt` says it is the saved copy rather
+ * than the backend's answer just now: it is then marked so, made inert, and
+ * never saved back.
+ */
+async function drawJob(id, data, savedAt) {
   const redraw = shownJob === id;
   const scrolled = redraw ? window.scrollY : 0;
-  if (!redraw) view.innerHTML = `<p class="loading">Loading job ${esc(id)}…</p>`;
-  const data = fresh || await api('getJob', [id]);
   shownJob = id;
+  // Only what the backend said, and only the most recent dozen: a job page is
+  // big and a browser's storage is not.
+  if (!savedAt) saveOneOf('jobpage', id, data, 12);
   showTestBanner(data.testMode);
   const { job, entries, hours, props, parts, emails } = data;
   // Older deployments have no JobFiles tab until setup() has been run; the
@@ -1043,6 +1127,11 @@ async function renderJob(id, fresh) {
     </div>`;
   // Back to where the writer was, not the top of the page they just saved on.
   if (redraw) window.scrollTo(0, scrolled);
+  view.inert = Boolean(savedAt);
+  if (savedAt) {
+    view.insertAdjacentHTML('afterbegin', `<div class="banner info" id="savedstrip" style="margin-bottom:12px">
+      This is the job as it was ${esc(ago(savedAt))} — refreshing. Nothing on it can be changed until it has.</div>`);
+  }
 
   const notice = (tone, message) => {
     $('notice').innerHTML = `<div class="banner ${tone}" style="margin:14px 0">${esc(message)}</div>`;
@@ -3364,7 +3453,8 @@ async function renderSetup() {
       <div class="kv">
         <span class="k" style="font-family:var(--mono)">${esc(call.fn)}</span>
         <b>${(call.ms / 1000).toFixed(1)}s${call.serverMs === null ? ''
-          : ` <span class="sub">· ${(call.serverMs / 1000).toFixed(1)}s in the sheet</span>`}</b>
+          : ` <span class="sub">· ${(call.serverMs / 1000).toFixed(1)}s in the sheet</span>`}${
+          call.road === 'get' ? ' <span class="sub">· by GET</span>' : ''}</b>
       </div>`).join('') : '<p class="hint">Nothing timed yet.</p>';
   };
   drawSpeed();
@@ -3373,7 +3463,7 @@ async function renderSetup() {
     const button = $('timeagain');
     button.disabled = true;
     button.textContent = 'Timing…';
-    try { await api('listJobs', [{ status: 'open' }]); } catch { /* the timing is the point */ }
+    try { await api('listJobs', [{ status: 'open', fresh: true }]); } catch { /* the timing is the point */ }
     try { await api('sheetStatus', []); } catch { /* same */ }
     drawSpeed();
     button.disabled = false;
@@ -3401,6 +3491,7 @@ async function renderSetup() {
 async function route() {
   navigation += 1;
   shownJob = null;
+  view.inert = false;
   if (!storedToken()) return renderSignIn();
   $('topbar').hidden = false;
   view.className = 'wrap';

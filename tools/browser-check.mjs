@@ -1327,6 +1327,93 @@ console.log('\n== getting around the portal ==');
   await admin.waitForSelector('.alertbox', { timeout: 20000 });
 }
 
+console.log('\n== the portal on a bad connection ==');
+{
+  // The same three answers the mechanic app got: draw what the browser
+  // already has, ask a slow read a second way, and never let a saved copy
+  // decide anything.
+  const dev = async (path) => (await fetch(`${BASE}${path}`)).json();
+  const isExec = (url) => new URL(url).pathname === '/exec';
+  const bodyOf = (request) => {
+    const url = new URL(request.url());
+    if (url.searchParams.get('fn')) return { fn: url.searchParams.get('fn'), args: JSON.parse(url.searchParams.get('args') || '[]') };
+    try { return JSON.parse(request.postData() || '{}'); } catch { return {}; }
+  };
+  const slowDown = (fns, ms) => admin.route(isExec, async (route) => {
+    if (fns.includes(bodyOf(route.request()).fn)) await new Promise((resolve) => setTimeout(resolve, ms));
+    await route.continue().catch(() => {});
+  });
+
+  // A fresh page load: the list from the browser's storage first, saying how
+  // old it is, and the backend asked for the sheet as it is now.
+  const asked = [];
+  const onList = (request) => { if (isExec(request.url()) && bodyOf(request).fn === 'listJobs') asked.push(bodyOf(request)); };
+  admin.on('request', onList);
+  await slowDown(['listJobs'], 3000);
+  await admin.goto(`${BASE}/admin/`, { waitUntil: 'domcontentloaded' });
+  await admin.waitForSelector('.jobrow', { timeout: 2500 }).catch(() => {});
+  check('the jobs list is drawn at once from the last one the browser saw',
+    await admin.locator('.jobrow').count() > 0);
+  check('and says how old it is',
+    /List from .* refreshing/.test((await admin.textContent('#liststrip').catch(() => '')) || ''),
+    await admin.textContent('#liststrip').catch(() => '(no strip)'));
+  await admin.waitForSelector('#liststrip', { state: 'detached', timeout: 20000 }).catch(() => {});
+  check('and the fresh list replaces it', await admin.locator('#liststrip').count() === 0);
+  admin.off('request', onList);
+  check('a page load asks the backend for the sheet as it is now, not its cache',
+    asked.length > 0 && asked[0].args && asked[0].args[0] && asked[0].args[0].fresh === true, JSON.stringify(asked));
+  await admin.unroute(isExec);
+
+  // A stalled read goes by GET.
+  await dev('/dev/roads');
+  await dev('/dev/stall?ms=15000&fns=getJob');
+  const started = Date.now();
+  await admin.click(`a.jobrow[href="?job=${encodeURIComponent(invoiceNumber)}"]`);
+  await admin.waitForSelector('#savedstrip', { state: 'detached', timeout: 20000 }).catch(() => {});
+  await admin.waitForFunction((id) => document.querySelector('.page-title')?.textContent.includes(id),
+    invoiceNumber, { timeout: 20000 }).catch(() => {});
+  const took = Date.now() - started;
+  await dev('/dev/stall?ms=0');
+  const roads = await dev('/dev/roads');
+  check('a stalled job page is asked again by GET rather than waited out',
+    roads.some((r) => r.method === 'GET' && r.fn === 'getJob') && took < 12000, `${took} ms, ${JSON.stringify(roads)}`);
+  check('and the page is live once the real one lands',
+    !(await admin.evaluate(() => document.getElementById('view').inert)));
+
+  // The saved job page: drawn at once, marked, and inert until it is replaced.
+  await admin.click('[data-nav="jobs"]').catch(() => admin.goto(`${BASE}/admin/`));
+  await admin.waitForSelector('.jobrow', { timeout: 20000 });
+  await slowDown(['getJob'], 3000);
+  await admin.click(`a.jobrow[href="?job=${encodeURIComponent(invoiceNumber)}"]`);
+  await admin.waitForSelector('#savedstrip', { timeout: 2000 }).catch(() => {});
+  check('a job opened before is drawn at once from the saved page',
+    await admin.locator('#savedstrip').count() === 1
+      && (await admin.textContent('.page-title')).includes(invoiceNumber));
+  check('and nothing on the saved page can be pressed',
+    await admin.evaluate(() => document.getElementById('view').inert === true));
+  await admin.waitForSelector('#savedstrip', { state: 'detached', timeout: 20000 }).catch(() => {});
+  check('until the real page replaces it',
+    await admin.locator('#savedstrip').count() === 0 && !(await admin.evaluate(() => document.getElementById('view').inert)));
+  await admin.unroute(isExec);
+
+  // No connection at all: the saved page stays, says so, and stays inert.
+  await admin.click('[data-nav="jobs"]').catch(() => admin.goto(`${BASE}/admin/`));
+  await admin.waitForSelector('.jobrow', { timeout: 20000 });
+  await admin.route(isExec, (route) => route.abort());
+  await admin.click(`a.jobrow[href="?job=${encodeURIComponent(invoiceNumber)}"]`);
+  await admin.waitForFunction(() => /Could not reach/.test(document.getElementById('savedstrip')?.textContent || ''),
+    null, { timeout: 20000 }).catch(() => {});
+  check('with no connection the saved page stays up and says it could not refresh',
+    /Could not reach the shop server/.test((await admin.textContent('#savedstrip').catch(() => '')) || ''),
+    await admin.textContent('#savedstrip').catch(() => '(no strip)'));
+  check('and still cannot be acted on',
+    await admin.evaluate(() => document.getElementById('view').inert === true));
+  await admin.unroute(isExec);
+  await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(invoiceNumber)}`, { waitUntil: 'domcontentloaded' });
+  await admin.waitForSelector('#savedstrip', { state: 'detached', timeout: 20000 }).catch(() => {});
+  await admin.waitForFunction(() => !document.getElementById('view').inert, null, { timeout: 20000 });
+}
+
 console.log('\n== close out ==');
 // The writer's checklist: everything logged so far moves behind the line.
 check('entries start as needing writing up', (await admin.textContent('.card')).length > 0);

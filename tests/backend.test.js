@@ -445,7 +445,9 @@ describe('the writer\'s working list', () => {
     const { id } = seedJob();
     finish(id, true);
     expect(backend.fn('listJobs', adminToken, { status: 'open' }).jobs).toHaveLength(0);
-    backend.fn('setJobFlag', adminToken, id, 'paid', false);
+    // Through the door the portal uses: the list is cached between calls, and
+    // it is the dispatch that drops it after a write.
+    backend.api({ fn: 'setJobFlag', token: adminToken, args: [id, 'paid', false] });
     expect(backend.fn('listJobs', adminToken, { status: 'open' }).jobs
       .map((j) => j.id)).toContain(id);
   });
@@ -4261,7 +4263,7 @@ describe('the open-jobs list from memory', () => {
     // The race the generation exists for: the list is read from the sheet,
     // a save drops the cache, and only then is the old list put away.
     const { id, mech } = seedJob();
-    const gen = backend.call('openJobsGen_()');
+    const gen = backend.call('listsGen_()');
     const stale = backend.call('openJobsFromSheet_()');
     backend.api({ fn: 'setJobAlert', token: adminToken, args: [id, 'New.'] });
     backend.call(`cachePutBig_(OPEN_JOBS_KEY_ + ${JSON.stringify(gen)}, ${JSON.stringify(stale)}, 600)`);
@@ -4304,5 +4306,55 @@ describe('the speed diagnostic', () => {
   it('is the first function in the file, where the editor lists it first', () => {
     const src = require('node:fs').readFileSync('service-tracker.gs', 'utf8');
     expect(src.match(/^function (\w+)/m)[1]).toBe('diagnoseSpeed');
+  });
+});
+
+describe("the writer's portal on the fast roads", () => {
+  it("serves the portal's reads by GET", () => {
+    const { id } = seedJob();
+    const page = backend.get({ fn: 'getJob', token: adminToken, args: JSON.stringify([id]) });
+    expect(page.error).toBeUndefined();
+    expect(page.job.id).toBe(id);
+    expect(backend.get({ fn: 'listJobs', token: adminToken, args: JSON.stringify([{ status: 'all' }]) }).jobs.length)
+      .toBeGreaterThan(0);
+  });
+
+  it('still refuses a writer-only read to a mechanic by GET', () => {
+    const { id, mech } = seedJob();
+    expect(backend.get({ fn: 'getJob', token: mech, args: JSON.stringify([id]) }).error).toMatch(/Sign in/);
+  });
+
+  it('keeps minting a texted invoice code off the GET road', () => {
+    const { id } = seedJob();
+    expect(backend.get({ fn: 'invoiceText', token: adminToken, args: JSON.stringify([id]) }).error)
+      .toMatch(/sent, not fetched/);
+    expect(backend.fn('jobRow_', id).invoice_code || '').toBe('');
+  });
+
+  it("answers the writer's list from the cache, and drops it on any write", () => {
+    const { id } = seedJob();
+    const list = (fresh) => backend.api({ fn: 'listJobs', token: adminToken, args: [{ status: 'all', fresh }] });
+    list();
+    expect(list().fromCache).toBe(true);
+    backend.api({ fn: 'saveJobDetails', token: adminToken, args: [id, { customerName: 'Renamed Person' }] });
+    const after = list();
+    expect(after.fromCache).toBeUndefined();
+    expect(after.jobs.find((j) => j.id === id).customerName).toBe('Renamed Person');
+    expect(list(true).fromCache).toBeUndefined();
+  });
+
+  it('keeps one cached list per filter', () => {
+    seedJob();
+    backend.api({ fn: 'listJobs', token: adminToken, args: [{ status: 'all' }] });
+    expect(backend.api({ fn: 'listJobs', token: adminToken, args: [{ status: 'done' }] }).fromCache).toBeUndefined();
+  });
+
+  it('drops the mechanic list and the writer list with the one write', () => {
+    const { id, mech } = seedJob();
+    backend.api({ fn: 'listJobs', token: adminToken, args: [{ status: 'all' }] });
+    backend.api({ fn: 'openJobs', token: mech, args: [] });
+    backend.api({ fn: 'setJobAlert', token: adminToken, args: [id, 'Stop.'] });
+    expect(backend.api({ fn: 'listJobs', token: adminToken, args: [{ status: 'all' }] }).fromCache).toBeUndefined();
+    expect(backend.api({ fn: 'openJobs', token: mech, args: [] }).fromCache).toBeUndefined();
   });
 });

@@ -76,7 +76,19 @@ function diagnoseSpeed() {
     const hit = cachedOpenJobs_();
     return hit ? hit.jobs.length + ' open, cache HIT' : 'cache miss (nothing cached, or a save since)';
   });
+  time("the writer's jobs list, from the sheet", function () {
+    cold();
+    return jobsListFromSheet_({ status: 'all' }).jobs.length + ' jobs';
+  });
   let sample = null;
+  time("the writer's job page for one job, cold", function () {
+    cold();
+    sample = rows_('Jobs')[0];
+    if (!sample) return 'no jobs to open';
+    forget_();
+    getJob(seal_({ role: 'admin', exp: Date.now() + 60000 }), sample.id);
+    return sample.id;
+  });
   time('lookupJob for one job, cold', function () {
     cold();
     sample = rows_('Jobs')[0];
@@ -1031,7 +1043,7 @@ function stamp_(out) {
  * between the phone and Google, so nothing that writes may ever be on it.
  *
  * Everything NOT here is a write: it is refused on GET, and it drops the
- * open-jobs cache when it runs. That is one list, not two, on purpose — a
+ * cached lists when it runs. That is one list, not two, on purpose — a
  * function added next month is a write until somebody deliberately says
  * otherwise, so it cannot slip onto the GET road or forget to invalidate.
  *
@@ -1042,9 +1054,16 @@ function stamp_(out) {
  * lands anyway. On POST it still advances, and drops the cache itself.
  *
  * The token rides in the query string on this road, which puts it in Apps
- * Script's own execution log. Only the script's owner can read that log, and
- * a mechanic's token opens nothing that owner cannot already open; accepted
- * deliberately for the shop-floor reads. The writer's portal never uses it.
+ * Script's own execution log. Only the script's owner can read that log — the
+ * shop's own Google account, which already holds the portal password in its
+ * script properties — so no token there opens anything its reader could not
+ * already open. Accepted deliberately, for the floor's reads and the office's.
+ *
+ * Every portal read below was checked for writes, helpers included: the only
+ * ones reachable are the first-run initialisations every call shares (the
+ * signing secret, the Drive folder). invoiceText is NOT here — it mints the
+ * job's short code — and neither are the statement previews, whose drafts are
+ * too big for an address.
  */
 const API_GET_FNS_ = {
   ping: true,
@@ -1054,7 +1073,21 @@ const API_GET_FNS_ = {
   jobLog: true,
   jobProps: true,
   openJobs: true,
-  transcriptsFor: true
+  transcriptsFor: true,
+
+  /* the writer's portal */
+  listJobs: true,
+  getJob: true,
+  jobHistory: true,
+  listParts: true,
+  listArchivedParts: true,
+  listProps: true,
+  listMechanics: true,
+  listOpenStatements: true,
+  listSentStatements: true,
+  listStatementDrafts: true,
+  config: true,
+  sheetStatus: true
 };
 
 function isReadFn_(fn) {
@@ -1082,7 +1115,7 @@ function serve_(data, viaGet) {
   } finally {
     // Whatever the outcome: a write that failed halfway may still have
     // written something, and dropping the cache costs one put.
-    if (write) invalidateOpenJobs_();
+    if (write) invalidateLists_();
   }
 }
 
@@ -1760,6 +1793,30 @@ function isOpenJob_(job) {
 function listJobs(token, filter) {
   requireAdmin_(token);
   filter = filter || {};
+  // The writer's list, answered from memory the same way as the mechanic's
+  // open-jobs list and dropped by the same generation — see OPEN_JOBS_V_. The
+  // key carries the filter, since the answer depends on it.
+  const key = JOBS_LIST_KEY_ + JSON.stringify([filter.status || '', String(filter.search || '')]);
+  if (!filter.fresh) {
+    const gen = currentListsGen_();
+    const hit = gen ? cacheGetBig_(key + gen) : null;
+    if (hit && Array.isArray(hit.jobs)) {
+      hit.fromCache = true;
+      return hit;
+    }
+  }
+  const gen = listsGen_();
+  const out = jobsListFromSheet_(filter);
+  cachePutBig_(key + gen, out, OPEN_JOBS_TTL_);
+  return out;
+}
+
+// Bump whenever a job summary gains a field, for the reason OPEN_JOBS_V_ says.
+const JOBS_LIST_V_ = 1;
+const JOBS_LIST_KEY_ = 'JOBSLIST_v' + JOBS_LIST_V_ + '_';
+
+/** The writer's list, read from the sheet. Writes nothing, caches nothing. */
+function jobsListFromSheet_(filter) {
   const search = String(filter.search || '').trim().toLowerCase();
   const jobs = rows_('Jobs')
     .filter(function (job) {
@@ -3347,7 +3404,7 @@ function lookupJob(code, source, token) {
     setStatus_(job, 'work_underway', 'system', '', 'First scan of the work order');
     // The one read that writes, so the one read that has to drop the list
     // itself: the dispatch only does it for functions off the read list.
-    invalidateOpenJobs_();
+    invalidateLists_();
   }
   const fresh = jobRow_(job.id);
 
@@ -3432,7 +3489,7 @@ function openJobs(token, fresh) {
   // the sheet as it is now. Either way the answer is cached for the next one.
   const cached = fresh ? null : cachedOpenJobs_();
   if (cached) return cached;
-  const gen = openJobsGen_();
+  const gen = listsGen_();
   const out = openJobsFromSheet_();
   cachePutBig_(OPEN_JOBS_KEY_ + gen, out, OPEN_JOBS_TTL_);
   return out;
@@ -3447,7 +3504,7 @@ function openJobs(token, fresh) {
  *
  * What makes it safe to trust, each of which is load-bearing:
  *
- *  - EVERY WRITE DROPS IT, FROM ONE PLACE. serve_ calls invalidateOpenJobs_
+ *  - EVERY WRITE DROPS IT, FROM ONE PLACE. serve_ calls invalidateLists_
  *    after any function that is not on API_GET_FNS_, so a write added later
  *    cannot forget to. lookupJob's first-scan advance, the one read that
  *    writes, drops it where it writes.
@@ -3467,7 +3524,8 @@ function openJobs(token, fresh) {
  */
 const OPEN_JOBS_V_ = 1;
 const OPEN_JOBS_KEY_ = 'OPENJOBS_v' + OPEN_JOBS_V_ + '_';
-const OPEN_JOBS_GEN_KEY_ = 'OPENJOBS_GEN';
+// Shared by every cached list: one write drops them all.
+const LISTS_GEN_KEY_ = 'LISTS_GEN';
 const OPEN_JOBS_TTL_ = 600;
 
 function scriptCache_() {
@@ -3475,30 +3533,34 @@ function scriptCache_() {
 }
 
 /** The current generation, minted if there is none. '' with no cache at all. */
-function openJobsGen_() {
+function listsGen_() {
   const cache = scriptCache_();
   if (!cache) return '';
   try {
-    const gen = cache.get(OPEN_JOBS_GEN_KEY_);
+    const gen = cache.get(LISTS_GEN_KEY_);
     if (gen) return gen;
-    return newOpenJobsGen_(cache);
+    return newListsGen_(cache);
   } catch (err) {
     return '';
   }
 }
 
-function newOpenJobsGen_(cache) {
+function newListsGen_(cache) {
   const gen = Utilities.getUuid().slice(0, 8);
   // Longer than any list lives, so the generation outlasts what it names.
-  cache.put(OPEN_JOBS_GEN_KEY_, gen, 21600);
+  cache.put(LISTS_GEN_KEY_, gen, 21600);
   return gen;
 }
 
-function cachedOpenJobs_() {
+/** The generation now, without minting one. '' when there is none. */
+function currentListsGen_() {
   const cache = scriptCache_();
-  if (!cache) return null;
-  let gen = '';
-  try { gen = cache.get(OPEN_JOBS_GEN_KEY_) || ''; } catch (err) { return null; }
+  if (!cache) return '';
+  try { return cache.get(LISTS_GEN_KEY_) || ''; } catch (err) { return ''; }
+}
+
+function cachedOpenJobs_() {
+  const gen = currentListsGen_();
   if (!gen) return null;
   const hit = cacheGetBig_(OPEN_JOBS_KEY_ + gen);
   if (!hit || !Array.isArray(hit.jobs)) return null;
@@ -3514,11 +3576,11 @@ function cachedOpenJobs_() {
  * reached the sheet — and a list read in that gap would be put away under the
  * NEW generation, stale, for its whole life.
  */
-function invalidateOpenJobs_() {
+function invalidateLists_() {
   const cache = scriptCache_();
   if (!cache) return;
   try { SpreadsheetApp.flush(); } catch (err) { /* nothing held back */ }
-  try { newOpenJobsGen_(cache); } catch (err) { /* the list expires on its own */ }
+  try { newListsGen_(cache); } catch (err) { /* the list expires on its own */ }
 }
 
 /**
@@ -6048,6 +6110,9 @@ function setup() {
   rootFolder_();
   secret_();
   installTriggers_();
+  // Run from the editor, setup() never passes through serve_, and it has just
+  // put ids and totals right: the cached lists must not go on saying otherwise.
+  invalidateLists_();
 
   const notes = [
     repaired.length
