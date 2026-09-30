@@ -2300,6 +2300,161 @@ check('and Home leaves a job whatever the route in', await picker.isVisible('#ma
 check('Home is offered everywhere, including home itself',
   await picker.isVisible('#navhome'));
 
+/* ------------------------------------------------------------ opening fast */
+console.log('\n== opening fast on bad signal ==');
+// On the shop floor the server answers in a second and the phone waits for
+// fifty, stuck behind a first attempt that stalled on weak signal. Three
+// things answer that: draw what the phone already has, ask a slow read a
+// second way, and never let a stray reply pass for a real one.
+const dev = async (path) => (await fetch(`${BASE}${path}`)).json();
+const fnOf = (request) => {
+  const url = new URL(request.url());
+  if (url.searchParams.get('fn')) return url.searchParams.get('fn');
+  try { return JSON.parse(request.postData() || '{}').fn; } catch { return ''; }
+};
+const isExec = (url) => new URL(url).pathname === '/exec';
+const slowDown = (fns, ms) => picker.route(isExec, async (route) => {
+  if (fns.includes(fnOf(route.request()))) await new Promise((resolve) => setTimeout(resolve, ms));
+  await route.continue();
+});
+
+// The last list, drawn the instant the screen opens, saying how old it is.
+await slowDown(['openJobs'], 3000);
+await picker.click('#openjobs');
+await picker.waitForSelector('[data-pick]', { timeout: 1500 }).catch(() => {});
+check('the open-jobs list is drawn at once from the last one the phone saw',
+  await picker.locator('[data-pick]').count() > 0);
+check('and says how old it is, and that it is refreshing',
+  /List from .* refreshing/.test((await picker.textContent('#liststrip').catch(() => '')) || ''),
+  await picker.textContent('#liststrip').catch(() => '(no strip)'));
+await picker.waitForSelector('#liststrip', { state: 'detached', timeout: 20000 });
+check('and the fresh list replaces it when it lands', await picker.locator('[data-pick]').count() > 0);
+await picker.unroute(isExec);
+
+// A refresh that fails leaves the old list up, and says so.
+await picker.click('#navhome');
+await picker.waitForSelector('#openjobs');
+await picker.route(isExec, (route) => route.abort());
+await picker.click('#openjobs');
+await picker.waitForFunction(() => /Could not refresh/.test((document.getElementById('liststrip') || {}).textContent || ''),
+  null, { timeout: 20000 }).catch(() => {});
+check('a refresh that fails keeps the old list up and says so',
+  /Could not refresh — showing the list from/.test((await picker.textContent('#liststrip').catch(() => '')) || '')
+    && await picker.locator('[data-pick]').count() > 0,
+  await picker.textContent('#liststrip').catch(() => '(no strip)'));
+await picker.unroute(isExec);
+
+// The hedge. The POST hangs for fifteen seconds; the same read goes by GET
+// after six and wins.
+await picker.click('#navhome');
+await picker.waitForSelector('#openjobs');
+await dev('/dev/roads');
+await dev('/dev/stall?ms=15000&fns=openJobs');
+const hedgeStarted = Date.now();
+await picker.click('#openjobs');
+await picker.waitForSelector('#liststrip', { state: 'detached', timeout: 20000 }).catch(() => {});
+const hedgeTook = Date.now() - hedgeStarted;
+await dev('/dev/stall?ms=0');
+const hedgeRoads = await dev('/dev/roads');
+check('a stalled read is asked again by GET rather than waited out',
+  hedgeRoads.some((r) => r.method === 'GET' && r.fn === 'openJobs'), JSON.stringify(hedgeRoads));
+check('and the list lands long before the stalled POST would have', hedgeTook < 12000, `${hedgeTook} ms`);
+check('and the footer says which road it came by',
+  /by GET/.test(await picker.textContent('#timing')), await picker.textContent('#timing'));
+
+// The last job screen, drawn at once, keyed by its number.
+await picker.click('#navhome');
+await picker.waitForSelector('#manual');
+await picker.click('#manual');
+await picker.fill('#code', FLOOR_INVOICE);
+await dev('/dev/stall?ms=15000&fns=lookupJob');
+await picker.click('button[type=submit]');
+await picker.waitForSelector('.segmented', { timeout: 1500 }).catch(() => {});
+check('a job opened before is drawn at once from the saved screen',
+  await picker.locator('.segmented').count() === 1 && (await picker.textContent('#jobhead')).includes(FLOOR_INVOICE));
+check('and says it is a saved copy being refreshed',
+  await picker.locator('[data-refreshing]').count() === 1);
+await picker.waitForSelector('[data-refreshing]', { state: 'detached', timeout: 20000 }).catch(() => {});
+check('and the fresh screen replaces it, by GET, while the POST is still stuck',
+  await picker.locator('[data-refreshing]').count() === 0);
+await dev('/dev/stall?ms=0');
+
+// An answer the mechanic has walked away from does not redraw the screen.
+await picker.click('#navhome');
+await picker.waitForSelector('#manual');
+await picker.click('#manual');
+await picker.fill('#code', FLOOR_INVOICE);
+await slowDown(['lookupJob'], 3000);
+await picker.click('button[type=submit]');
+await picker.click('#navhome');
+await picker.waitForTimeout(4500);
+check('a slow lookup does not drag the mechanic back to a job they left',
+  await picker.isVisible('#manual') && await picker.locator('.segmented').count() === 0);
+await picker.unroute(isExec);
+
+// A write is sent once, by POST, however long it takes.
+await picker.click('#manual');
+await picker.fill('#code', FLOOR_INVOICE);
+await picker.click('button[type=submit]');
+await picker.waitForSelector('.segmented', { timeout: 20000 });
+await picker.waitForSelector('[data-refreshing]', { state: 'detached', timeout: 20000 }).catch(() => {});
+await dev('/dev/roads');
+await dev('/dev/stall?ms=8000&fns=addEntry');
+await picker.fill('#minutes', '5');
+await picker.fill('#text', 'A slow save, sent once.');
+await picker.click('#save');
+await picker.waitForSelector('#saving', { state: 'visible', timeout: 10000 }).catch(() => {});
+await picker.waitForSelector('#saving', { state: 'hidden', timeout: 30000 });
+await dev('/dev/stall?ms=0');
+const writeRoads = (await dev('/dev/roads')).filter((r) => r.fn === 'addEntry');
+check('a slow save is never sent a second way',
+  writeRoads.length === 1 && writeRoads[0].method === 'POST', JSON.stringify(writeRoads));
+
+// A reply without the stamp is not an answer. This is what a POST whose body
+// went missing got back — doGet's health check — and the app used to take it
+// as a saved note, drop it from the outbox, and blank its place in the feed.
+await picker.route(isExec, async (route) => {
+  if (route.request().method() === 'POST' && fnOf(route.request()) === 'addEntry') {
+    return route.fulfill({ status: 200, contentType: 'application/json',
+      headers: { 'Access-Control-Allow-Origin': '*' },
+      body: JSON.stringify({ ok: true, service: 'Quest Service Tracker' }) });
+  }
+  return route.continue();
+});
+await picker.fill('#minutes', '5');
+await picker.fill('#text', 'The answer to this one goes missing.');
+await picker.click('#save');
+await picker.waitForSelector('.entry.failed', { timeout: 15000 }).catch(() => {});
+check('a stray reply leaves the save marked as not saved, not quietly gone',
+  await picker.locator('.entry.failed').count() === 1
+    && (await picker.textContent('.feed')).includes('The answer to this one goes missing.'));
+const strayKept = await picker.evaluate(() => new Promise((resolve) => {
+  const request = indexedDB.open('quest-outbox', 1);
+  request.onsuccess = () => {
+    const rows = request.result.transaction('outbox', 'readonly').objectStore('outbox').getAll();
+    rows.onsuccess = () => resolve(rows.result.some((r) => /goes missing/.test((r.payload || {}).text || '')));
+    rows.onerror = () => resolve(false);
+  };
+  request.onerror = () => resolve(false);
+}));
+check('and it is still in the outbox', strayKept);
+await picker.unroute(isExec);
+await picker.click('.entry.failed [data-retry]');
+await picker.waitForSelector('.entry.failed', { state: 'detached', timeout: 20000 }).catch(() => {});
+check('and it saves when sent again', await picker.locator('.entry.failed').count() === 0,
+  (await picker.textContent('.feed')).slice(0, 300));
+
+// Signing out forgets every saved screen: the shop iPad is being handed on.
+await picker.click('#navhome');
+await picker.waitForSelector('#signout');
+const copiesBefore = await picker.evaluate(() => Object.keys(localStorage).concat(Object.keys(sessionStorage))
+  .filter((key) => key.startsWith('qst_copy_')).length);
+await picker.click('#signout');
+const copiesAfter = await picker.evaluate(() => Object.keys(localStorage).concat(Object.keys(sessionStorage))
+  .filter((key) => key.startsWith('qst_copy_')).length);
+check('signing out forgets every saved list and job screen', copiesBefore > 0 && copiesAfter === 0,
+  `${copiesBefore} before, ${copiesAfter} after`);
+
 await picker.close();
 
 /* ------------------------------------------------------------- magic link */
@@ -2395,6 +2550,26 @@ check('and it is the real module that loaded, not the planted one',
     const module = await import('../assets/lib/entry-types.js');
     return typeof module.formatMinutes === 'function';
   }));
+
+// On a connection that is slow rather than dead the page's fetch neither
+// answers nor fails. After four seconds the worker serves the cached page —
+// and then every module that page asks for from the SAME cache, so an old
+// page can never meet a new module.
+const isShellPage = (url) => new URL(url).pathname.endsWith('/m/');
+await pwa.route(isShellPage, async (route) => {
+  await new Promise((resolve) => setTimeout(resolve, 12000));
+  await route.continue().catch(() => {});
+});
+const slowNavStarted = Date.now();
+await phone.reload({ waitUntil: 'load', timeout: 30000 }).catch(() => {});
+await phone.waitForFunction(() => window.__questBooted === true, null, { timeout: 15000 }).catch(() => {});
+const slowNavTook = Date.now() - slowNavStarted;
+check('a page stuck on slow signal is served from the cache instead of waited out',
+  slowNavTook < 10000 && await phone.evaluate(() => window.__questBooted === true), `${slowNavTook} ms`);
+check('and the modules that came with it are the same generation, so it starts',
+  !/Starting up|did not start/.test(await phone.evaluate(() => document.body.innerText))
+    && await phone.evaluate(async () => typeof (await import('../assets/lib/entry-types.js')).formatMinutes === 'function'));
+await pwa.unroute(isShellPage).catch(() => {});
 
 // The watchdog: the last line of defence when the module cannot load at all.
 check('a watchdog stands behind all of it',

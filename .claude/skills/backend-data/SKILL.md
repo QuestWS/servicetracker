@@ -103,6 +103,42 @@ Other things already paid for, which will come back if undone:
   answer going back.** The row is marked `pending` with no transcript id,
   which is the queue; `sweepTranscripts_` is the net under it.
 
+## One door, two roads, one stamp
+
+`doPost` and `doGet` both hand the request to `serve_`, which runs the
+function table (`apiFns_`) and stamps every answer — errors included — with
+`_api: 'service-tracker'`. **The health check is deliberately unstamped**: a
+POST that loses its body arrives at `doGet` with no `fn`, and the pages must
+be able to tell that reply from a real one.
+
+**`API_GET_FNS_` is the definition of a read.** Those functions may be asked
+for by GET (`?fn=…&token=…&args=[…]`), the second road the mechanic app takes
+when a POST stalls. Everything else is a write: **refused on GET by the
+server**, and it drops the open-jobs cache when it runs. One list, not two, so
+a function added later is a write until somebody says otherwise. `lookupJob`
+is the one read that can write (a first scan advances the job); on GET it
+never does, and on POST it drops the cache itself. The token rides in the
+query string on GET, visible only in the owner's execution log — accepted
+deliberately; the portal never uses that road.
+
+## `openJobs` answers from CacheService
+
+The list every mechanic opens and every save changes. Stored under a
+**generation** that every write replaces (`invalidateOpenJobs_`, called by
+`serve_`), so a list read just before a save lands under a generation nobody
+asks for. **Bump `OPEN_JOBS_V_` whenever a row gains a field.** Ten minutes'
+life covers hand edits to the Sheet; Refresh on the list (`openJobs(token,
+true)`) skips the cache. `cachePutBig_`/`cacheGetBig_` split a value across
+entries and read a missing piece as a miss.
+
+## `diagnoseSpeed()` — the first function in the file
+
+Run it from the editor when somebody says "it is slow". It times each road on
+its own — the batch read and whether it fell back, a plain read, the open-jobs
+list from the sheet and from the cache, one lookup — and prints to the
+execution log. It writes nothing. **Keep it first**: the editor's function
+dropdown lists them in file order.
+
 ## Asking twice must not write twice
 
 The mechanic app keeps an unsent save in an outbox on the phone and sends it

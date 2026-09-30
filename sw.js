@@ -36,6 +36,9 @@
  * little: this app cannot do anything useful offline anyway — the roster, the
  * job and every save need the backend — so serving stale code fast buys
  * nothing and risks a mechanic holding a dead phone mid-job.
+ *
+ * The one exception is a page stuck on slow signal, and it is taken as a
+ * whole shell or not at all — see NAV_TIMEOUT_MS below.
  */
 const VERSION = 'quest-shell-v3';
 
@@ -99,6 +102,73 @@ function fresh(request, offlineFallback) {
     }));
 }
 
+/*
+ * A TIMEOUT, WITHOUT BREAKING THE RULE ABOVE.
+ *
+ * On a connection that is slow rather than dead, fetch neither answers nor
+ * fails, and the app waited on it before it could draw anything. So a page
+ * whose network answer has not come in NAV_TIMEOUT_MS is served from the
+ * cache instead.
+ *
+ * Done naively that is exactly the trap described above: an old page from
+ * the cache, then modules that DO reach the network, and an import naming a
+ * missing export stops the app at "Starting up…". So the timeout applies to
+ * the shell AS A UNIT. A page served from the cache is remembered by its
+ * client id, and every file that page asks for afterwards comes from the same
+ * cache, for the rest of its life. The late network answer for the page is
+ * thrown away rather than cached, so the cache stays one generation.
+ *
+ * Only where it can be done safely: a navigation with no client id to
+ * remember (an older browser) waits for the network as before, and so does
+ * one with no exact cached copy to fall back on.
+ */
+const NAV_TIMEOUT_MS = 4000;
+const servedFromCache = new Set();
+
+function navigate(event) {
+  const request = event.request;
+  const client = event.resultingClientId || '';
+  return new Promise((resolve) => {
+    let settled = false;
+    const network = fetch(request);
+    const timer = client ? setTimeout(() => {
+      caches.match(request).then((hit) => {
+        if (!hit || settled) return;
+        settled = true;
+        servedFromCache.add(client);
+        resolve(hit);
+      });
+    }, NAV_TIMEOUT_MS) : null;
+
+    network.then((response) => {
+      if (settled) return; // late: the page is already up from the cache
+      settled = true;
+      clearTimeout(timer);
+      if (response && response.ok && response.type === 'basic') {
+        const copy = response.clone();
+        caches.open(VERSION).then((cache) => cache.put(request, copy));
+      }
+      resolve(response);
+    }, () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      caches.match(request)
+        .then((hit) => hit || caches.match(shellUrl('m/')))
+        .then((hit) => {
+          // Offline: the page is the cached generation, so its modules are too.
+          if (hit && client) servedFromCache.add(client);
+          resolve(hit || Response.error());
+        });
+    });
+  });
+}
+
+/** A file for a page that came from the cache: the same cache, if it has it. */
+function sameGeneration(request) {
+  return caches.match(request).then((hit) => hit || fetch(request));
+}
+
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (request.method !== 'GET') return;
@@ -109,11 +179,15 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
 
   if (request.mode === 'navigate') {
-    event.respondWith(fresh(request, shellUrl('m/')));
+    event.respondWith(navigate(event));
     return;
   }
 
   if (/\.(?:css|js|mjs|png|svg|webmanifest|woff2?)$/.test(url.pathname)) {
+    if (event.clientId && servedFromCache.has(event.clientId)) {
+      event.respondWith(sameGeneration(request));
+      return;
+    }
     event.respondWith(fresh(request));
   }
 });

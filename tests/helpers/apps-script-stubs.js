@@ -282,6 +282,8 @@ export function loadBackend(options = {}) {
         get: (key) => (cache.has(key) ? cache.get(key) : null),
         put: (key, value) => { cache.set(key, String(value)); },
         remove: (key) => { cache.delete(key); },
+        getAll: (keys) => keys.reduce((out, key) => (cache.has(key) ? Object.assign(out, { [key]: cache.get(key) }) : out), {}),
+        putAll: (values) => { Object.keys(values).forEach((key) => cache.set(key, String(values[key]))); },
       }),
     },
     // Records what setup() actually schedules. A trigger nobody installs is
@@ -387,6 +389,11 @@ export function loadBackend(options = {}) {
     cache,
     /** Every Sheets API batchGet, as the list of ranges it asked for. */
     batchGets,
+    /** A GET, the way the phone's second road for a slow read sends one. */
+    get: (parameter) => {
+      context.__event = { parameter: parameter || {} };
+      return JSON.parse(vm.runInContext('doGet(__event).getContent()', context));
+    },
     /** Deliver a webhook the way AssemblyAI does: POST, id in the body. */
     post: (parameter, body) => {
       context.__event = { parameter: parameter, postData: { contents: JSON.stringify(body) } };

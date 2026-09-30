@@ -324,6 +324,37 @@ order of how much they buy:
   invalidation is the risk: a mechanic who sees a stale log will not trust the
   app again.
 
+## The third pass (30 Sep 2026) — the road, not the sheet
+
+Harbor Haul Out, the winter services app, timed its server at under two
+seconds while the phone waited fifty for the same list. The time was all
+between the phone and the function: Apps Script starting the request, the
+redirect every POST answer travels through, and a first attempt stalling on
+weak signal that the browser waited out before trying anything else. Its
+write-up is what this pass implements; the footer (`31.4s · 1.2s in the sheet`)
+is how to tell whether the shop is in the same place.
+
+1. **Every answer is stamped** (`_api`), and `api()` treats an unstamped reply
+   as no answer. A POST that lost its body used to get `doGet`'s health check,
+   `{ok: true}`, which the mechanic app took as a saved note — removed from
+   the outbox, blanked in the feed, never saved.
+2. **The phone draws its last copy first.** The open-jobs list and each job
+   screen are saved after every server answer and drawn the instant the screen
+   opens, with how old they are; the fresh copy replaces them.
+3. **A slow read goes a second way.** No answer in six seconds and the same
+   read goes by GET as well; first real answer wins. Writes never do, and the
+   server refuses a write on GET (`API_GET_FNS_`).
+4. **`openJobs` answers from CacheService**, invalidated by every write from
+   one place, with a shape version and a generation.
+5. **`diagnoseSpeed()`**, first function in the `.gs`, times each road inside
+   the script so the next report is a number.
+6. **The service worker times a stuck page out after four seconds** and serves
+   the whole shell from one cache generation.
+
+Test each against the footer: the screen should draw before the round trip
+(2), and the round trip should fall towards `serverMs` (3). `· by GET` in the
+footer means the second road won.
+
 ## Constraints that still hold
 
 - Column order is append-only, and a new column needs `setup()` run once.

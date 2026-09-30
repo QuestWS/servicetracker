@@ -5,7 +5,8 @@
  * notes and PDFs, Gmail for the two kinds of mail this system sends.
  *
  * The four pages on GitHub Pages talk to this file and nothing else, over a
- * single POST endpoint. Deploy notes and the one-time setup are in
+ * single endpoint: POST for everything, and GET as a second road for a few
+ * reads (see serve_ and API_GET_FNS_). Deploy notes and the one-time setup are in
  * docs/DEPLOY.md — read that before touching a deployment.
  *
  * ── WHAT THIS FILE MUST NEVER DO ──────────────────────────────────────
@@ -15,6 +16,80 @@
  * 3. Open a PDF. The service writer's browser parses and stamps work
  *    orders; this file only ever stores the bytes it is handed.
  ************************************************************************/
+
+/* ============================= diagnostics ============================= */
+
+/**
+ * RUN THIS FROM THE EDITOR when somebody says "it's slow". First function in
+ * the file on purpose: the Apps Script editor's function dropdown lists them
+ * in file order, and there are hundreds below.
+ *
+ * `serverMs` on every answer says how long a call took. It cannot say which
+ * road the call took inside the script — whether the batch read ran or
+ * quietly fell back, whether the cache answered. This times each road on its
+ * own and prints the lot to the execution log. If every number here is small
+ * and the phone's footer still says thirty seconds, the time is between the
+ * phone and Google, not in this file.
+ *
+ * It writes nothing: no row, no property, no cache entry. It reads the one
+ * job it looks up by its token and never "scans" it, so nothing advances.
+ */
+function diagnoseSpeed() {
+  const lines = [];
+  const time = function (label, work) {
+    const started = Date.now();
+    let note = '';
+    try {
+      note = work() || '';
+    } catch (err) {
+      note = 'FAILED: ' + (err && err.message ? err.message : err);
+    }
+    lines.push(('      ' + (Date.now() - started)).slice(-6) + ' ms  ' + label + (note ? '  — ' + note : ''));
+  };
+  const cold = function () { forget_(); };
+
+  time('ping (the empty call)', function () { apiFns_({}).ping([]); });
+  time('script properties, all of them (what props_ reads once)', function () {
+    return Object.keys(PropertiesService.getScriptProperties().getProperties() || {}).length + ' properties';
+  });
+  time('one getDataRange().getValues() on Jobs', function () {
+    return sheet_('Jobs').getDataRange().getValues().length + ' rows';
+  });
+  time('one values.batchGet, Jobs + LogEntries', function () {
+    if (typeof Sheets === 'undefined' || !Sheets.Spreadsheets) return 'the Sheets advanced service is OFF — every batch read falls back';
+    const answer = Sheets.Spreadsheets.Values.batchGet(ss_().getId(), { ranges: ["'Jobs'", "'LogEntries'"] });
+    return (answer.valueRanges || []).length + ' ranges';
+  });
+  time('prefetch_ for the job page, then rows_ on each', function () {
+    cold();
+    const tabs = JOB_PAGE_TABS_;
+    prefetch_(tabs);
+    const batched = tabs.filter(function (name) { return _rowCache[name]; }).length;
+    tabs.forEach(function (name) { rows_(name); });
+    return batched === tabs.length ? 'batched' : 'FELL BACK to one read per tab (' + batched + '/' + tabs.length + ' batched)';
+  });
+  time('openJobs, from the sheet', function () {
+    cold();
+    return openJobsFromSheet_().jobs.length + ' open';
+  });
+  time('openJobs, from the cache', function () {
+    const hit = cachedOpenJobs_();
+    return hit ? hit.jobs.length + ' open, cache HIT' : 'cache miss (nothing cached, or a save since)';
+  });
+  let sample = null;
+  time('lookupJob for one job, cold', function () {
+    cold();
+    sample = rows_('Jobs')[0];
+    if (!sample) return 'no jobs to look up';
+    forget_();
+    lookupJob(sample.token, 'diagnose', '');
+    return sample.id;
+  });
+
+  const report = 'diagnoseSpeed, ' + new Date().toISOString() + '\n' + lines.join('\n');
+  Logger.log(report);
+  return report;
+}
 
 /* ============================ configuration ============================ */
 
@@ -816,10 +891,17 @@ function doPost(e) {
   try {
     data = JSON.parse(e.postData.contents);
   } catch (err) {
-    return json_({ error: 'Unreadable request.' });
+    return json_(stamp_({ error: 'Unreadable request.' }));
   }
+  return json_(serve_(data, false));
+}
 
-  const FNS = {
+/**
+ * Every function the pages can call, by name. A table built per request
+ * because each entry closes over that request's token.
+ */
+function apiFns_(data) {
+  return {
     /**
      * Does nothing, on purpose.
      *
@@ -902,7 +984,7 @@ function doPost(e) {
     jobLog:           function (a) { return jobLog(data.token, a[0]); },
     jobProps:         function (a) { return jobProps(data.token, a[0]); },
     jobForMechanic:   function (a) { return jobForMechanic(data.token, a[0]); },
-    openJobs:         function (a) { return openJobs(data.token); },
+    openJobs:         function (a) { return openJobs(data.token, a[0] === true); },
     transcriptsFor:   function (a) { return transcriptsFor(data.token, a[0]); },
     addEntry:         function (a) { return addEntry(data.token, a[0], a[1]); },
     addPropRepair:    function (a) { return addPropRepair(data.token, a[0], a[1]); },
@@ -917,8 +999,94 @@ function doPost(e) {
     setReviewUrl:     function (a) { return setReviewUrl(data.token, a[0]); },
     config:           function (a) { return config(data.token); }
   };
+}
 
-  if (!FNS[data.fn]) return json_({ error: 'Unknown function.' });
+/* ------------------------------ one door ------------------------------- */
+/*
+ * POST and GET both come through here. POST is how every page has always
+ * called; GET is the second road a slow READ can take (see API_GET_FNS_).
+ */
+
+/**
+ * Stamped on every answer the dispatch gives, errors included.
+ *
+ * A POST can reach the web app with its body gone, and Apps Script then hands
+ * it to doGet. That used to answer with the health check, `{ok: true}`, and
+ * the page could not tell it from a real reply: the mechanic app took it as a
+ * saved note, dropped the note from its outbox, and put `undefined` where the
+ * entry was in the feed. The note was never saved and nothing anywhere said
+ * so. The pages now treat any reply without this stamp as no answer at all.
+ * The health check deliberately goes without it.
+ */
+const API_STAMP_ = 'service-tracker';
+
+function stamp_(out) {
+  if (out && typeof out === 'object' && !Array.isArray(out)) out._api = API_STAMP_;
+  return out;
+}
+
+/**
+ * The functions that may be asked for by GET, and so the definition of a
+ * read. A GET can be retried, prefetched or followed twice by something
+ * between the phone and Google, so nothing that writes may ever be on it.
+ *
+ * Everything NOT here is a write: it is refused on GET, and it drops the
+ * open-jobs cache when it runs. That is one list, not two, on purpose — a
+ * function added next month is a write until somebody deliberately says
+ * otherwise, so it cannot slip onto the GET road or forget to invalidate.
+ *
+ * lookupJob is the one read that can write: a SCAN of a job still at
+ * "Received" moves it to "Work underway". On the GET road it never does (see
+ * serve_), and nothing is lost when that road wins — the first entry logged
+ * against the job moves it just the same, and the POST that raced it usually
+ * lands anyway. On POST it still advances, and drops the cache itself.
+ *
+ * The token rides in the query string on this road, which puts it in Apps
+ * Script's own execution log. Only the script's owner can read that log, and
+ * a mechanic's token opens nothing that owner cannot already open; accepted
+ * deliberately for the shop-floor reads. The writer's portal never uses it.
+ */
+const API_GET_FNS_ = {
+  ping: true,
+  roster: true,
+  lookupJob: true,
+  jobForMechanic: true,
+  jobLog: true,
+  jobProps: true,
+  openJobs: true,
+  transcriptsFor: true
+};
+
+function isReadFn_(fn) {
+  return Object.prototype.hasOwnProperty.call(API_GET_FNS_, String(fn));
+}
+
+/** {fn, token, args, rid?, jobPage?} in, the stamped answer object out. */
+function serve_(data, viaGet) {
+  data = data || {};
+  const FNS = apiFns_(data);
+  if (!Object.prototype.hasOwnProperty.call(FNS, data.fn)) return stamp_({ error: 'Unknown function.' });
+  if (viaGet) {
+    // The server refuses, not just the page declining to ask. A write that
+    // becomes GET-able is how a note gets saved twice.
+    if (!isReadFn_(data.fn)) return stamp_({ error: 'That has to be sent, not fetched.' });
+    // A read by GET is a read: no replay id, no page riding along, and a
+    // lookup never advances the job's status from here.
+    data.rid = '';
+    data.jobPage = '';
+    if (data.fn === 'lookupJob' && Array.isArray(data.args)) data.args = [data.args[0], 'get'];
+  }
+  const write = !isReadFn_(data.fn);
+  try {
+    return stamp_(dispatch_(FNS, data));
+  } finally {
+    // Whatever the outcome: a write that failed halfway may still have
+    // written something, and dropping the cache costs one put.
+    if (write) invalidateOpenJobs_();
+  }
+}
+
+function dispatch_(FNS, data) {
   // How long this took on Google's side, in every answer. The pages measure
   // the whole round trip; the difference between the two numbers is start-up
   // and the wire, and knowing which of the two is the problem is the
@@ -930,21 +1098,21 @@ function doPost(e) {
   const rid = String(data.rid || '');
   if (!rid) {
     try {
-      return json_(timed_(withJobPage_(FNS[data.fn](data.args || []), data), started));
+      return timed_(withJobPage_(FNS[data.fn](data.args || []), data), started);
     } catch (err) {
-      return json_(timed_({ error: String(err && err.message ? err.message : err) }, started));
+      return timed_({ error: String(err && err.message ? err.message : err) }, started);
     }
   }
 
   const claim = claimRid_(rid);
   if (claim.prior) {
     claim.prior.replayed = true;
-    return json_(timed_(claim.prior, started));
+    return timed_(claim.prior, started);
   }
   if (claim.running) {
     // The first copy is still working. Saying so is not an error the mechanic
     // should see as a failed save — the outbox holds the entry and asks again.
-    return json_(timed_({ error: 'That save is still going through. It has not been lost.', pending: true }, started));
+    return timed_({ error: 'That save is still going through. It has not been lost.', pending: true }, started);
   }
 
   let out;
@@ -958,10 +1126,10 @@ function doPost(e) {
     // that same failure to every retry for the life of the entry, and the note
     // would never land. Releasing the claim makes the next attempt real work.
     releaseRid_(rid);
-    return json_(timed_({ error: String(err && err.message ? err.message : err) }, started));
+    return timed_({ error: String(err && err.message ? err.message : err) }, started);
   }
   finishRid_(rid, out);
-  return json_(timed_(out, started));
+  return timed_(out, started);
 }
 
 /* ------------------------- write once, answer twice --------------------- */
@@ -1071,12 +1239,26 @@ function timed_(out, started) {
 }
 
 /**
- * GET serves two things: a health check, and AssemblyAI's transcript webhook.
- * Nothing else — the pages are static files on GitHub Pages.
+ * GET serves three things: AssemblyAI's transcript webhook, the second road
+ * for a slow read (`?fn=…&token=…&args=[…]`, reads only — see API_GET_FNS_),
+ * and a health check.
+ *
+ * The health check is NOT stamped, and that is load-bearing: a POST whose
+ * body went missing arrives here with no `fn`, and the page must be able to
+ * tell this answer from a real one.
  */
 function doGet(e) {
   const params = (e && e.parameter) || {};
   if (params.hook === 'transcript') return transcriptWebhook_(params);
+  if (params.fn) {
+    let args = [];
+    try {
+      args = params.args ? JSON.parse(params.args) : [];
+    } catch (err) {
+      return json_(stamp_({ error: 'Unreadable request.' }));
+    }
+    return json_(serve_({ fn: params.fn, token: params.token || '', args: Array.isArray(args) ? args : [] }, true));
+  }
   return json_({ ok: true, service: 'Quest Service Tracker' });
 }
 
@@ -3163,6 +3345,9 @@ function lookupJob(code, source, token) {
 
   if (source === 'scan' && job.status === 'received') {
     setStatus_(job, 'work_underway', 'system', '', 'First scan of the work order');
+    // The one read that writes, so the one read that has to drop the list
+    // itself: the dispatch only does it for functions off the read list.
+    invalidateOpenJobs_();
   }
   const fresh = jobRow_(job.id);
 
@@ -3241,8 +3426,153 @@ function transcriptsFor(token, jobToken) {
  * order still opens the job, so a mechanic who has more to add gets at it the
  * same way they got at it the first time.
  */
-function openJobs(token) {
+function openJobs(token, fresh) {
   requireMechanic_(token);
+  // Opening the app takes whatever is fastest; a deliberate Refresh asks for
+  // the sheet as it is now. Either way the answer is cached for the next one.
+  const cached = fresh ? null : cachedOpenJobs_();
+  if (cached) return cached;
+  const gen = openJobsGen_();
+  const out = openJobsFromSheet_();
+  cachePutBig_(OPEN_JOBS_KEY_ + gen, out, OPEN_JOBS_TTL_);
+  return out;
+}
+
+/*
+ * ---------------------- the open-jobs list, from memory ------------------
+ *
+ * The list every mechanic opens, and every save changes. Measured, the server
+ * answers it from CacheService in about a hundredth of the time it takes to
+ * read the Jobs tab — and it is the call the phone makes most.
+ *
+ * What makes it safe to trust, each of which is load-bearing:
+ *
+ *  - EVERY WRITE DROPS IT, FROM ONE PLACE. serve_ calls invalidateOpenJobs_
+ *    after any function that is not on API_GET_FNS_, so a write added later
+ *    cannot forget to. lookupJob's first-scan advance, the one read that
+ *    writes, drops it where it writes.
+ *  - A GENERATION, NOT A DELETE. Dropping it mints a new generation id, and
+ *    the list is stored under the generation current when its read BEGAN. A
+ *    list read from the sheet just before a save, and put away just after,
+ *    lands under a generation nobody asks for any more — rather than sitting
+ *    there stale until it expires.
+ *  - A SHAPE VERSION in the key. Bump OPEN_JOBS_V_ whenever a row gains a
+ *    field, or for the life of the cache after a deploy the phone is handed
+ *    rows without it and cannot tell "no alert" from "predates alerts".
+ *  - A SHORT LIFE. Somebody editing the Sheet by hand goes round every one of
+ *    the above; ten minutes is how long that can show on the floor, and
+ *    Refresh on the list skips the cache altogether.
+ *  - SPLIT ACROSS ENTRIES. CacheService caps a value at 100 KB, and a missing
+ *    piece reads as a miss, never as half a list.
+ */
+const OPEN_JOBS_V_ = 1;
+const OPEN_JOBS_KEY_ = 'OPENJOBS_v' + OPEN_JOBS_V_ + '_';
+const OPEN_JOBS_GEN_KEY_ = 'OPENJOBS_GEN';
+const OPEN_JOBS_TTL_ = 600;
+
+function scriptCache_() {
+  try { return CacheService.getScriptCache(); } catch (err) { return null; }
+}
+
+/** The current generation, minted if there is none. '' with no cache at all. */
+function openJobsGen_() {
+  const cache = scriptCache_();
+  if (!cache) return '';
+  try {
+    const gen = cache.get(OPEN_JOBS_GEN_KEY_);
+    if (gen) return gen;
+    return newOpenJobsGen_(cache);
+  } catch (err) {
+    return '';
+  }
+}
+
+function newOpenJobsGen_(cache) {
+  const gen = Utilities.getUuid().slice(0, 8);
+  // Longer than any list lives, so the generation outlasts what it names.
+  cache.put(OPEN_JOBS_GEN_KEY_, gen, 21600);
+  return gen;
+}
+
+function cachedOpenJobs_() {
+  const cache = scriptCache_();
+  if (!cache) return null;
+  let gen = '';
+  try { gen = cache.get(OPEN_JOBS_GEN_KEY_) || ''; } catch (err) { return null; }
+  if (!gen) return null;
+  const hit = cacheGetBig_(OPEN_JOBS_KEY_ + gen);
+  if (!hit || !Array.isArray(hit.jobs)) return null;
+  hit.fromCache = true;
+  return hit;
+}
+
+/**
+ * After any write. Never throws: a save must not fail over a cache.
+ *
+ * Flushes first. SpreadsheetApp holds writes back until the execution ends,
+ * so without it the new generation would exist before the write it marks had
+ * reached the sheet — and a list read in that gap would be put away under the
+ * NEW generation, stale, for its whole life.
+ */
+function invalidateOpenJobs_() {
+  const cache = scriptCache_();
+  if (!cache) return;
+  try { SpreadsheetApp.flush(); } catch (err) { /* nothing held back */ }
+  try { newOpenJobsGen_(cache); } catch (err) { /* the list expires on its own */ }
+}
+
+/**
+ * A value too big for one CacheService entry, in pieces. The head names how
+ * many pieces and a random id they are stored under, so a reader cannot stitch
+ * the head of one write to the pieces of another. Any piece missing is a miss.
+ * Pieces are measured in characters and kept well under the byte cap, since a
+ * character can be up to four bytes.
+ */
+const CACHE_PIECE_CHARS_ = 24000;
+
+function cachePutBig_(key, value, ttl) {
+  const cache = scriptCache_();
+  if (!cache || !key) return false;
+  try {
+    const text = JSON.stringify(value);
+    const id = Utilities.getUuid().slice(0, 8);
+    const pieces = {};
+    let n = 0;
+    for (let at = 0; at < text.length || n === 0; at += CACHE_PIECE_CHARS_) {
+      pieces[key + '.' + id + '.' + n] = text.slice(at, at + CACHE_PIECE_CHARS_);
+      n++;
+    }
+    // Pieces first, head last: a reader who sees the head finds the pieces.
+    cache.putAll(pieces, ttl);
+    cache.put(key, JSON.stringify({ id: id, n: n }), ttl);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function cacheGetBig_(key) {
+  const cache = scriptCache_();
+  if (!cache || !key) return null;
+  try {
+    const head = JSON.parse(cache.get(key) || 'null');
+    if (!head || !head.id || !(head.n > 0)) return null;
+    const keys = [];
+    for (let i = 0; i < head.n; i++) keys.push(key + '.' + head.id + '.' + i);
+    const got = cache.getAll(keys) || {};
+    let text = '';
+    for (let i = 0; i < keys.length; i++) {
+      if (typeof got[keys[i]] !== 'string') return null;
+      text += got[keys[i]];
+    }
+    return JSON.parse(text);
+  } catch (err) {
+    return null;
+  }
+}
+
+/** The list itself, read from the sheet. Writes nothing, caches nothing. */
+function openJobsFromSheet_() {
   const jobs = rows_('Jobs')
     .filter(function (job) { return job.status !== 'done' && job.status !== 'work_finished'; })
     .map(function (job) {

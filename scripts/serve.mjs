@@ -24,6 +24,9 @@ const backend = loadBackend({ properties: { ADMIN_PASSWORD: PASSWORD } });
 
 const CONFIG_JS = path.join(ROOT, 'assets', 'lib', 'config.js');
 
+let stall = { ms: 0, fns: [] };
+let roads = [];
+
 /** Rewrites the two URLs that must point at this preview, not at the shop. */
 function localConfig(source) {
   const origin = `http://localhost:${PORT}`;
@@ -66,20 +69,51 @@ const server = http.createServer(async (request, response) => {
     return response.end(JSON.stringify(backend.sentMail));
   }
 
+  // Dev only: make the next POSTs to /exec hang, the way one does on weak
+  // signal, so browser-check.mjs can prove a slow read goes round by GET and
+  // a slow write is not sent twice. `?ms=0` puts it back.
+  if (url.pathname === '/dev/stall') {
+    stall = { ms: Number(url.searchParams.get('ms') || 0), fns: (url.searchParams.get('fns') || '').split(',').filter(Boolean) };
+    response.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    return response.end(JSON.stringify(stall));
+  }
+  // Dev only: what came in by which road since the last ask, then cleared.
+  if (url.pathname === '/dev/roads') {
+    response.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    const out = JSON.stringify(roads);
+    roads = [];
+    return response.end(out);
+  }
+
   if (url.pathname === '/exec') {
     if (request.method === 'OPTIONS') {
       response.writeHead(204, { 'Access-Control-Allow-Origin': '*' });
       return response.end();
     }
-    const body = await readBody(request);
+    const body = request.method === 'POST' ? await readBody(request) : '';
+    let fnName = url.searchParams.get('fn') || '';
+    if (request.method === 'POST') {
+      try { fnName = JSON.parse(body).fn || ''; } catch { fnName = ''; }
+      if (stall.ms && (!stall.fns.length || stall.fns.includes(fnName))) {
+        await new Promise((resolve) => setTimeout(resolve, stall.ms));
+      }
+    }
+    roads.push({ method: request.method, fn: fnName });
     let out;
     try {
       // Every call to Apps Script is a fresh execution with nothing memoised,
       // so every call here starts the same way — otherwise the preview would
       // be quietly faster, and quietly more forgiving, than the real thing.
       backend.call('forget_(); _props = null; _headers = {};');
-      backend.context.__event = { postData: { contents: body }, parameter: Object.fromEntries(url.searchParams) };
-      out = backend.call('doPost(__event)').getContent();
+      // A GET goes to doGet and a POST to doPost, exactly as Apps Script
+      // routes them — the GET road and the health check both live there.
+      if (request.method === 'GET') {
+        backend.context.__event = { parameter: Object.fromEntries(url.searchParams) };
+        out = backend.call('doGet(__event)').getContent();
+      } else {
+        backend.context.__event = { postData: { contents: body }, parameter: Object.fromEntries(url.searchParams) };
+        out = backend.call('doPost(__event)').getContent();
+      }
     } catch (error) {
       out = JSON.stringify({ error: String(error.message || error) });
     }

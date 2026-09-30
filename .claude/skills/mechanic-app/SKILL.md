@@ -185,6 +185,48 @@ or their email** — a test asserts each of those is absent.
 - **Mechanics have no PIN.** They identify by name, and names are unique
   case-insensitively because the name is the whole of the identity.
 
+## Opening draws what the phone already has
+
+The server answers in about a second; on the floor the phone waited for tens
+of seconds, all of it between the phone and Google. So the open-jobs list and
+each job screen are **saved on the phone after every answer the server gives**
+(`savedOpenJobs`/`saveOpenJobs`, `savedJob`/`saveJob` in `assets/lib/api.js`)
+and **drawn the instant the screen opens**, with a strip saying how old they
+are and that they are refreshing. The fresh answer replaces them when it lands.
+
+- **Only what the server said is saved.** After a successful answer and after
+  a recorded change (`sendEntry`, `finishWork`). A job screen drawn from a
+  list row is partial and never saved.
+- **A saved copy only ever goes into an empty screen.** When the fresh job
+  lands over a saved copy, only the head (`#jobhead`) is redrawn — the
+  mechanic may already be typing into the form.
+- **`visit` drops answers the mechanic walked away from.** It goes up on every
+  open and on leaving, and every slow answer checks it. It is deliberately not
+  in `screen()`: a tab change redraws the job without leaving it.
+- **A refresh that fails leaves the old copy up and says how old it is.**
+- **Nothing on a saved copy decides anything.** Every button calls the server.
+- **Same bucket as the token.** The list is every customer's name and boat,
+  which is why it is behind sign-in: the shared iPad keeps its token in
+  `sessionStorage` and forgets these with it. `clearSession` (sign-out) drops
+  them; an *expired* session only drops the token, so the morning does not
+  start blank.
+- The scanned path uses it too: a job is keyed by its token and its number.
+- The list has a **Refresh** button, which skips the server's cache as well.
+
+## A slow read goes a second way; a write never does
+
+`api()` sends a read (the `READS` set, the backend's `API_GET_FNS_`) by POST,
+and **if no answer in six seconds, by GET as well** — whichever real answer
+lands first wins; either road failing starts the other at once. **Writes are
+sent once, by POST, always.** The footer says `· by GET` when the second road
+won.
+
+**A reply without `_api: 'service-tracker'` is not an answer.** A POST whose
+body went missing is handed to `doGet`, which used to answer `{ok: true}`: the
+app took it as a saved note, dropped it from the outbox and put `undefined` in
+the feed. An unstamped reply is treated like a dropped connection now — the
+save shows *Not saved* and stays in the outbox, where its client id settles it.
+
 ## `ping` and warming
 
 `ping` does nothing, on purpose. The app calls it as it opens and again when
@@ -209,6 +251,12 @@ There is a watchdog behind the boot and an always-present way to throw the
 caches away, living outside the screen that redraws. The network wins over the
 cache, so a stale module planted by an old deploy cannot stop the app starting.
 `browser-check.mjs` plants one deliberately and asserts it still boots.
+
+**A navigation stuck for four seconds is served from the cache — as a unit.**
+The page's client id is remembered and every file it asks for afterwards comes
+from that same cache, so an old page never meets a new module; the late
+network answer is thrown away rather than cached. Without a client id to
+remember, or an exact cached copy, it waits for the network as before.
 
 ## Doing the work
 

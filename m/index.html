@@ -100,7 +100,8 @@
 </script>
 
 <script type="module">
-import { api, ApiError, storeSession, storedWho, clearSession, storedToken, onApiTiming } from '../assets/lib/api.js';
+import { api, ApiError, storeSession, storedWho, clearSession, storedToken, onApiTiming,
+         savedOpenJobs, saveOpenJobs, savedJob, saveJob } from '../assets/lib/api.js';
 import { ENTRY_LABEL, formatHours, formatMinutes } from '../assets/lib/entry-types.js';
 import { tokenFromScan } from '../assets/lib/tracking.js';
 import { $, esc, toast, formatDateTime, fileToBase64, preparePhoto, driveImageUrl, driveFileUrl } from '../assets/lib/ui.js';
@@ -128,9 +129,11 @@ onApiTiming((call) => {
   // the footer describing nothing they did.
   if (!box || call.fn === 'ping') return;
   const secs = (ms) => `${(ms / 1000).toFixed(1)}s`;
-  box.textContent = call.serverMs === null
+  // "by GET" when a slow read was answered on the second road — which is the
+  // difference between "the hedge is doing its job" and "the POST was fine".
+  box.textContent = (call.serverMs === null
     ? secs(call.ms)
-    : `${secs(call.ms)} · ${secs(call.serverMs)} in the sheet`;
+    : `${secs(call.ms)} · ${secs(call.serverMs)} in the sheet`) + (call.road === 'get' ? ' · by GET' : '');
 });
 
 $('updateapp').onclick = () => {
@@ -165,6 +168,31 @@ function screen(backTo) {
   state.back = backTo || null;
   const button = $('navback');
   if (button) button.hidden = !state.back;
+}
+
+/**
+ * Which visit to a screen an answer belongs to.
+ *
+ * Goes up every time the mechanic opens something or walks away from it, and
+ * every slow answer checks it when it lands. Without it, a lookup for job A
+ * that takes twenty seconds redraws the screen over job B, which the mechanic
+ * opened in the meantime. Deliberately not in screen(): a tab change redraws
+ * the job without leaving it, and must not orphan the refresh behind it.
+ */
+let visit = 0;
+function newVisit() {
+  visit += 1;
+  return visit;
+}
+
+/** "4 min ago", said the way somebody glancing at a phone reads it. */
+function ago(at) {
+  const mins = Math.round((Date.now() - Number(at || 0)) / 60000);
+  if (!(mins >= 1)) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  return formatDateTime(new Date(Number(at)).toISOString());
 }
 const state = {
   who: storedWho(),
@@ -395,6 +423,7 @@ addEventListener('beforeinstallprompt', (event) => {
 });
 
 function renderHome(message) {
+  newVisit();
   stopScanning();
   screen(null);
   view.innerHTML = `
@@ -441,26 +470,51 @@ function renderHome(message) {
  * and boat at once. So an unsigned mechanic is sent to sign in first and
  * brought straight back here.
  */
-async function renderOpenJobs() {
+async function renderOpenJobs(fresh) {
   stopScanning();
   screen(renderHome);
   if (!state.who) return signInThen(renderOpenJobs);
+  const mine = newVisit();
 
-  view.innerHTML = `<p class="loading" style="color:#9fc3dc">Loading open jobs…</p>`;
+  // The last list this phone was given, drawn at once and refreshed behind.
+  // A blank screen for the length of a round trip on the shop's wifi was
+  // every open of this list; an old list that says how old it is beats it.
+  const saved = fresh === true ? null : savedOpenJobs();
+  if (saved) drawOpenJobs(saved.jobs, `List from ${ago(saved.at)} · refreshing…`, 'info');
+  else view.innerHTML = `<p class="loading" style="color:#9fc3dc">Loading open jobs…</p>`;
+
   let jobs;
   try {
-    jobs = (await api('openJobs', [])).jobs;
+    jobs = (await api('openJobs', fresh === true ? [true] : [])).jobs;
   } catch (error) {
+    if (mine !== visit) return;
     // A remembered session that has since expired.
     if (/Sign in/i.test(error.message)) {
       state.who = null;
       return signInThen(renderOpenJobs);
     }
+    const kept = saved || savedOpenJobs();
+    if (kept) return drawOpenJobs(kept.jobs, `Could not refresh — showing the list from ${ago(kept.at)}.`, 'warn');
     return renderHome(error.message);
   }
+  if (mine !== visit) return;
+  // Saved only now, with the server's answer in hand.
+  saveOpenJobs(jobs);
+  drawOpenJobs(jobs, '', '');
+}
 
+/**
+ * The list itself. `strip` says where it came from when that is not "the
+ * server, just now" — a saved copy refreshing, or one a refresh failed to
+ * replace — so the floor always knows how old what it is reading is.
+ */
+function drawOpenJobs(jobs, strip, tone) {
   view.innerHTML = `
-    <h2 style="margin:0 0 10px;color:#fff">Open jobs (${jobs.length})</h2>
+    <div class="row" style="justify-content:space-between;align-items:center;margin:0 0 10px">
+      <h2 style="margin:0;color:#fff">Open jobs (${jobs.length})</h2>
+      <button class="btn ghost" type="button" id="refreshjobs" style="padding:6px 12px;font-size:14px">Refresh</button>
+    </div>
+    ${strip ? `<div class="banner ${tone || 'info'}" id="liststrip" style="margin-bottom:12px">${esc(strip)}</div>` : ''}
     ${jobs.length ? `<div class="stack">
       ${jobs.map((job, index) => `
         <button class="btn ghost block joblist${job.alert ? ' flagged' : ''}" type="button" data-pick="${index}"
@@ -474,6 +528,9 @@ async function renderOpenJobs() {
         </button>`).join('')}
     </div>` : `<p style="color:#9fc3dc">Nothing open right now.</p>`}`;
 
+  // A deliberate refresh skips the server's cache as well as the phone's:
+  // the mechanic is asking for the sheet as it is now.
+  $('refreshjobs').onclick = () => renderOpenJobs(true);
   view.querySelectorAll('[data-pick]').forEach((button) => {
     button.onclick = () => {
       const job = jobs[Number(button.dataset.pick)];
@@ -496,6 +553,7 @@ async function renderOpenJobs() {
  * list.
  */
 function renderPartRequest() {
+  newVisit();
   stopScanning();
   screen(renderHome);
   view.innerHTML = `<form class="card" id="form">
@@ -568,6 +626,7 @@ async function signInThen(next) {
 }
 
 function renderScanning() {
+  newVisit();
   warm();
   stopScanning();
   view.innerHTML = `<div class="stack">
@@ -586,6 +645,7 @@ function renderScanning() {
 }
 
 function renderManual() {
+  newVisit();
   warm();
   stopScanning();
   screen(renderHome);
@@ -608,26 +668,77 @@ function renderManual() {
 
 async function openJob(code, source) {
   state.jobFrom = renderHome;
-  view.innerHTML = `<p class="loading" style="color:#9fc3dc">Looking that job up…</p>`;
+  const mine = newVisit();
+  // The same work order scanned twice in a morning opens at once the second
+  // time: the last screen the server gave for it, keyed by the token the QR
+  // carries as well as the number. Only for somebody signed in — the saved
+  // screen holds what only a signed-in mechanic is shown.
+  const saved = state.who && storedToken() ? savedJob(code) : null;
+  if (saved) showSavedJob(saved);
+  else view.innerHTML = `<p class="loading" style="color:#9fc3dc">Looking that job up…</p>`;
   try {
     const data = await api('lookupJob', [code, source]);
-    state.job = data.job;
+    if (mine !== visit) return;
     // Signed in already, so the log came back with the lookup rather than
     // costing a second trip to the backend. That second call was most of the
     // wait between scanning the paper and seeing the job.
     if (data.mechanic) {
       state.who = data.mechanic;
-      state.hours = data.hours;
-      state.entries = [];
-      state.logLoaded = false;
-      state.props = null;
-      return renderJob();
+      return landJob(data, Boolean(saved));
     }
+    state.job = data.job;
     if (state.who && storedToken()) return loadJob();
     renderSignIn();
   } catch (error) {
+    if (mine !== visit) return;
+    if (saved && !/Sign in/i.test(error.message)) return refreshFailed(saved);
     renderHome(error.message);
   }
+}
+
+/**
+ * A job screen drawn from the phone's saved copy, before the server has
+ * answered. Everything on it is still decided by the server: every button
+ * calls it, and it confirms or refuses there.
+ */
+function showSavedJob(saved) {
+  state.job = saved.job;
+  state.hours = saved.hours;
+  state.entries = [];
+  state.logLoaded = false;
+  state.props = null;
+  renderJob();
+  const hint = $('jobhint');
+  if (hint) hint.insertAdjacentHTML('beforeend', ` · <span data-refreshing>saved ${esc(ago(saved.at))}, refreshing…</span>`);
+}
+
+/** The server's answer for the job on screen: saved, then drawn. */
+function landJob(data, overSaved) {
+  const wasFinished = Boolean(state.job && overSaved && isFinished(state.job));
+  state.job = data.job;
+  state.hours = data.hours;
+  saveJob(data.job, data.hours);
+  if (!overSaved) {
+    state.entries = [];
+    state.logLoaded = false;
+    state.props = null;
+    return renderJob();
+  }
+  // The saved copy is already on screen and the mechanic may be typing into
+  // it, so only what the server can have changed is redrawn: the alert, the
+  // boat, the status and the total. The form is left alone — unless the job
+  // has been finished or reopened, which changes the foot of the screen.
+  if (wasFinished !== isFinished(data.job)) {
+    captureDraft();
+    return renderJob();
+  }
+  drawJobHead();
+}
+
+function refreshFailed(saved) {
+  const note = view.querySelector('[data-refreshing]');
+  if (note) note.textContent = `saved ${ago(saved.at)} — could not refresh`;
+  toast(`Could not refresh — showing this job as it was ${ago(saved.at)}.`);
 }
 
 /* ------------------------------------------------------------ sign in --- */
@@ -713,24 +824,28 @@ async function signIn(name, remember) {
 async function loadJob() {
   stopScanning();
   screen(state.jobFrom || renderHome);
-  view.innerHTML = state.job && state.job.id
+  const mine = newVisit();
+  // The full screen from the last time the server gave it, if the phone has
+  // one; failing that, the top of it from what the list row already knows —
+  // partial, and never saved as though it were the real thing.
+  const saved = state.job && state.job.token ? savedJob(state.job.token) : null;
+  if (saved) showSavedJob(saved);
+  else view.innerHTML = state.job && state.job.id
     ? `${jobHeadHtml(state.job, 'Opening the job…')}
        <p class="loading" style="color:#9fc3dc">Loading the log…</p>`
     : `<p class="loading" style="color:#9fc3dc">Opening the job…</p>`;
   try {
     const data = await api('jobForMechanic', [state.job.token]);
+    if (mine !== visit) return;
     state.who = data.mechanic;
-    state.job = data.job;
-    state.hours = data.hours;
-    state.entries = [];
-    state.logLoaded = false;
-    state.props = null;
-    renderJob();
+    landJob(data, Boolean(saved));
   } catch (error) {
+    if (mine !== visit) return;
     if (error instanceof ApiError && /Sign in/.test(error.message)) {
       state.who = null;
       return renderSignIn();
     }
+    if (saved) return refreshFailed(saved);
     renderHome(error.message);
   }
 }
@@ -840,8 +955,11 @@ async function loadLog() {
     button.disabled = true;
     button.textContent = 'Loading the log…';
   }
+  const token = state.job.token;
   try {
-    const data = await api('jobLog', [state.job.token]);
+    const data = await api('jobLog', [token]);
+    // Walked off to another job while it loaded: this log is not theirs.
+    if (!state.job || state.job.token !== token) return;
     const fetched = new Set(data.entries.map((entry) => entry.id));
     state.entries = data.entries.concat(state.entries.filter((entry) => !fetched.has(entry.id)));
     state.hours = data.hours;
@@ -887,8 +1005,7 @@ function drawFeed() {
 function drawHint() {
   const hint = $('jobhint');
   if (!hint || !state.who) return;
-  hint.innerHTML = `Logging as <b>${esc(state.who.name)}</b>${
-    state.hours && state.hours.total ? ` · ${formatHours(state.hours.total)} on this job so far` : ''}`;
+  hint.innerHTML = loggingAs();
 }
 
 /**
@@ -923,13 +1040,28 @@ function jobHeadHtml(job, hint) {
     </div>`;
 }
 
+function isFinished(job) {
+  return job.status === 'work_finished' || job.status === 'done';
+}
+
+function loggingAs() {
+  return `Logging as <b>${esc(state.who.name)}</b>${
+    state.hours && state.hours.total ? ` · ${formatHours(state.hours.total)} on this job so far` : ''}`;
+}
+
+/** Just the top of the job screen, when fresh details land under the mechanic. */
+function drawJobHead() {
+  const head = $('jobhead');
+  if (head && state.job && state.who) head.innerHTML = jobHeadHtml(state.job, loggingAs());
+}
+
 function renderJob() {
   stopScanning();
   screen(state.jobFrom || renderHome);
   const job = state.job;
-  const finished = job.status === 'work_finished' || job.status === 'done';
+  const finished = isFinished(job);
   view.innerHTML = `
-    ${jobHeadHtml(job, `Logging as <b>${esc(state.who.name)}</b>${state.hours && state.hours.total ? ` · ${formatHours(state.hours.total)} on this job so far` : ''}`)}
+    <div id="jobhead">${jobHeadHtml(job, loggingAs())}</div>
 
     <div id="notice"></div>
 
@@ -1368,12 +1500,15 @@ function drawTagThumb() {
  * broken tab: the mechanic came here to send a prop out, and they still can.
  */
 async function loadProps() {
+  const token = state.job.token;
+  let props = [];
   try {
-    const data = await api('jobProps', [state.job.token]);
-    state.props = data.props;
+    props = (await api('jobProps', [token])).props;
   } catch {
-    state.props = [];
+    props = [];
   }
+  if (!state.job || state.job.token !== token) return;
+  state.props = props;
   if (state.tab === 'prop') drawFields();
 }
 
@@ -1710,6 +1845,9 @@ async function sendEntry(pending, record) {
     if (index !== -1) state.entries[index] = result.entry;
     if (result.job && state.job && state.job.token === record.jobToken) state.job = result.job;
     if (result.hours && state.job && state.job.token === record.jobToken) state.hours = result.hours;
+    // Saved again after a recorded change, and only from what the server
+    // said — so the next open shows the total this save produced.
+    if (result.job) saveJob(result.job, result.hours || (state.job && state.job.token === record.jobToken ? state.hours : null));
     // Only the feed and the running total, never the form: the mechanic may
     // be halfway through typing the next entry by now.
     drawFeed();
@@ -1956,6 +2094,8 @@ async function finishWork() {
     const result = await api('finishWork', [state.job.token]);
     state.job.status = result.status;
     state.job.statusLabel = result.statusLabel;
+    // The server has confirmed it, so the saved screen may say it too.
+    if (savedJob(state.job.token)) saveJob(state.job, state.hours);
     renderJob();
     toast('Marked finished.');
   } catch (error) {

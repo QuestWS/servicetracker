@@ -650,7 +650,7 @@ describe('how long the backend says it took', () => {
     // credential, nothing to leak, nothing to go wrong.
     const pong = backend.post({}, { fn: 'ping', args: [] });
     expect(pong.ok).toBe(true);
-    expect(Object.keys(pong).sort()).toEqual(['ok', 'serverMs']);
+    expect(Object.keys(pong).sort()).toEqual(['_api', 'ok', 'serverMs']);
   });
 
   it('reports its own time on every answer, good or bad', () => {
@@ -4105,5 +4105,204 @@ describe('the sheet keeping up with payments', () => {
     backend.call('recountJobTotals_()');
     expect(backend.fn('jobRow_', id).paid_total).toBe('400');
     expect(backend.fn('sheetStatus', adminToken).ready).toBe(true);
+  });
+});
+
+describe('an answer the pages can tell from a stray one', () => {
+  // A POST can reach the web app with its body gone, and Apps Script hands it
+  // to doGet. That used to answer {ok: true}, which the mechanic app took as a
+  // saved note: out of the outbox, and gone.
+
+  it('stamps every answer the dispatch gives, errors included', () => {
+    const { mech, token } = seedJob();
+    expect(backend.api({ fn: 'ping', args: [] })._api).toBe('service-tracker');
+    expect(backend.api({ fn: 'lookupJob', token: mech, args: [token, 'manual'] })._api).toBe('service-tracker');
+    expect(backend.api({ fn: 'openJobs', token: 'rubbish', args: [] })).toMatchObject({ error: expect.any(String), _api: 'service-tracker' });
+    expect(backend.api({ fn: 'noSuchThing', args: [] })).toMatchObject({ error: 'Unknown function.', _api: 'service-tracker' });
+    expect(backend.api({ fn: 'addEntry', token: mech, args: [token, { entryType: 'internal_note', text: 'Stamped.' }] })._api)
+      .toBe('service-tracker');
+  });
+
+  it('never stamps the health check, which is what a body-less POST gets', () => {
+    const health = backend.get({});
+    expect(health.ok).toBe(true);
+    expect(health._api).toBeUndefined();
+  });
+
+  it('answers every function the pages call with an object it can stamp', () => {
+    // An array or a bare string cannot carry the stamp, and the page would
+    // throw the real answer away as a stray.
+    const { id, mech, token } = seedJob();
+    const calls = [
+      ['roster', null, []], ['openJobs', mech, []], ['jobLog', mech, [token]], ['jobProps', mech, [token]],
+      ['jobForMechanic', mech, [token]], ['transcriptsFor', mech, [token]], ['listJobs', adminToken, []],
+      ['getJob', adminToken, [id]], ['listParts', adminToken, []], ['listProps', adminToken, []],
+      ['config', adminToken, []], ['sheetStatus', adminToken, []], ['listMechanics', adminToken, []],
+      ['listOpenStatements', adminToken, []], ['listSentStatements', adminToken, []],
+      ['listStatementDrafts', adminToken, []], ['listArchivedParts', adminToken, []], ['jobHistory', adminToken, [id]],
+    ];
+    calls.forEach(([fn, tok, args]) => {
+      const out = backend.api({ fn, token: tok, args });
+      expect(out.error, fn).toBeUndefined();
+      expect(out._api, fn).toBe('service-tracker');
+    });
+  });
+});
+
+describe('the second road for a slow read', () => {
+  it('serves a read by GET, the same as by POST', () => {
+    const { mech, token } = seedJob();
+    const byGet = backend.get({ fn: 'jobLog', token: mech, args: JSON.stringify([token]) });
+    const byPost = backend.api({ fn: 'jobLog', token: mech, args: [token] });
+    expect(byGet._api).toBe('service-tracker');
+    expect(byGet.entries.map((e) => e.id)).toEqual(byPost.entries.map((e) => e.id));
+  });
+
+  it('refuses every write by GET, on the server', () => {
+    const { id, mech, token } = seedJob();
+    const before = Number(backend.fn('jobRow_', id).entry_count);
+    const out = backend.get({
+      fn: 'addEntry', token: mech,
+      args: JSON.stringify([token, { entryType: 'internal_note', text: 'Twice?' }]),
+    });
+    expect(out.error).toMatch(/sent, not fetched/);
+    expect(Number(backend.fn('jobRow_', id).entry_count)).toBe(before);
+    expect(backend.get({ fn: 'setJobAlert', token: adminToken, args: JSON.stringify([id, 'x']) }).error)
+      .toMatch(/sent, not fetched/);
+    expect(backend.fn('jobRow_', id).alert || '').toBe('');
+  });
+
+  it('treats anything not on the read list as a write', () => {
+    // One list, not two: a function added later is refused on GET until
+    // somebody deliberately puts it on the list.
+    const fns = backend.call('Object.keys(apiFns_({}))');
+    const reads = backend.call('Object.keys(API_GET_FNS_)');
+    reads.forEach((fn) => expect(fns, fn).toContain(fn));
+    fns.filter((fn) => !reads.includes(fn)).forEach((fn) => {
+      expect(backend.get({ fn, args: '[]' }).error, fn).toMatch(/sent, not fetched/);
+    });
+  });
+
+  it('never advances a job from a lookup by GET', () => {
+    const { id, mech, token } = seedJob();
+    backend.fn('updateRow_', 'Jobs', backend.fn('jobRow_', id)._row, { status: 'received' });
+    backend.call('forget_()');
+    const out = backend.get({ fn: 'lookupJob', token: mech, args: JSON.stringify([token, 'scan']) });
+    expect(out.job.id).toBe(id);
+    backend.call('forget_()');
+    expect(backend.fn('jobRow_', id).status).toBe('received');
+  });
+
+  it('ignores a replay id and a riding page on GET', () => {
+    const { id, mech, token } = seedJob();
+    const out = backend.get({ fn: 'jobProps', token: mech, args: JSON.stringify([token]), rid: 'r1', jobPage: id });
+    expect(out.jobPage).toBeUndefined();
+    expect(out.replayed).toBeUndefined();
+  });
+});
+
+describe('the open-jobs list from memory', () => {
+  const list = (mech, fresh) => backend.api({ fn: 'openJobs', token: mech, args: fresh ? [true] : [] });
+
+  it('answers the second ask from the cache', () => {
+    const { mech } = seedJob();
+    expect(list(mech).fromCache).toBeUndefined();
+    const again = list(mech);
+    expect(again.fromCache).toBe(true);
+    expect(again.jobs.length).toBeGreaterThan(0);
+  });
+
+  it('still checks who is asking on a cache hit', () => {
+    const { mech } = seedJob();
+    list(mech);
+    expect(list('rubbish').error).toMatch(/Sign in/);
+  });
+
+  it('is dropped by any write, from the one place', () => {
+    const { id, mech } = seedJob();
+    list(mech);
+    backend.api({ fn: 'setJobAlert', token: adminToken, args: [id, 'Owner disputing the estimate.'] });
+    const after = list(mech);
+    expect(after.fromCache).toBeUndefined();
+    expect(after.jobs.find((j) => j.id === id).alert).toBe('Owner disputing the estimate.');
+  });
+
+  it('is dropped by a write that failed, too', () => {
+    const { mech } = seedJob();
+    list(mech);
+    backend.api({ fn: 'setJobAlert', token: adminToken, args: ['no-such-job', 'x'] });
+    expect(list(mech).fromCache).toBeUndefined();
+  });
+
+  it('is not dropped by a read', () => {
+    const { mech, token } = seedJob();
+    list(mech);
+    backend.api({ fn: 'jobLog', token: mech, args: [token] });
+    expect(list(mech).fromCache).toBe(true);
+  });
+
+  it('is dropped by the first scan, the one read that writes', () => {
+    const { id, mech, token } = seedJob();
+    backend.fn('updateRow_', 'Jobs', backend.fn('jobRow_', id)._row, { status: 'received' });
+    list(mech, true);
+    backend.api({ fn: 'lookupJob', args: [token, 'scan'] });
+    const after = list(mech);
+    expect(after.fromCache).toBeUndefined();
+    expect(after.jobs.find((j) => j.id === id).status).toBe('work_underway');
+  });
+
+  it('skips the cache when the mechanic asks for a refresh', () => {
+    const { mech } = seedJob();
+    list(mech);
+    expect(list(mech, true).fromCache).toBeUndefined();
+  });
+
+  it('does not keep a list read before a save that lands after it', () => {
+    // The race the generation exists for: the list is read from the sheet,
+    // a save drops the cache, and only then is the old list put away.
+    const { id, mech } = seedJob();
+    const gen = backend.call('openJobsGen_()');
+    const stale = backend.call('openJobsFromSheet_()');
+    backend.api({ fn: 'setJobAlert', token: adminToken, args: [id, 'New.'] });
+    backend.call(`cachePutBig_(OPEN_JOBS_KEY_ + ${JSON.stringify(gen)}, ${JSON.stringify(stale)}, 600)`);
+    expect(list(mech).fromCache).toBeUndefined();
+  });
+
+  it('splits a big list across entries, and a missing piece is a miss', () => {
+    const big = { jobs: Array.from({ length: 900 }, (_, i) => ({ id: `J${i}`, note: 'x'.repeat(100) })) };
+    backend.call(`cachePutBig_('BIG', ${JSON.stringify(big)}, 600)`);
+    const pieces = [...backend.cache.keys()].filter((k) => k.startsWith('BIG.'));
+    expect(pieces.length).toBeGreaterThan(1);
+    pieces.forEach((k) => expect(backend.cache.get(k).length).toBeLessThanOrEqual(24000));
+    expect(backend.call("cacheGetBig_('BIG')").jobs).toHaveLength(900);
+    backend.cache.delete(pieces[1]);
+    expect(backend.call("cacheGetBig_('BIG')")).toBeNull();
+  });
+
+  it('carries its shape version in the key', () => {
+    // Bump OPEN_JOBS_V_ when a row gains a field, or the phone is handed rows
+    // from before the deploy for the life of the cache.
+    expect(backend.call('OPEN_JOBS_KEY_')).toMatch(/_v\d+_$/);
+  });
+});
+
+describe('the speed diagnostic', () => {
+  it('runs from the editor and writes nothing', () => {
+    const { id } = seedJob();
+    backend.fn('updateRow_', 'Jobs', backend.fn('jobRow_', id)._row, { status: 'received' });
+    backend.call('forget_()');
+    const before = JSON.stringify(['Jobs', 'LogEntries', 'StatusEvents'].map((n) => backend.sheet(n).getDataRange().getValues()));
+    const cacheBefore = backend.cache.size;
+    const report = backend.call('diagnoseSpeed()');
+    expect(report).toMatch(/openJobs, from the sheet/);
+    expect(report).not.toMatch(/FAILED/);
+    backend.call('forget_()');
+    expect(JSON.stringify(['Jobs', 'LogEntries', 'StatusEvents'].map((n) => backend.sheet(n).getDataRange().getValues()))).toBe(before);
+    expect(backend.cache.size).toBe(cacheBefore);
+  });
+
+  it('is the first function in the file, where the editor lists it first', () => {
+    const src = require('node:fs').readFileSync('service-tracker.gs', 'utf8');
+    expect(src.match(/^function (\w+)/m)[1]).toBe('diagnoseSpeed');
   });
 });
