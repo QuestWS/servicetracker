@@ -31,19 +31,22 @@ const WINTER_UNITS = [
     tab: 'Inside', slip: 'B-12', keys: 'front desk', trailerLoc: '', state: 'pulled', stateLabel: 'Pulled',
     stateAt: '2026-10-01T15:00:00Z', alert: '', cnote: 'Please check the bilge pump',
     work: [
-      { sec: 'Engine winterization', label: 'Full service — Inboard' },
+      { sec: 'Engine winterization', label: 'Full service — Inboard', winterize: true },
       { sec: 'Shrinkwrap', label: 'Shrinkwrap package (standard)' },
       { sec: 'Quote requested', label: 'Impeller change', requested: true },
     ] },
   { qn: 'QW-26-9002', name: 'Lot, Sam', unit: 'PWC', ymm: '2021 Sea-Doo GTX', dims: '',
     tab: 'Outside', slip: '', keys: '', trailerLoc: '', state: 'dropped', stateLabel: 'Dropped off',
     stateAt: '2026-10-02T15:00:00Z', alert: "owner says don't touch the canvas", cnote: '',
-    work: [{ sec: 'Winterization', label: 'Basic — PWC / Jetski' }] },
+    work: [{ sec: 'Winterization', label: 'Basic — PWC / Jetski', winterize: true }] },
 ];
 const backend = loadBackend({
   properties: { ADMIN_PASSWORD: PASSWORD, WINTER_KEY: 'preview-winter-key-preview-winter-key' },
-  fetch: (url) => (/script\.google\.com/.test(url)
-    ? { code: 200, body: { ok: 1, _api: 'tracker', at: new Date().toISOString(), units: WINTER_UNITS } }
+  // Ticks sent back are simply accepted, as the real one does.
+  fetch: (url, opts) => (/script\.google\.com/.test(url)
+    ? (JSON.parse(opts.payload).fn === 'winterTicks'
+      ? { code: 200, body: { ok: 1, _api: 'tracker', changed: 1 } }
+      : { code: 200, body: { ok: 1, _api: 'tracker', at: new Date().toISOString(), units: WINTER_UNITS } })
     : null),
 });
 

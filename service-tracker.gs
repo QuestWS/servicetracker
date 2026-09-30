@@ -3190,8 +3190,13 @@ function cancelPropRepair(token, id) {
  *    writer's close-out, where each would want an invoice that is never
  *    coming from BiT. So it is its own list, and the only thing written on
  *    this side is which items a mechanic has ticked off.
- *  - ONE DIRECTION. The winter system answers; nothing here writes back to
- *    it. A tick is the floor's own record, in the WinterWork tab.
+ *  - THE LIST COMES FROM THERE; THE TICKS GO BACK. The winter system says
+ *    which units are here and what they need. A tick is the floor's own
+ *    record, in the WinterWork tab, and it is also sent back (winterTicks)
+ *    so Harbor Haul Out can show a boat as "winterize pending" until the
+ *    last winterization item is ticked off here. Each send is the WHOLE
+ *    state for that quote, so a repeat changes nothing; one that fails is
+ *    caught up by hourly(). Nothing else is ever written over there.
  *  - A SHARED KEY in script properties — WINTER_KEY here, TRACKER_KEY there,
  *    the same long random string. Neither repo holds it; both are public. No
  *    key set means the list says so and fetches nothing.
@@ -3216,6 +3221,31 @@ const WINTER_FEED_TTL_ = 300;
 const WINTER_LAST_GOOD_TTL_ = 21600;
 const WINTER_ITEM_MAX_ = 200;
 
+/**
+ * One call to the winter system's tracker door. Throws with a sentence a
+ * mechanic can read; the answer when it worked.
+ */
+function winterCall_(body) {
+  const res = UrlFetchApp.fetch(props_().getProperty('WINTER_URL') || WINTER_EXEC_URL, {
+    method: 'post',
+    contentType: 'text/plain',
+    payload: JSON.stringify(Object.assign({ api: 'tracker', key: winterKey_() }, body)),
+    muteHttpExceptions: true,
+    followRedirects: true
+  });
+  let out = null;
+  try { out = JSON.parse(res.getContentText()); } catch (err) { out = null; }
+  if (res.getResponseCode() !== 200 || !out || out._api !== 'tracker') {
+    throw new Error('The winter system did not answer.');
+  }
+  if (!out.ok) {
+    throw new Error(/authoris/i.test(String(out.error))
+      ? 'The winter system turned the key down. WINTER_KEY here and TRACKER_KEY there have to match.'
+      : 'The winter system said: ' + String(out.error || 'no.'));
+  }
+  return out;
+}
+
 /** Whether the shop has put the shared key in. */
 function winterKey_() {
   return String(props_().getProperty('WINTER_KEY') || '').trim();
@@ -3226,23 +3256,7 @@ function winterKey_() {
  * Throws with a sentence a mechanic can read.
  */
 function fetchWinterFeed_() {
-  const res = UrlFetchApp.fetch(props_().getProperty('WINTER_URL') || WINTER_EXEC_URL, {
-    method: 'post',
-    contentType: 'text/plain',
-    payload: JSON.stringify({ api: 'tracker', fn: 'winterWork', key: winterKey_() }),
-    muteHttpExceptions: true,
-    followRedirects: true
-  });
-  let body = null;
-  try { body = JSON.parse(res.getContentText()); } catch (err) { body = null; }
-  if (res.getResponseCode() !== 200 || !body || body._api !== 'tracker') {
-    throw new Error('The winter system did not answer.');
-  }
-  if (!body.ok) {
-    throw new Error(/authoris/i.test(String(body.error))
-      ? 'The winter system turned the key down. WINTER_KEY here and TRACKER_KEY there have to match.'
-      : 'The winter system said: ' + String(body.error || 'no.'));
-  }
+  const body = winterCall_({ fn: 'winterWork' });
   // Only what this app shows, named one field at a time. A field added over
   // there does not ride through to the phone because somebody spread a row.
   return {
@@ -3256,7 +3270,7 @@ function fetchWinterFeed_() {
         alert: String(u.alert || ''), cnote: String(u.cnote || ''),
         work: (u.work || []).map(function (w) {
           return { sec: String(w.sec || ''), label: String(w.label || '').slice(0, WINTER_ITEM_MAX_),
-                   requested: !!w.requested };
+                   requested: !!w.requested, winterize: !!w.winterize };
         }).filter(function (w) { return w.label; })
       };
     }).filter(function (u) { return u.qn; })
@@ -3307,15 +3321,16 @@ function winterWork(token, fresh) {
     const work = u.work.map(function (w) {
       const t = ticks[u.qn + '\n' + w.label];
       const done = !!(t && t.done === 'yes');
-      return { sec: w.sec, label: w.label, requested: w.requested,
+      return { sec: w.sec, label: w.label, requested: w.requested, winterize: !!w.winterize,
                done: done, doneBy: done ? t.done_by : '', doneAt: done ? t.done_at : '' };
     });
     const left = work.filter(function (w) { return !w.done; }).length;
+    const winterizeLeft = work.filter(function (w) { return w.winterize && !w.done; }).length;
     return {
       qn: u.qn, name: u.name, unit: u.unit, ymm: u.ymm, dims: u.dims, tab: u.tab,
       slip: u.slip, keys: u.keys, trailerLoc: u.trailerLoc,
       state: u.state, stateLabel: u.stateLabel, stateAt: u.stateAt,
-      alert: u.alert, cnote: u.cnote, work: work, left: left
+      alert: u.alert, cnote: u.cnote, work: work, left: left, winterizeLeft: winterizeLeft
     };
   });
   // Work still to do first, oldest arrival first within that — the boat that
@@ -3342,7 +3357,7 @@ function setWinterItem(token, qn, item, done) {
     throw new Error('This needs a one-time setup step: the office has to run setup from the App setup page.');
   }
   const by = who.role === 'mechanic' ? who.name : 'Office';
-  return withLock_(function () {
+  const out = withLock_(function () {
     const row = rows_('WinterWork').filter(function (r) {
       return r.quote_no === quoteNo && r.item === label;
     })[0];
@@ -3357,6 +3372,39 @@ function setWinterItem(token, qn, item, done) {
     }
     return { ok: true, item: { label: label, done: !!done, doneBy: patch.done_by, doneAt: patch.done_at } };
   });
+  // Outside the lock: this is a trip to the other script, and the lock is
+  // every save in the shop. The tick is already safe here; if the send fails,
+  // hourly() catches Harbor Haul Out up, and the answer says so.
+  out.synced = pushWinterTicks_([quoteNo]);
+  return out;
+}
+
+/** {quote no: [{label, by, at}]} of what is ticked, for the named quotes or all. */
+function winterTickState_(only) {
+  const want = only ? only.reduce(function (m, q) { m[q] = true; return m; }, {}) : null;
+  const out = {};
+  if (!ss_().getSheetByName('WinterWork')) return out;
+  rows_('WinterWork').forEach(function (r) {
+    if (want && !want[r.quote_no]) return;
+    if (!out[r.quote_no]) out[r.quote_no] = [];
+    if (r.done === 'yes') out[r.quote_no].push({ label: r.item, by: r.done_by, at: r.done_at });
+  });
+  // A named quote with no rows at all still goes, as an empty list.
+  (only || []).forEach(function (q) { if (!out[q]) out[q] = []; });
+  return out;
+}
+
+/** Sends the ticks to the winter system. True when it took them. Never throws. */
+function pushWinterTicks_(only) {
+  if (!winterKey_()) return false;
+  try {
+    const ticks = winterTickState_(only);
+    if (!Object.keys(ticks).length) return true;
+    winterCall_({ fn: 'winterTicks', ticks: ticks });
+    return true;
+  } catch (err) {
+    return false;
+  }
 }
 
 /* ============================= mechanics =============================== */
@@ -6014,6 +6062,9 @@ function sweepEntryFiles_() {
 function hourly() {
   sweepTranscripts_();
   sendDigest();
+  // Catches Harbor Haul Out up on any tick whose own send failed. The whole
+  // state each time, so this is a no-op over there when nothing is behind.
+  pushWinterTicks_(null);
 }
 
 /** Housekeeping, at an hour when slow does not matter. */

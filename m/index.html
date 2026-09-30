@@ -621,6 +621,7 @@ function drawWinter(out, strip, tone) {
           <div style="font-size:14px;opacity:.8">${esc([unit.ymm || unit.unit, unit.dims].filter(Boolean).join(' · '))}</div>
           ${unit.alert ? `<div style="margin-top:7px"><span class="alertflag">${ALERT_MARK} Read first</span></div>
             <div style="font-size:14px;line-height:1.4;color:var(--alert);font-weight:600;margin-top:5px">${esc(unit.alert)}</div>` : ''}
+          ${unit.winterizeLeft ? `<div class="winterpill" style="margin-top:7px">❄ Winterize: ${unit.winterizeLeft} left</div>` : ''}
           <div style="font-size:12px;opacity:.7;margin-top:4px">${esc([winterWhen(unit), unit.tab].filter(Boolean).join(' · '))}</div>
         </button>`).join('')}
     </div>` : out.configured === false ? '' : `<p style="color:#9fc3dc">Nothing pulled or dropped off is waiting right now.</p>`}`;
@@ -649,7 +650,8 @@ function renderWinterUnit(unit) {
       <div style="opacity:.8">${esc([unit.ymm || unit.unit, unit.dims].filter(Boolean).join(' · '))}</div>
       ${unit.alert ? `<div class="banner warn" style="margin-top:10px;color:var(--alert);border-color:var(--alert)">
         <span class="alertflag">${ALERT_MARK} Read first</span>
-        <div style="margin-top:5px">${esc(unit.alert)}</div></div>` : ''}
+        <div style="margin-top:5px">${esc(unit.alert)}</div>
+        <div style="margin-top:4px;font-size:12px;font-weight:400;color:var(--ink)">Harbor Haul Out alert — set by the office.</div></div>` : ''}
       <dl style="margin:12px 0 0;display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:15px">
         ${facts.map((f) => `<dt style="opacity:.7">${esc(f[0])}</dt><dd style="margin:0">${esc(f[1])}</dd>`).join('')}
       </dl>
@@ -660,7 +662,8 @@ function renderWinterUnit(unit) {
       ${unit.work.length ? `<div class="stack" id="winteritems">
         ${unit.work.map((item, index) => winterItemHtml(item, index)).join('')}
       </div>
-      <p class="hint" style="margin-top:10px">Tap an item when it is done. Tap again to put it back.</p>`
+      <p class="hint" style="margin-top:10px">Tap an item when it is done. Tap again to put it back.
+        Items marked ❄ are winterization: Harbor Haul Out shows the boat as <b>winterize pending</b> until all of them are ticked.</p>`
       : `<p>The quote lists no work before storage.</p>`}
     </section>`;
   bindWinterItems(unit);
@@ -669,7 +672,7 @@ function renderWinterUnit(unit) {
 function winterItemHtml(item, index) {
   return `<button class="btn ${item.done ? 'green' : 'ghost'} block" type="button" data-item="${index}"
       aria-pressed="${item.done ? 'true' : 'false'}" style="display:block;text-align:left;padding:14px;font-size:16px">
-    <div style="font-weight:700">${item.done ? '✓ ' : '☐ '}${esc(item.label)}</div>
+    <div style="font-weight:700">${item.done ? '✓ ' : '☐ '}${esc(item.label)}${item.winterize ? ' <span aria-label="winterization">❄</span>' : ''}</div>
     ${item.requested ? `<div style="font-size:12.5px;opacity:.85;margin-top:3px">Customer asked for a quote — not priced yet. Check with the office.</div>` : ''}
     ${item.done ? `<div style="font-size:12.5px;opacity:.9;margin-top:3px">${item.saving ? 'Saving…' : `Done by ${esc(item.doneBy || '')}${item.doneAt ? ` · ${esc(formatDateTime(item.doneAt))}` : ''}`}</div>`
       : item.saving ? `<div style="font-size:12.5px;margin-top:3px">Saving…</div>` : ''}
@@ -703,6 +706,9 @@ async function toggleWinterItem(unit, index) {
   try {
     const out = await api('setWinterItem', [unit.qn, item.label, want]);
     Object.assign(item, { done: out.item.done, doneBy: out.item.doneBy, doneAt: out.item.doneAt, saving: false });
+    unit.winterizeLeft = unit.work.filter((w) => w.winterize && !w.done).length;
+    // Saved here either way; only Harbor Haul Out's copy is behind.
+    if (item.winterize && out.synced === false) toast('Saved. Harbor Haul Out will catch up within the hour.');
     if (state.winter) saveCopy('winter', state.winter);
   } catch (error) {
     Object.assign(item, was, { saving: false });

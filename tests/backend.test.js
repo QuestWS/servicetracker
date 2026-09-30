@@ -4491,6 +4491,46 @@ describe('winter work, from the winter services system', () => {
     expect(order).toEqual(['QW-26-0002', 'QW-26-1255', 'QW-26-0001']);
   });
 
+  it('sends the whole tick state for that quote back to the winter system', () => {
+    const mech = withWinter((url, opts) => (JSON.parse(opts.payload).fn === 'winterTicks'
+      ? { code: 200, body: { ok: 1, _api: 'tracker', changed: 1 } } : ok([UNIT])));
+    const out = backend.fn('setWinterItem', mech, 'QW-26-1255', 'Full service — Inboard', true);
+    expect(out.synced).toBe(true);
+    const sent = calls.filter((c) => c.body.fn === 'winterTicks').pop().body;
+    expect(sent.key).toBe(KEY);
+    expect(sent.ticks['QW-26-1255']).toEqual([expect.objectContaining({ label: 'Full service — Inboard', by: 'Dale' })]);
+
+    backend.fn('setWinterItem', mech, 'QW-26-1255', 'Full service — Inboard', false);
+    // Un-ticking sends an empty list, which is what clears it over there.
+    expect(calls.filter((c) => c.body.fn === 'winterTicks').pop().body.ticks).toEqual({ 'QW-26-1255': [] });
+  });
+
+  it('keeps the tick when the winter system is down, says so, and hourly() catches it up', () => {
+    let up = false;
+    const mech = withWinter((url, opts) => (up
+      ? { code: 200, body: { ok: 1, _api: 'tracker' } } : { code: 500, body: 'down' }));
+    const out = backend.fn('setWinterItem', mech, 'QW-26-1255', 'Full service — Inboard', true);
+    expect(out.ok).toBe(true);
+    expect(out.synced).toBe(false);
+    up = true;
+    calls.length = 0;
+    backend.call('forget_(); _props = null;');
+    backend.fn('hourly');
+    const sent = calls.filter((c) => c.body.fn === 'winterTicks');
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body.ticks['QW-26-1255'][0].label).toBe('Full service — Inboard');
+  });
+
+  it('marks which items are winterization and counts what is left of them', () => {
+    const mech = withWinter(ok([{ ...UNIT, work: [
+      { sec: 'Engine winterization', label: 'Full service — Inboard', winterize: true },
+      { sec: 'Shrinkwrap', label: 'Shrinkwrap package (standard)' },
+    ] }]));
+    const unit = backend.fn('winterWork', mech).units[0];
+    expect(unit.work.map((w) => w.winterize)).toEqual([true, false]);
+    expect(unit.winterizeLeft).toBe(1);
+  });
+
   it('has a tab for the ticks, and setup() makes it', () => {
     expect(backend.sheet('WinterWork').rows[0]).toEqual(
       ['id', 'quote_no', 'item', 'done', 'done_by', 'done_at', 'created_at']);

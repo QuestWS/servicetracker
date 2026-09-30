@@ -263,10 +263,18 @@ and do not come across.
   tick per item, on the `WinterWork` tab, keyed on quote number + the item's
   words. A line renamed over there drops its tick — towards doing the work,
   not skipping it.
-- **One direction.** `winterWork` asks the winter backend (`api:'tracker'`)
-  with a shared key — `WINTER_KEY` here, `TRACKER_KEY` there. Nothing here
-  writes to the winter system; a boat is marked stored in Harbor Haul Out,
-  and it then drops off this list.
+- **The list comes from there; the ticks go back.** `winterWork` asks the
+  winter backend (`api:'tracker'`) with a shared key — `WINTER_KEY` here,
+  `TRACKER_KEY` there. `setWinterItem` saves the tick here, then sends that
+  quote's whole tick state back (`winterTicks`) so Harbor Haul Out can show
+  **Winterize pending** until the last winterization item (marked ❄ — engines,
+  drive train, water systems) is ticked. A failed send is caught up by
+  `hourly()`, and the mechanic is told it will be. Nothing else is written over
+  there. A boat marked Stored drops off this list — unless its winterization
+  is still pending, when it stays.
+- **Two markers, never one.** The office's Harbor Haul Out alert is the red
+  *Read first* flag; winterization still to do is the navy `.winterpill`. Both
+  can be on one unit, and neither replaces the other.
 - **No money crosses.** The winter side sends labels only and its own check
   (`tools/check-tracker-feed.js`) asserts it; `fetchWinterFeed_` names every
   field it passes on, so a figure added over there cannot ride through.

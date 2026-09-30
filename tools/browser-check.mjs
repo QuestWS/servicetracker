@@ -1242,6 +1242,9 @@ console.log('\n== winter work ==');
   const listText = await mech.textContent('#view');
   check('each says how much is left to do', listText.includes('0 of 3') === false && listText.includes('3 of 3 to do'));
   check('and no money is anywhere on it', !/\$\d/.test(listText));
+  check('winterization still to do is its own marker, not the alert',
+    await mech.locator('[data-unit] .winterpill').count() === 2 &&
+    (await mech.locator('[data-unit]').first().locator('.alertflag').count()) === 1);
   await mech.screenshot({ path: `${SHOTS}/60-winter-list.png`, fullPage: true });
 
   await mech.locator('[data-unit]').nth(1).click();
@@ -1250,6 +1253,8 @@ console.log('\n== winter work ==');
   check('the unit says where it is and where the keys are', unitText.includes('B-12') && unitText.includes('front desk'));
   check("the customer's note is on it", unitText.includes('bilge pump'));
   check('an unpriced request is marked as one', unitText.includes('not priced yet'));
+  check('the winterization item is marked as one', (await mech.textContent('[data-item="0"]')).includes('❄') &&
+    !(await mech.textContent('[data-item="1"]')).includes('❄'));
   await mech.locator('[data-item="0"]').click();
   await mech.waitForFunction(() => {
     const b = document.querySelector('[data-item="0"]');
@@ -1264,6 +1269,8 @@ console.log('\n== winter work ==');
   await mech.click('#refreshwinter');
   await mech.waitForFunction(() => /2 of 3 to do/.test(document.getElementById('view').textContent), null, { timeout: 20000 });
   check('and the list counts it after a refresh', true);
+  check('and the winterize marker is gone from that unit',
+    await mech.locator('[data-unit]').nth(1).locator('.winterpill').count() === 0);
 
   await mech.locator('[data-unit]').nth(1).click();
   await mech.waitForSelector('#winteritems', { timeout: 20000 });
