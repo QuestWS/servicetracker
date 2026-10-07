@@ -20,6 +20,21 @@ export function storedToken() {
 }
 
 /**
+ * When a token runs out, in ms — read off its unsigned half, or 0 if it
+ * cannot be read. The backend still decides; this is only so a page can ask
+ * for a fresh sign-in BEFORE somebody types into a form, rather than after.
+ */
+export function tokenExpiry(token) {
+  try {
+    const body = String(token || '').split('.')[0].replace(/-/g, '+').replace(/_/g, '/');
+    const exp = Number(JSON.parse(atob(body)).exp);
+    return Number.isFinite(exp) ? exp : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * `remember` decides which bucket the token lands in: a mechanic's own phone
  * keeps it across days, the shared shop iPad forgets at the end of the shift.
  */

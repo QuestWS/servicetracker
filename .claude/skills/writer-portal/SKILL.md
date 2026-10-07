@@ -11,6 +11,17 @@ a customer in front of them.
 
 **Test with:** `npm run serve`, then `node tools/browser-check.mjs`.
 
+## A sign-in running out never costs typed work
+
+The token's expiry is readable in the browser (`tokenExpiry` in `api.js`), so
+`route()` asks for a fresh sign-in **before** drawing a page when under an hour
+is left, and lands back on the same address. A tab brought back into view does
+the same check. Whatever still gets past that — a token the backend refuses
+mid-form — is caught in the portal's `api`: `signInAgain()` puts a password
+box over the page and re-sends the same call, so a half-keyed work order is
+never thrown away. The backend still has the last word; the expiry read is
+only ever used to ask sooner.
+
 ## Moving around is in-page
 
 Links that start `?` are caught by `navigate` and drawn in place — no reload —

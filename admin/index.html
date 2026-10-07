@@ -39,7 +39,7 @@
 <main class="wrap" id="view"><p class="loading">Loading…</p></main>
 
 <script type="module">
-import { api as callBackend, storeSession, storedToken, clearSession, timings, NoAnswer,
+import { api as callBackend, storeSession, storedToken, tokenExpiry, clearSession, timings, NoAnswer,
          savedCopy, saveCopy, savedOneOf, saveOneOf } from '../assets/lib/api.js';
 import { byLastName } from '../assets/lib/names.js';
 import { SITE_URL } from '../assets/lib/config.js';
@@ -73,7 +73,14 @@ let navigation = 0;
 
 function api(fn, args, options) {
   const asked = navigation;
-  return callBackend(fn, args, options).then(
+  return callBackend(fn, args, options).catch(async (error) => {
+    // A save refused for want of a sign-in is not the end of what was typed:
+    // sign in over the page and send the same call again. Only a call for the
+    // page still on screen — one for a page already left is dropped anyway.
+    if (SIGN_IN_FNS.has(fn) || !/^Sign in/.test(error.message) || asked !== navigation) throw error;
+    if (!(await signInAgain())) throw error;
+    return callBackend(fn, args, options);
+  }).then(
     (result) => (asked === navigation ? result : new Promise(() => {})),
     (error) => (asked === navigation ? Promise.reject(error) : new Promise(() => {})),
   );
@@ -134,6 +141,88 @@ function showTestBanner(on) {
 const go = (query) => navigate(query ? `?${query}` : '');
 
 /* ------------------------------------------------------------- sign in --- */
+
+/**
+ * A sign-in lasts twelve hours, and it used to be found out only when a save
+ * was refused — after a whole work order had been keyed in. So the portal
+ * reads the expiry off the token and asks for a fresh sign-in BEFORE a page
+ * is drawn when less than this is left. The backend still has the last word;
+ * signInAgain() below catches whatever gets past this.
+ */
+const SIGN_IN_MARGIN_MS = 60 * 60 * 1000;
+const SIGN_IN_FNS = new Set(['adminSignIn', 'magicSignIn', 'requestMagicLink']);
+
+function signInLeftMs() {
+  const exp = tokenExpiry(storedToken());
+  return exp ? exp - Date.now() : Infinity;
+}
+
+/**
+ * Signs in over whatever is on screen, leaving the page and everything typed
+ * into it alone. Resolves true once signed in, false if the writer cancels.
+ * Calls that fail together share the one box.
+ */
+let signingIn = null;
+function signInAgain(reason) {
+  if (signingIn) return signingIn;
+  signingIn = new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal';
+    overlay.innerHTML = `
+      <div class="modal-card" style="max-width:420px">
+        <form id="reauth">
+          <div class="modal-head">
+            <div>
+              <div style="font-weight:700;color:var(--navy)">Sign in again</div>
+              <div class="hint" style="margin:4px 0 0">${esc(reason || 'Your sign-in has run out. Nothing on this page is lost — sign in and it carries on where it was.')}</div>
+            </div>
+          </div>
+          <div style="padding:16px 20px">
+            <div class="banner warn" id="reautherr" hidden></div>
+            <label class="fld" for="reauthpw">Portal password</label>
+            <input class="txt" id="reauthpw" type="password" autocomplete="current-password" required>
+          </div>
+          <div class="modal-foot">
+            <button class="btn ghost" type="button" id="reauthcancel">Cancel</button>
+            <button class="btn navy" type="submit" id="reauthgo">Sign in</button>
+          </div>
+        </form>
+      </div>`;
+    document.body.appendChild(overlay);
+    const field = overlay.querySelector('#reauthpw');
+    field.focus();
+    const close = (ok) => { overlay.remove(); signingIn = null; resolve(ok); };
+    overlay.querySelector('#reauthcancel').onclick = () => close(false);
+    overlay.querySelector('#reauth').onsubmit = async (event) => {
+      event.preventDefault();
+      const go = overlay.querySelector('#reauthgo');
+      go.disabled = true;
+      try {
+        const result = await callBackend('adminSignIn', [field.value]);
+        storeSession(result.token, { role: 'admin' }, true);
+        close(true);
+      } catch (err) {
+        go.disabled = false;
+        const box = overlay.querySelector('#reautherr');
+        box.hidden = false;
+        box.textContent = err.message;
+        field.select();
+      }
+    };
+  });
+  return signingIn;
+}
+
+// A tab left open overnight on a half-done form: ask when it is looked at
+// again, not when the writer finally presses save.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !storedToken()) return;
+  if (signInLeftMs() < SIGN_IN_MARGIN_MS) {
+    signInAgain(signInLeftMs() > 0
+      ? 'Your sign-in is about to run out. Sign in again now so it does not stop you part way through.'
+      : undefined);
+  }
+});
 
 function renderSignIn(error, note) {
   $('topbar').hidden = true;
@@ -3493,6 +3582,13 @@ async function route() {
   shownJob = null;
   view.inert = false;
   if (!storedToken()) return renderSignIn();
+  // Asked now, before the page is drawn, rather than after a form is filled.
+  // Signing in comes back to this same address.
+  if (signInLeftMs() < SIGN_IN_MARGIN_MS) {
+    return renderSignIn('', signInLeftMs() > 0
+      ? 'Your sign-in is about to run out. Sign in again now so it does not stop you part way through.'
+      : 'Your sign-in has run out. Sign in again to carry on.');
+  }
   $('topbar').hidden = false;
   view.className = 'wrap';
 

@@ -2733,6 +2733,72 @@ check('and it can actually throw the caches away',
 check('mechanic PWA console clean', pwaErrors.length === 0, pwaErrors.join(' | '));
 await pwa.close();
 
+/* ------------------------------------------------------- running out --- */
+// A writer keyed in a whole work order, pressed Create, and was thrown back
+// to the sign-in page with all of it gone. Two things now stand in the way:
+// the portal reads the token's expiry and asks BEFORE a page is drawn, and a
+// save refused anyway signs in over the page and goes through.
+console.log('\n== sign-in running out ==');
+const lapse = await shopContext({ viewport: { width: 1280, height: 1000 } });
+const lapsed = await lapse.newPage();
+const lapseErrors = [];
+lapsed.on('pageerror', (error) => lapseErrors.push(String(error)));
+await lapsed.goto(`${BASE}/admin/`, { waitUntil: 'networkidle' });
+await lapsed.fill('#password', PASSWORD);
+await lapsed.click('button[type=submit]');
+await lapsed.waitForSelector('.page-title');
+
+// A token with ten minutes left, re-signed by nobody: the expiry is all the
+// page reads, so the signature does not matter for this half.
+const withExpiry = (minutes) => lapsed.evaluate((minutes) => {
+  const [body, sig] = localStorage.getItem('qst_token').split('.');
+  const payload = JSON.parse(atob(body.replace(/-/g, '+').replace(/_/g, '/')));
+  payload.exp = Date.now() + minutes * 60000;
+  localStorage.setItem('qst_token',
+    btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_') + '.' + sig);
+}, minutes);
+await withExpiry(10);
+await lapsed.goto(`${BASE}/admin/?view=intake`, { waitUntil: 'networkidle' });
+await lapsed.waitForSelector('#password');
+check('a sign-in about to run out is asked for before the intake form',
+  /about to run out/.test(await lapsed.textContent('#view')));
+await lapsed.fill('#password', PASSWORD);
+await lapsed.click('button[type=submit]');
+await lapsed.waitForSelector('#drop', { timeout: 10000 });
+check('and signing in lands back on the intake form', true);
+
+// Now one that lapses mid-form — the backend refuses it, as it would a token
+// whose twelve hours ran out while the writer was typing.
+const LAPSE_INVOICE = `01-${String(Math.floor(1000 + Math.random() * 8999))}`;
+const LAPSE_WO = 'scratch/browser-check-lapse.pdf';
+fs.writeFileSync(LAPSE_WO, await makeWorkOrderPdf({
+  invoice: LAPSE_INVOICE,
+  unit: { year: '2021', make: 'Mercury', model: '150 Pro XS', serial: 'MER99887', engine: 'Mercury 150' },
+}));
+await lapsed.setInputFiles('#pdf', LAPSE_WO);
+await lapsed.waitForSelector('#stage-review.on', { timeout: 20000 });
+await lapsed.fill('#workRequested', 'Typed by hand and not to be lost');
+await lapsed.evaluate(() => {
+  const token = localStorage.getItem('qst_token');
+  localStorage.setItem('qst_token', token.split('.')[0] + '.forged');
+});
+await lapsed.click('#create');
+await lapsed.waitForSelector('#reauthpw', { timeout: 15000 });
+check('a refused save asks for the password over the page',
+  await lapsed.locator('#stage-review.on').count() === 1);
+check('and what was typed is still there',
+  await lapsed.inputValue('#workRequested') === 'Typed by hand and not to be lost');
+await lapsed.fill('#reauthpw', PASSWORD);
+await lapsed.click('#reauthgo');
+await lapsed.waitForSelector('#stage-done.on', { timeout: 30000 });
+check('signing in there finishes the save it interrupted',
+  /created/i.test(await lapsed.textContent('#stage-done')));
+await lapsed.goto(`${BASE}/admin/?job=${encodeURIComponent(LAPSE_INVOICE)}`, { waitUntil: 'networkidle' });
+check('with what was typed on the job',
+  /Typed by hand and not to be lost/.test(await lapsed.textContent('#view')));
+check('sign-in lapse console clean', lapseErrors.length === 0, lapseErrors.join(' | '));
+await lapse.close();
+
 /* --------------------------------------------------------------------- done */
 console.log('\n== page errors ==');
 check('service writer console clean', adminErrors.length === 0, adminErrors.join(' | '));
