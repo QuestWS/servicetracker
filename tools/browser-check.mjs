@@ -1748,6 +1748,80 @@ await admin.waitForSelector('.card, .empty', { timeout: 20000 });
 check('a paid, done job leaves the open jobs list',
   !(await admin.evaluate((id) => document.body.innerText.includes(id), PAY_JOB)));
 
+console.log('\n== archiving finished jobs ==');
+// Once money is on a job it can be filed away from the job page itself.
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(PAY_JOB)}`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('#archivejob', { timeout: 20000 });
+check('a job with a payment on it offers to be archived',
+  /Archive this job/.test(await admin.textContent('#archivejob')));
+await admin.click('#archivejob');
+await admin.waitForFunction(() => /Restore to the jobs list/.test(document.getElementById('archivejob')?.textContent || ''),
+  { timeout: 20000 });
+check('archiving it from the job page says so on the page',
+  /Archived .* off every jobs list but Archived/i.test(await admin.evaluate(() => document.body.innerText)));
+
+// The Archived list, with its ticks, puts it back.
+await admin.goto(`${BASE}/admin/?status=archived`, { waitUntil: 'networkidle' });
+await admin.waitForSelector(`[data-pick="${PAY_JOB}"]`, { timeout: 20000 });
+check('the archived job is on the Archived list', true);
+await admin.check(`[data-pick="${PAY_JOB}"]`);
+check('ticking a row enables the restore button', !(await admin.isDisabled('#pickgo')));
+await admin.click('#pickgo');
+await admin.waitForFunction((id) => !document.querySelector(`[data-pick="${id}"]`), PAY_JOB, { timeout: 20000 });
+check('restoring takes it off the Archived list', true);
+
+// The Done list: select all, then archive just the one.
+await admin.goto(`${BASE}/admin/?status=done`, { waitUntil: 'networkidle' });
+await admin.waitForSelector(`[data-pick="${PAY_JOB}"]`, { timeout: 20000 });
+check('the restored job is back on the Done list', true);
+const doneRows = await admin.locator('[data-pick]').count();
+await admin.check('#pickall');
+check('select all ticks every row on the Done list',
+  await admin.evaluate(() => [...document.querySelectorAll('[data-pick]')].every((box) => box.checked)));
+check('and says how many', (await admin.textContent('#pickcount')).includes(`${doneRows} selected`),
+  await admin.textContent('#pickcount'));
+await admin.uncheck('#pickall');
+check('unticking it clears them all',
+  await admin.evaluate(() => [...document.querySelectorAll('[data-pick]')].every((box) => !box.checked))
+  && await admin.isDisabled('#pickgo'));
+await admin.check(`[data-pick="${PAY_JOB}"]`);
+if (doneRows > 1) {
+  check('one of several ticked leaves select all half-ticked',
+    await admin.evaluate(() => document.getElementById('pickall').indeterminate));
+}
+await admin.screenshot({ path: `${SHOTS}/45e-done-picking.png`, fullPage: true });
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#pickgo');
+await admin.waitForFunction((id) => !document.querySelector(`[data-pick="${id}"]`), PAY_JOB, { timeout: 20000 });
+check('archive selected takes the job off the Done list', true);
+check('and only that one',
+  await admin.locator('[data-pick]').count() === doneRows - 1, String(await admin.locator('[data-pick]').count()));
+
+console.log('\n== closing an invoice at $0 ==');
+const ZERO_JOB = `01-${String(Math.floor(1000 + Math.random() * 8999))}`;
+await admin.evaluate(async ({ base, id }) => {
+  const shop = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const post = (fn, args) => fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn, token: shop, args }),
+  }).then((res) => res.json());
+  await post('createJob', [{ invoiceNumber: id, customerName: 'Warranty Work' }]);
+  await post('saveInvoice', [id, '', 'JVBERi0=', { grandTotal: 0, deposits: 0, amountDue: 0 }]);
+  await post('markDone', [id]);
+}, { base: BASE, id: ZERO_JOB });
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(ZERO_JOB)}`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('#paylines', { timeout: 20000 });
+check('a $0 invoice offers $0.00 to close it out',
+  (await admin.inputValue('#pay-amount-0')) === '0.00', await admin.inputValue('#pay-amount-0'));
+check('and ticks it as settling the account', await admin.isChecked('#payfull'));
+check('there is nothing to archive before anything is recorded', await admin.locator('#archivejob').count() === 0);
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#payrecord');
+await admin.waitForFunction(() => document.getElementById('ck-paid')?.checked === true, { timeout: 30000 });
+check('recording $0 closes the ticket', await admin.isChecked('#ck-paid'));
+check('and then it can be archived', await admin.locator('#archivejob').count() === 1);
+
 /* ---------------------------------------------------- the writer's shortlist */
 /* -------------------------------------------- moving and deleting entries */
 console.log('\n== marking work finished, one tap ==');
@@ -1885,8 +1959,9 @@ const chips = await admin.evaluate(() => [...document.querySelectorAll('.chip')]
 check('Open jobs is the first filter and the one selected',
   /^Open jobs/.test(chips[0]) && /^Open jobs/.test(await admin.evaluate(
     () => document.querySelector('.chip.on').textContent.trim())), chips.join(' | '));
-check('and All sits just before Done',
-  chips[chips.length - 2] === 'All' && /^Done/.test(chips[chips.length - 1]), chips.join(' | '));
+check('and All sits just before Done, with Archived last',
+  chips[chips.length - 3] === 'All' && /^Done/.test(chips[chips.length - 2])
+  && /^Archived/.test(chips[chips.length - 1]), chips.join(' | '));
 
 // This job has been marked done and paid earlier in the run, so it is finished
 // with the writer and has no business on their working list.

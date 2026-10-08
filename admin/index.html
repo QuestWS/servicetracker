@@ -300,8 +300,8 @@ async function consumeMagicLink(nonce) {
 
 // Open first, because that is the working list. "All" sits at the far end
 // next to Done — the two you go looking for rather than land on.
-const JOB_FILTERS = ['open', 'received', 'work_underway', 'work_finished', 'all', 'done'];
-const JOB_FILTER_LABEL = Object.assign({ open: 'Open jobs', all: 'All' }, STATUS_LABEL);
+const JOB_FILTERS = ['open', 'received', 'work_underway', 'work_finished', 'all', 'done', 'archived'];
+const JOB_FILTER_LABEL = Object.assign({ open: 'Open jobs', all: 'All', archived: 'Archived' }, STATUS_LABEL);
 
 /**
  * The three ways the writer looks for a job.
@@ -505,7 +505,12 @@ let jobsFreshAsked = false;
 function filterJobs(all, status, search) {
   const wanted = search.trim().toLowerCase();
   return all.filter((job) => {
-    if (status === 'open') {
+    // An archived job is on the Archived list and no other — not even All.
+    if (status === 'archived') {
+      if (!job.archivedAt) return false;
+    } else if (job.archivedAt) {
+      return false;
+    } else if (status === 'open') {
       if (job.status === 'done' && job.paidAt) return false;
     } else if (status && status !== 'all' && job.status !== status) {
       return false;
@@ -539,7 +544,9 @@ async function renderJobs() {
   jobsFreshAsked = true;
   let answer;
   try {
-    answer = await api('listJobs', [{ status: 'all', fresh }]);
+    // `every`, not `all`: the All chip leaves archived jobs out, and this one
+    // fetch has to carry the Archived chip's rows too.
+    answer = await api('listJobs', [{ status: 'every', fresh }]);
   } catch (error) {
     // An old list that says how old it is beats a blank page with an error.
     if (jobsCache && error instanceof NoAnswer) {
@@ -566,6 +573,9 @@ async function renderJobs() {
       ? { value: $('q').value, at: $('q').selectionStart } : null;
     showTestBanner(mode);
     const jobs = sortJobs(filterJobs(everything, status, search), sort);
+    // Done is where finished jobs are cleared off in bulk, and Archived is
+    // where a mistake is put back — the two lists with a tick on every row.
+    const picking = status === 'done' || status === 'archived';
 
     const href = (value) => {
       const next = new URLSearchParams();
@@ -598,7 +608,8 @@ async function renderJobs() {
       <div class="row filterbar" style="margin-bottom:14px">
         <div class="row tight" style="flex:1 1 auto">
           ${JOB_FILTERS.map((value) => `<a class="chip${status === value ? ' on' : ''}" href="${href(value)}">${
-            JOB_FILTER_LABEL[value]}${value === 'open' ? ` (${counts.open || 0})` : ''}</a>`).join('')}
+            JOB_FILTER_LABEL[value]}${value === 'open' ? ` (${counts.open || 0})`
+              : value === 'archived' && counts.archived ? ` (${counts.archived})` : ''}</a>`).join('')}
         </div>
         <label class="sortby" for="sortby">Sort
           <select id="sortby">
@@ -608,7 +619,15 @@ async function renderJobs() {
         </label>
       </div>
 
-      ${jobs.length ? `<div class="joblist">${jobs.map((job) => `
+      ${jobs.length && picking ? `<div class="pickbar">
+        <label class="pickall"><input type="checkbox" id="pickall"> <span>Select all</span></label>
+        <span class="sub" id="pickcount">None selected</span>
+        <button class="btn ${status === 'done' ? 'gold' : 'ghost'} sm" type="button" id="pickgo" disabled>${
+          status === 'done' ? 'Archive selected' : 'Restore selected'}</button>
+      </div>` : ''}
+
+      ${jobs.length ? `<div class="joblist">${jobs.map((job) => `${picking ? `
+        <div class="pickrow"><input type="checkbox" data-pick="${esc(job.id)}" aria-label="Select job ${esc(job.id)}">` : ''}
         <a class="jobrow" href="?job=${encodeURIComponent(job.id)}">
           <div style="min-width:84px">
             <div class="num">${esc(job.id)}</div>
@@ -625,10 +644,11 @@ async function renderJobs() {
             <span class="pill ${STATUS_PILL[job.status]}">${STATUS_LABEL[job.status]}</span>
             <span class="sub" style="min-width:78px;text-align:right">${relativeDays(job.updatedAt)}</span>
           </div>
-        </a>`).join('')}</div>`
+        </a>${picking ? '</div>' : ''}`).join('')}</div>`
       : `<div class="empty">${
           search ? 'No jobs match that search.'
           : status === 'open' ? 'Nothing open. Every job is done and paid.'
+          : status === 'archived' ? 'Nothing archived. Finished jobs can be filed away from the Done list.'
           : status !== 'all' ? 'No jobs at that stage.'
           : 'No jobs yet. Upload a BiT work order to create the first one.'}</div>`}`;
 
@@ -650,12 +670,64 @@ async function renderJobs() {
       if (event.target.value !== 'newest') next.set('sort', event.target.value);
       go(next.toString());
     };
+    if (picking && jobs.length) wirePicking(status === 'done');
     if (typing) {
       $('q').value = typing.value;
       $('q').focus();
       $('q').setSelectionRange(typing.at, typing.at);
     }
   }
+}
+
+/**
+ * The ticks on the Done and Archived lists. "Select all" is all of what is on
+ * screen — the search narrows it — and is half-ticked when some are.
+ */
+function wirePicking(archiving) {
+  const boxes = Array.from(view.querySelectorAll('[data-pick]'));
+  const all = $('pickall');
+  const go = $('pickgo');
+  const picked = () => boxes.filter((box) => box.checked).map((box) => box.dataset.pick);
+  const sync = () => {
+    const n = picked().length;
+    all.checked = n > 0 && n === boxes.length;
+    all.indeterminate = n > 0 && n < boxes.length;
+    go.disabled = n === 0;
+    $('pickcount').textContent = n ? `${n} selected` : 'None selected';
+  };
+  boxes.forEach((box) => { box.onchange = sync; });
+  all.onchange = () => {
+    boxes.forEach((box) => { box.checked = all.checked; });
+    sync();
+  };
+  go.onclick = async () => {
+    const ids = picked();
+    if (!ids.length) return;
+    const jobs = `${ids.length} job${ids.length === 1 ? '' : 's'}`;
+    if (archiving && !confirm(`Archive ${jobs}? They leave every list but Archived, `
+      + 'and can be restored from there. Nothing on them changes.')) return;
+    go.disabled = true;
+    go.textContent = archiving ? 'Archiving…' : 'Restoring…';
+    try {
+      const result = await api('archiveJobs', [ids, archiving]);
+      // Moved in the copy on hand too, so the list redraws without them at
+      // once; the backend's own answer replaces it a moment later.
+      if (jobsCache) {
+        const at = archiving ? new Date().toISOString() : null;
+        jobsCache.jobs.forEach((job) => {
+          if (ids.includes(job.id) && (!archiving || job.status === 'done')) job.archivedAt = at;
+        });
+      }
+      toast(`${result.changed} job${result.changed === 1 ? '' : 's'} ${archiving ? 'archived' : 'restored'}.`
+        + (result.skipped ? ` ${result.skipped} skipped — only a done job can be archived.` : ''));
+      await renderJobs();
+    } catch (error) {
+      go.textContent = archiving ? 'Archive selected' : 'Restore selected';
+      sync();
+      toast(error.message);
+    }
+  };
+  sync();
 }
 
 /* ---------------------------------------------------------- job detail --- */
@@ -923,6 +995,14 @@ async function drawJob(id, data, savedAt) {
 
           ${job.status === 'done' ? `
             <div class="banner ok">Marked done ${formatDateTime(job.doneAt)}.</div>
+            ${job.archivedAt ? `
+              <div class="banner info" style="margin-top:10px">Archived ${formatDateTime(job.archivedAt)} —
+                off every jobs list but Archived.</div>
+              <button class="btn ghost block" type="button" id="archivejob" style="margin-top:8px">Restore to the jobs list</button>`
+            : payments.length || job.paidAt ? `
+              <button class="btn ghost block" type="button" id="archivejob" style="margin-top:10px">Archive this job</button>
+              <p class="hint" style="margin-top:6px">Takes it off the Done list. Nothing on it changes,
+                and it can be restored from Archived.</p>` : ''}
             ${invoiceSent
               ? `<p class="hint" style="margin:12px 0 8px">Invoice emailed ${formatDateTime(invoiceEmail.created_at)}
                  to ${esc(invoiceEmail.recipient)}${data.testMode ? ' — test mode, so that was the shop, not the customer' : ''}.</p>`
@@ -982,7 +1062,8 @@ async function drawJob(id, data, savedAt) {
             a card at the counter and a check in the post are one payment as far as the
             customer is concerned.</p>
 
-          <div id="paylines">${payLineHtml(0, balance !== null && balance > 0 ? balance.toFixed(2) : '')}</div>
+          <div id="paylines">${payLineHtml(0, balance !== null && (balance > 0 || !job.paidAt)
+            ? Math.max(balance, 0).toFixed(2) : '')}</div>
           <button class="btn ghost sm" type="button" id="addpayline" style="margin-top:8px">
             Add another payment</button>
 
@@ -1315,12 +1396,15 @@ async function drawJob(id, data, savedAt) {
     const refresh = () => {
       const lines = readLines();
       const taking = lines.reduce((sum, line) => sum + (Number(line.amount) || 0), 0);
+      // $0 typed in is an answer — closing out a warranty job, or one the
+      // deposits covered — and an empty box is not.
+      const entered = lines.some((line) => line.amount !== '');
       const left = balance === null ? null : Math.round((balance - taking) * 100) / 100;
       const clears = left !== null && left <= 0.005;
-      if (!fullTouched) $('payfull').checked = clears && taking > 0;
+      if (!fullTouched) $('payfull').checked = clears && entered;
 
       const full = $('payfull').checked;
-      $('paysummary').innerHTML = !taking
+      $('paysummary').innerHTML = !entered
         ? ''
         : `<div class="banner ${full && !clears ? 'warn' : 'ok'}" style="margin-top:12px">
             Taking <b>${formatMoney(taking)}</b>.
@@ -1357,10 +1441,13 @@ async function drawJob(id, data, savedAt) {
     const record = async (sendEmail, button) => {
       const lines = readLines().filter((line) => line.amount !== '');
       if (!lines.length) return say('err', 'Put in what was taken first.');
-      const bad = lines.find((line) => !(Number(line.amount) > 0));
-      if (bad) return say('err', 'Every payment needs an amount greater than zero.');
+      const bad = lines.find((line) => !(Number(line.amount) >= 0));
+      if (bad) return say('err', 'Every payment needs an amount, and it cannot be negative.');
 
       const full = $('payfull').checked;
+      if (!lines.some((line) => Number(line.amount) > 0) && !full) {
+        return say('err', 'A $0 payment only closes out the invoice — tick that it settles the account in full.');
+      }
       const review = $('payreview').checked;
       const taking = lines.reduce((sum, line) => sum + Number(line.amount), 0);
       // The one irreversible-feeling step on this form, so it is said back in
@@ -1448,6 +1535,23 @@ async function drawJob(id, data, savedAt) {
       } catch (error) { box.checked = !box.checked; notice('warn', error.message); }
     };
   });
+
+  const archiveButton = $('archivejob');
+  if (archiveButton) archiveButton.onclick = async () => {
+    const archiving = !job.archivedAt;
+    archiveButton.disabled = true;
+    try {
+      const { jobPage } = await api('archiveJobs', [[job.id], archiving], withPage(job.id));
+      // The list on hand would still show it where it was.
+      const listed = jobsCache && jobsCache.jobs.find((row) => row.id === job.id);
+      if (listed) listed.archivedAt = jobPage.job.archivedAt;
+      await renderJob(job.id, jobPage);
+      toast(archiving ? 'Archived. It is on the Archived list.' : 'Restored to the jobs list.');
+    } catch (error) {
+      archiveButton.disabled = false;
+      notice('warn', error.message);
+    }
+  };
 
   $('copy').onclick = async () => {
     try {

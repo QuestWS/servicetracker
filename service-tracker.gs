@@ -385,7 +385,11 @@ const SHEETS = {
          // The code in the link a customer is texted. Short enough to ride in
          // an SMS next to everything else that has to be said, and minted
          // only for a job somebody actually texts — see invoiceCodeFor_.
-         'invoice_code'],
+         'invoice_code',
+         // Filed away by the writer: off every list but Archived. A stamp,
+         // not a status — the job is still done, still paid or not, and
+         // restoring it puts it back exactly where it was. See archiveJobs.
+         'archived_at'],
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
                'transcript_id', 'transcript_error', 'notified_at', 'created_at',
@@ -968,6 +972,7 @@ function apiFns_(data) {
     setJobAlert:      function (a) { return setJobAlert(data.token, a[0], a[1]); },
     jobHistory:       function (a) { return jobHistory(data.token, a[0]); },
     setJobFlag:       function (a) { return setJobFlag(data.token, a[0], a[1], a[2]); },
+    archiveJobs:      function (a) { return archiveJobs(data.token, a[0], a[1]); },
     sheetStatus:      function (a) { return sheetStatus(data.token); },
     runSetup:         function (a) { return runSetup(data.token); },
     listMechanics:    function (a) { return listMechanicsAdmin(data.token); },
@@ -1498,6 +1503,7 @@ function jobSummary_(job) {
     // see invoiceCodeFor_.
     invoiceCode: job.invoice_code || null,
     invoiceUrl: job.invoice_code ? invoiceUrl_(job.invoice_code) : null,
+    archivedAt: job.archived_at || null,
     createdAt: job.created_at,
     updatedAt: job.updated_at,
     doneAt: job.done_at || null,
@@ -1820,7 +1826,7 @@ function listJobs(token, filter) {
 }
 
 // Bump whenever a job summary gains a field, for the reason OPEN_JOBS_V_ says.
-const JOBS_LIST_V_ = 1;
+const JOBS_LIST_V_ = 2;
 const JOBS_LIST_KEY_ = 'JOBSLIST_v' + JOBS_LIST_V_ + '_';
 
 /** The writer's list, read from the sheet. Writes nothing, caches nothing. */
@@ -1828,7 +1834,16 @@ function jobsListFromSheet_(filter) {
   const search = String(filter.search || '').trim().toLowerCase();
   const jobs = rows_('Jobs')
     .filter(function (job) {
-      if (filter.status === 'open') {
+      // An archived job is on the Archived list and no other — not even All.
+      // `every` is the whole tab, archived included: what the portal fetches
+      // once and then sorts into its chips itself.
+      if (filter.status === 'every') {
+        // nothing filtered out
+      } else if (filter.status === 'archived') {
+        if (!job.archived_at) return false;
+      } else if (job.archived_at) {
+        return false;
+      } else if (filter.status === 'open') {
         if (!isOpenJob_(job)) return false;
       } else if (filter.status && filter.status !== 'all' && job.status !== filter.status) {
         return false;
@@ -1848,8 +1863,12 @@ function jobsListFromSheet_(filter) {
     })
     .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
 
-  const byStatus = { open: 0 };
+  const byStatus = { open: 0, archived: 0 };
   rows_('Jobs').forEach(function (job) {
+    if (job.archived_at) {
+      byStatus.archived += 1;
+      return;
+    }
     byStatus[job.status] = (byStatus[job.status] || 0) + 1;
     if (isOpenJob_(job)) byStatus.open += 1;
   });
@@ -4724,8 +4743,11 @@ function recordPayment(token, id, payload) {
   const today = nowIso_().slice(0, 10);
 
   const lines = wanted.map(function (line) {
-    const amount = money2_(numberOrNull_(line && line.amount));
-    if (!(amount > 0)) throw new Error('Every payment needs an amount greater than zero.');
+    const typed = numberOrNull_(line && line.amount);
+    // Zero is allowed: a warranty job, or one the deposits already covered,
+    // still has to be closed out, and the record of it is a $0 line.
+    if (typed === null || !(typed >= 0)) throw new Error('Every payment needs an amount, and it cannot be negative.');
+    const amount = money2_(typed);
     const method = PAYMENT_METHODS.indexOf(String(line.method || '')) === -1
       ? 'other' : String(line.method);
     // A date typed as anything but a plain day is not stored: the receipt
@@ -4742,6 +4764,11 @@ function recordPayment(token, id, payload) {
   });
 
   const batchTotal = money2_(lines.reduce(function (sum, line) { return sum + line.amount; }, 0));
+  // A $0 recording only means something as the act of closing the ticket.
+  // Without the tick it would add a line to the books and change nothing.
+  if (!(batchTotal > 0) && !(payload && payload.paidInFull)) {
+    throw new Error('A $0 payment only closes out the invoice — tick that it settles the account in full.');
+  }
 
   // Drive BEFORE the lock, like every other upload path here: one script lock
   // serves the whole shop, and a writer attaching a scanned card receipt must
@@ -5664,6 +5691,49 @@ function markEntriesLogged(token, id) {
       count += 1;
     });
     return { logged: count, entries: entriesForJob_(id) };
+  });
+}
+
+/**
+ * Files finished jobs away, or brings them back.
+ *
+ * Archiving is not deleting and not closing: the row, its log, its payments
+ * and its paid tick are all untouched, and an archived job still opens from
+ * its QR code. All it does is take the job off every list but Archived, so the
+ * Done tab is the jobs that still want looking at rather than every boat the
+ * shop has ever finished. Only a done job can be filed — anything else is
+ * still being worked on, and hiding it would lose it.
+ *
+ * Several at once, because that is how the Done tab is cleared: tick the lot,
+ * press once. A job that cannot be filed is skipped and counted, not fatal.
+ */
+function archiveJobs(token, ids, archived) {
+  requireAdmin_(token);
+  if (!Array.isArray(ids) || !ids.length) throw new Error('Nothing picked to archive.');
+  // Without the column the stamp would save and read back empty — the jobs
+  // would simply stay put, with no way to tell why.
+  requireColumn_('Jobs', 'archived_at');
+  return withLock_(function () {
+    forget_('Jobs');
+    const at = archived ? nowIso_() : '';
+    let changed = 0;
+    let skipped = 0;
+    // One read for the whole batch. updateRow_ drops the memoised rows after
+    // every write, so looking each job up afresh would re-read the tab once
+    // per tick; the row numbers do not move under the lock.
+    const byId = {};
+    rows_('Jobs').forEach(function (job) { byId[String(job.id)] = job; });
+    ids.forEach(function (id) {
+      const job = byId[String(id)];
+      if (!job || (archived && job.status !== 'done')) {
+        skipped += 1;
+        return;
+      }
+      if (Boolean(job.archived_at) === Boolean(archived)) return;
+      updateRow_('Jobs', job._row, { archived_at: at, updated_at: nowIso_() });
+      changed += 1;
+    });
+    return { changed: changed, skipped: skipped };
   });
 }
 

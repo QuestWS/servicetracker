@@ -3705,10 +3705,22 @@ describe('recording a payment', () => {
   it('refuses an empty recording, or an amount that is not money', () => {
     const id = invoiced(500);
     expect(() => pay(id, { payments: [] })).toThrow(/at least one payment/);
-    expect(() => pay(id, { payments: [{ amount: 0, method: 'cash' }] })).toThrow(/greater than zero/);
-    expect(() => pay(id, { payments: [{ amount: -20, method: 'cash' }] })).toThrow(/greater than zero/);
-    expect(() => pay(id, { payments: [{ amount: 'lots', method: 'cash' }] })).toThrow(/greater than zero/);
+    // $0 is only a way of closing the ticket, so without the tick it is refused.
+    expect(() => pay(id, { payments: [{ amount: 0, method: 'cash' }] })).toThrow(/settles the account/);
+    expect(() => pay(id, { payments: [{ amount: -20, method: 'cash' }] })).toThrow(/cannot be negative/);
+    expect(() => pay(id, { payments: [{ amount: 'lots', method: 'cash' }] })).toThrow(/cannot be negative/);
     expect(backend.fn('jobRow_', id).paid_total).toBeFalsy();
+  });
+
+  it('closes an invoice out at $0', () => {
+    // A warranty job, or one the deposits already covered.
+    const id = invoiced(0);
+    const result = pay(id, { payments: [{ amount: 0, method: 'other' }], paidInFull: true });
+    expect(result.archived).toBe(true);
+    expect(result.received).toBe(0);
+    expect(result.job.paidAt).toBeTruthy();
+    expect(result.payments).toHaveLength(1);
+    expect(backend.fn('listJobs', adminToken, { status: 'open' }).jobs.map((j) => j.id)).not.toContain(id);
   });
 
   it('records the money without emailing anybody unless asked', () => {
@@ -4534,5 +4546,64 @@ describe('winter work, from the winter services system', () => {
   it('has a tab for the ticks, and setup() makes it', () => {
     expect(backend.sheet('WinterWork').rows[0]).toEqual(
       ['id', 'quote_no', 'item', 'done', 'done_by', 'done_at', 'created_at']);
+  });
+});
+
+describe('archiving jobs', () => {
+  const archive = (ids, on = true) => backend.fn('archiveJobs', adminToken, ids, on);
+  const listed = (status) => backend.fn('listJobs', adminToken, { status, fresh: true }).jobs.map((j) => j.id);
+
+  it('files done jobs off every list but Archived, several at once', () => {
+    const a = openInvoice('01-7001', 'a@example.com', 100);
+    const b = openInvoice('01-7002', 'b@example.com', 200);
+    const keep = openInvoice('01-7003', 'c@example.com', 300);
+    const result = archive([a, b]);
+    expect(result).toEqual({ changed: 2, skipped: 0 });
+
+    expect(listed('done')).toEqual([keep]);
+    expect(listed('all')).not.toContain(a);
+    expect(listed('open')).not.toContain(b);
+    expect(listed('archived').sort()).toEqual([a, b]);
+    // What the portal fetches and filters itself carries them all.
+    expect(listed('every')).toEqual(expect.arrayContaining([a, b, keep]));
+
+    const answer = backend.fn('listJobs', adminToken, { status: 'all', fresh: true });
+    expect(answer.counts.archived).toBe(2);
+    expect(answer.counts.done).toBe(1);
+    expect(backend.fn('getJob', adminToken, a).job.archivedAt).toBeTruthy();
+  });
+
+  it('touches nothing but the stamp, and restores exactly', () => {
+    const id = openInvoice('01-7010', 'a@example.com', 100);
+    backend.fn('setJobFlag', adminToken, id, 'paid', true);
+    archive([id]);
+    const row = backend.fn('jobRow_', id);
+    expect(row.status).toBe('done');
+    expect(row.paid_at).toBeTruthy();
+
+    archive([id], false);
+    expect(backend.fn('jobRow_', id).archived_at).toBe('');
+    expect(listed('done')).toContain(id);
+    expect(listed('archived')).not.toContain(id);
+  });
+
+  it('will not hide a job that is still being worked on', () => {
+    const { id } = seedJob('01-7020');
+    expect(archive([id, 'no-such-job'])).toEqual({ changed: 0, skipped: 2 });
+    expect(backend.fn('jobRow_', id).archived_at).toBe('');
+    expect(() => archive([])).toThrow(/Nothing picked/);
+  });
+
+  it('is the writer\'s alone', () => {
+    const id = openInvoice('01-7030', 'a@example.com', 100);
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => backend.fn('archiveJobs', mech, [id], true)).toThrow();
+  });
+
+  it('keeps an archived job that still owes money on the statements', () => {
+    const id = openInvoice('01-7040', 'owes@example.com', 250);
+    archive([id]);
+    const groups = backend.fn('listOpenStatements', adminToken).customers;
+    expect(groups.find((g) => g.customerEmail === 'owes@example.com').totalDue).toBe(250);
   });
 });

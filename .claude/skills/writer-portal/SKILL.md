@@ -73,10 +73,36 @@ because the work is over and nothing else will bring it back to their
 attention. Ticking paid is what takes a job off the list; untick it and the job
 comes back.
 
-The chip order is Open jobs, the four statuses, **All**, Done. All sits next to
-Done at the far end on purpose: those two are what you go looking for, not what
-you should land on. Open carries no query parameter, being the default, so `?`
-is the working list and `?status=all` is everything.
+The chip order is Open jobs, the four statuses, **All**, Done, Archived. All
+sits next to Done at the far end on purpose: those two are what you go looking
+for, not what you should land on. Open carries no query parameter, being the
+default, so `?` is the working list and `?status=all` is everything not
+archived.
+
+## Archiving a job
+
+`archived_at` on the Jobs row, set by `archiveJobs(ids, on)`. It takes a job
+off **every** chip but Archived — All included — and changes nothing else: the
+status, the paid tick, the payments and the QR all stay as they were, and
+restoring puts it back exactly. Only a **done** job can be archived; anything
+else is skipped and counted, because hiding a job still being worked is losing
+it.
+
+- **Done and Archived carry a tick on every row**, with a Select all box that
+  is half-ticked when some are, and one button: Archive selected / Restore
+  selected. The box sits beside the row, not in it — the row is a link.
+- **The job page offers Archive once money is on the job** (a payment
+  recorded, or the paid tick), and Restore once it is archived.
+- **`isOpenJob_` is untouched.** An archived job that still owes money is
+  still on the statements — archiving files a job away, it does not write off
+  a balance.
+- The page fetches `listJobs({ status: 'every' })` — the whole tab — and sorts
+  it into chips itself. Not `all`, which leaves archived jobs out.
+
+**A $0 payment closes an invoice out** — a warranty job, or one the deposits
+covered. `recordPayment` takes a line of 0 but refuses a batch totalling $0
+unless *settles the account in full* is ticked, since otherwise it would change
+nothing. The form fills in 0.00 and ticks the box for a $0 balance.
 
 **The list is fetched whole and filtered in the browser.** `jobsCache` keeps
 the last copy, drawn at once when the writer comes back to the list and

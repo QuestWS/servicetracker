@@ -1292,3 +1292,22 @@ table.grid .sub { font-size: 12.5px; color: var(--muted); }
   color: var(--navy);
   margin: 0 0 8px;
 }
+
+/* The ticks on the Done and Archived lists. The box sits beside the row, not
+   inside it: the row is a link, and a tick must not open the job. */
+.pickbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.pickbar .pickall { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
+.pickbar .sub { font-size: 13px; color: var(--muted); flex: 1 1 auto; }
+.pickbar input, .pickrow > input { width: 20px; height: 20px; accent-color: var(--navy); cursor: pointer; }
+.pickrow { display: flex; align-items: center; gap: 10px; }
+.pickrow > .jobrow { flex: 1 1 auto; min-width: 0; }
