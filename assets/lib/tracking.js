@@ -46,3 +46,32 @@ export function looksLikeInvoiceNumber(raw) {
 export function trackingUrl(siteUrl, token) {
   return `${String(siteUrl).replace(/\/+$/, '')}/t/?j=${token}`;
 }
+
+// A winter services quote number: QW-26-1255. Two-digit season year, then the
+// number, which has run three to five digits across seasons.
+const WINTER_QN_RE = /^QW-\d{2}-\d{3,5}$/;
+
+/**
+ * Pulls a winter quote number out of whatever the camera read. The winter
+ * system prints `/m/?w=QW-26-1255` on a quote, so a phone's own camera opens
+ * this app on that boat; the scanner here accepts the same URL, or the bare
+ * number. Null for anything else — a work order's QR is read by
+ * `tokenFromScan`, never this.
+ */
+export function winterQnFromScan(raw) {
+  const text = String(raw == null ? '' : raw).trim();
+  if (!text) return null;
+  const direct = text.toUpperCase();
+  if (WINTER_QN_RE.test(direct)) return direct;
+  const fromQuery = text.match(/[?&]w=([0-9A-Za-z-]{6,12})(?:[&#]|$)/);
+  if (fromQuery) {
+    const candidate = fromQuery[1].toUpperCase();
+    if (WINTER_QN_RE.test(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** The URL the winter system prints as a QR on a quote. */
+export function winterUrl(siteUrl, qn) {
+  return `${String(siteUrl).replace(/\/+$/, '')}/m/?w=${encodeURIComponent(qn)}`;
+}

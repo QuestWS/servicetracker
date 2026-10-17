@@ -1280,6 +1280,19 @@ console.log('\n== winter work ==');
     return b && b.getAttribute('aria-pressed') === 'false' && !/Saving/.test(b.textContent);
   }, null, { timeout: 20000 });
   check('and a second tap puts it back', true);
+
+  // The QR on a printed winter quote: /m/?w=QW-…, from the phone's own camera.
+  await mech.goto(`${BASE}/m/?w=QW-26-9001`, { waitUntil: 'networkidle' });
+  await mech.waitForSelector('#winterunit', { timeout: 20000 });
+  check('a winter quote QR opens that unit straight away',
+    (await mech.textContent('#winterunit')).includes('QW-26-9001') && (await mech.locator('#winteritems').count()) === 1);
+  check('and takes the number off the address, so a reload starts at home',
+    await mech.evaluate(() => location.search === ''));
+  await mech.goto(`${BASE}/m/?w=QW-26-0404`, { waitUntil: 'networkidle' });
+  await mech.waitForFunction(() => /not on the winter work list/.test(document.getElementById('view').textContent),
+    null, { timeout: 20000 });
+  check('a quote that has not come in says so, rather than an empty card', true);
+  await mech.goto(`${BASE}/m/`, { waitUntil: 'networkidle' });
 }
 
 console.log('\n== getting around the portal ==');

@@ -103,7 +103,7 @@
 import { api, ApiError, NoAnswer, storeSession, storedWho, clearSession, storedToken, onApiTiming,
          savedOpenJobs, saveOpenJobs, savedJob, saveJob, savedCopy, saveCopy } from '../assets/lib/api.js';
 import { ENTRY_LABEL, formatHours, formatMinutes } from '../assets/lib/entry-types.js';
-import { tokenFromScan } from '../assets/lib/tracking.js';
+import { tokenFromScan, winterQnFromScan } from '../assets/lib/tracking.js';
 import { $, esc, toast, formatDateTime, fileToBase64, preparePhoto, driveImageUrl, driveFileUrl } from '../assets/lib/ui.js';
 import * as outbox from '../assets/lib/outbox.js';
 
@@ -441,7 +441,8 @@ function renderHome(message) {
       <button class="btn ghost block" type="button" id="reqpart">Request a part for stock</button>
       <p style="color:#9fc3dc;font-size:14px;line-height:1.5">
         Scan the QR code printed on the paper work order. Scanning starts the job — you will be
-        asked who you are next.
+        asked who you are next. The same button reads the QR on a printed winter quote and opens
+        that boat's winter work.
       </p>
     </div>`;
 
@@ -587,6 +588,51 @@ async function renderWinter(fresh) {
   // The server kept its last good list when the winter system would not
   // answer, and says so; that is worth a strip, not an error screen.
   drawWinter(out, out.stale && out.error ? `${out.error} Showing the last list it gave.` : '', 'warn');
+}
+
+/**
+ * One unit, by its quote number — what the QR on a printed winter quote opens,
+ * from the scanner here or from the phone's own camera (`/m/?w=QW-26-1255`).
+ * The same list the Winter work button reads, behind the same sign-in, and the
+ * unit is picked out of it: there is no read for one unit, and the list is
+ * what says whether this boat has come in at all. A boat that has not been
+ * pulled or dropped off yet is not on it, and the mechanic is told so rather
+ * than shown an empty card.
+ */
+async function openWinterUnit(qn) {
+  stopScanning();
+  screen(renderHome);
+  if (!state.who) return signInThen(() => openWinterUnit(qn));
+  const find = (out) => ((out && out.units) || []).find((u) => String(u.qn).toUpperCase() === qn);
+  // The phone's copy first, as the list does — the fresh read still follows,
+  // so a tick made from another phone is not missed.
+  const saved = savedCopy('winter');
+  const early = saved && find(saved.value);
+  if (early) { state.winter = saved.value; renderWinterUnit(early); }
+  else { newVisit(); view.innerHTML = `<p class="loading" style="color:#9fc3dc">Looking up ${esc(qn)}…</p>`; }
+  // After the draw: renderWinterUnit starts its own visit.
+  const mine = visit;
+  let out;
+  try {
+    out = await api('winterWork', []);
+  } catch (error) {
+    if (mine !== visit) return;
+    if (/Sign in/i.test(error.message)) {
+      state.who = null;
+      return signInThen(() => openWinterUnit(qn));
+    }
+    if (early && error instanceof NoAnswer) return toast(`Could not refresh — showing ${qn} from ${ago(saved.at)}.`);
+    return renderHome(error.message);
+  }
+  saveCopy('winter', out);
+  if (mine !== visit) return;
+  state.winter = out;
+  const unit = find(out);
+  // Never redrawn over the saved copy: the mechanic may already be ticking.
+  if (early) return;
+  if (unit) return renderWinterUnit(unit);
+  if (out.configured === false) return renderHome(out.error || 'Not connected to the winter system yet.');
+  renderHome(`${qn} is not on the winter work list. A boat shows up there once Harbor Haul Out has it pulled or dropped off.`);
 }
 
 /** "Pulled Oct 1" — when the unit came in, which is how long it has waited. */
@@ -801,7 +847,7 @@ function renderScanning() {
   warm();
   stopScanning();
   view.innerHTML = `<div class="stack">
-    ${scannerHtml('Line up the QR code on the work order')}
+    ${scannerHtml('Line up the QR code on the work order or winter quote')}
     <button class="btn ghost block" type="button" id="cancel">Cancel</button>
     <button class="btn ghost block" type="button" id="manual">Type invoice number instead</button>
   </div>`;
@@ -810,8 +856,11 @@ function renderScanning() {
 
   startScanner(view.querySelector('.scanner'), 'qr', (value) => {
     const token = tokenFromScan(value);
-    if (!token) return renderHome('That code is not a Quest work order. Try again, or type the invoice number.');
-    openJob(token, 'scan');
+    if (token) return openJob(token, 'scan');
+    // A printed winter quote: not a job, so it opens the boat's winter work.
+    const qn = winterQnFromScan(value);
+    if (qn) return openWinterUnit(qn);
+    renderHome('That code is not a Quest work order or winter quote. Try again, or type the invoice number.');
   }).then((stop) => { state.scanning = stop; });
 }
 
@@ -2298,7 +2347,16 @@ function warm() {
 }
 
 warm();
-renderHome();
+// A printed winter quote scanned with the phone's own camera lands here as
+// /m/?w=QW-26-1255. The number is taken off the address so a reload or a
+// home-screen launch does not reopen it.
+const winterFromUrl = winterQnFromScan(location.href);
+if (winterFromUrl) {
+  history.replaceState(null, '', location.pathname);
+  openWinterUnit(winterFromUrl);
+} else {
+  renderHome();
+}
 // After the first screen is up, never before it: recovering an old note must
 // not be able to hold up the app opening.
 resumeOutbox();

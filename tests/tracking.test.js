@@ -85,3 +85,25 @@ describe('time on a job', () => {
     expect(decimalHours(toHours(150))).toBe('2.5 h');
   });
 });
+
+describe('reading a winter quote QR', () => {
+  it('accepts the URL the winter system prints, and the bare number', async () => {
+    const { winterQnFromScan, winterUrl } = await import('../assets/lib/tracking.js');
+    expect(winterQnFromScan('https://questws.github.io/servicetracker/m/?w=QW-26-1255')).toBe('QW-26-1255');
+    expect(winterQnFromScan('https://questws.github.io/servicetracker/m/?w=qw-26-1255&x=1')).toBe('QW-26-1255');
+    expect(winterQnFromScan(' qw-26-1255 ')).toBe('QW-26-1255');
+    expect(winterUrl('https://questws.github.io/servicetracker/', 'QW-26-1255'))
+      .toBe('https://questws.github.io/servicetracker/m/?w=QW-26-1255');
+    expect(winterQnFromScan(winterUrl('https://questws.github.io/servicetracker', 'QW-26-1255'))).toBe('QW-26-1255');
+  });
+
+  it('rejects a work order, an invoice number and anything else', async () => {
+    const { winterQnFromScan, tokenFromScan } = await import('../assets/lib/tracking.js');
+    expect(winterQnFromScan('https://questws.github.io/servicetracker/t/?j=ABCDEFGHJKMNPQRSTVWX')).toBeNull();
+    expect(winterQnFromScan('01-8886')).toBeNull();
+    expect(winterQnFromScan('https://example.com/?w=hello')).toBeNull();
+    expect(winterQnFromScan('')).toBeNull();
+    // And a winter QR is never mistaken for a work order.
+    expect(tokenFromScan('https://questws.github.io/servicetracker/m/?w=QW-26-1255')).toBeNull();
+  });
+});

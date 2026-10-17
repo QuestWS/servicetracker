@@ -21,6 +21,8 @@ These apply everywhere and are not negotiable by any skill.
 3. **`SITE_URL` is printed onto paper.** Changing it after work orders are in
    the folder invalidates every QR code already printed. Same reason a
    re-stamp keeps the job's existing token.
+   The winter console prints `SITE_URL/m/?w=<quote #>` on winter quotes
+   too, so the `m/` path stays put as well.
 4. **This is an internal tool, and customer tracking is scrapped.** What a
    customer receives is the finished job's invoice, and only because a writer
    sent it: by email from the portal, or by text from BiT. `markDone` closes

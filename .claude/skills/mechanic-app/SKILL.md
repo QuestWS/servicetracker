@@ -257,7 +257,7 @@ detailing, staff-priced extras, and open quote requests marked *not priced
 yet*. Storage, retrieval, surcharges, discounts and adjustments are not work
 and do not come across.
 
-- **It is not a job.** No BiT invoice, no work order, no QR. Turning each unit
+- **It is not a job.** No BiT invoice, no work order, no job QR. Turning each unit
   into a job would put every winter boat into the writer's close-out waiting
   for an invoice that never comes from BiT. The only thing written here is a
   tick per item, on the `WinterWork` tab, keyed on quote number + the item's
@@ -285,6 +285,16 @@ and do not come across.
   name at once.
 - Ticks are optimistic like every other save: shown on the tap, put back with
   a toast if the server refuses.
+
+- **The QR on a printed winter quote opens the unit.** The winter console's
+  Storage overview → *Print winter quotes* puts `SITE_URL/m/?w=QW-26-1255` on
+  each quote (`winterUrl` in `assets/lib/tracking.js`). The scanner tries
+  `tokenFromScan` first and `winterQnFromScan` second, so a work order can
+  never be read as a winter quote; a phone's own camera lands on `/m/?w=…`,
+  which boot reads and strips off the address. `openWinterUnit` picks the unit
+  out of the same `winterWork` list behind the same sign-in — there is no
+  one-unit read — and a boat not pulled or dropped off yet says so. That URL
+  is on paper now too: one more reason `SITE_URL` and the `m/` path stay put.
 
 `scripts/serve.mjs` plays the winter system with two fixed units, so the
 preview and `browser-check.mjs` never reach the real one.
