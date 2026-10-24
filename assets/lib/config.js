@@ -12,5 +12,5 @@ export const SITE_URL = 'https://questws.github.io/servicetracker';
 export const SHOP = {
   name: 'Quest Watersports',
   phone: '(815) 433-2200',
-  address: '1851 Old Chicago Road, Ottawa, IL',
+  address: '1800 N 2871st Rd, Ottawa, IL 61350',
 };

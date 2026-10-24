@@ -1479,7 +1479,7 @@ describe('the customer email', () => {
     expect(mail.opts.name).toBe('Quest Watersports');
     expect(mail.opts.replyTo).toBe('service@questwatersports.com');
     expect(mail.opts.htmlBody).toContain('Pay online');
-    expect(mail.opts.htmlBody).toContain('1851 Old Chicago Road');
+    expect(mail.opts.htmlBody).toContain('1800 N 2871st Rd');
     // Never the shop's own numbers.
     expect(mail.opts.htmlBody).not.toContain('6BH-44352');
     expect(mail.opts.htmlBody).not.toContain('1.5 h');

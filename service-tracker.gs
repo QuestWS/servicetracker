@@ -116,7 +116,7 @@ const SHOP_NAME = 'Quest Watersports';
 const SHOP_PHONE = '(815) 433-2200';
 /** Whose name a note from the office is logged under. */
 const SHOP_WRITER_NAME = 'Service writer';
-const SHOP_ADDRESS = '1851 Old Chicago Road, Ottawa, IL';
+const SHOP_ADDRESS = '1800 N 2871st Rd, Ottawa, IL 61350';
 
 /** Customer replies land here, and so does the hourly digest. */
 const SERVICE_EMAIL = 'service@questwatersports.com';

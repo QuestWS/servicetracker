@@ -1206,6 +1206,9 @@ await mech.screenshot({ path: `${SHOTS}/53-alert-mechanic.png`, fullPage: true }
 await mech.goto(`${BASE}/m/`, { waitUntil: 'networkidle' });
 await mech.click('#openjobs');
 await mech.waitForSelector('.joblist', { timeout: 20000 });
+// The phone draws its saved copy first and refreshes behind it; read the
+// server's answer, not the copy, or the flag is judged on a stale list.
+await mech.waitForSelector('#liststrip', { state: 'detached', timeout: 20000 });
 check('the open-jobs list flags it before the job is opened',
   await mech.locator('.joblist.flagged').count() > 0);
 check('and the flagged job is first in the list',
@@ -1221,6 +1224,7 @@ check('and what it said stays in the shop log',
 await mech.goto(`${BASE}/m/`, { waitUntil: 'networkidle' });
 await mech.click('#openjobs');
 await mech.waitForSelector('.joblist', { timeout: 20000 });
+await mech.waitForSelector('#liststrip', { state: 'detached', timeout: 20000 });
 check('and the flag comes off the list', await mech.locator('.joblist.flagged').count() === 0);
 
 // Put it back for the customer-boundary checks further down.
