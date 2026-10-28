@@ -5,10 +5,11 @@ description: Parsing BiT work orders and invoices — the real shape of the PDF,
 
 # What a real BiT form actually looks like
 
-**BiT is never integrated with.** No scraping, no automation, no API calls, no
-matter how convenient. Every exchange is a person downloading a PDF from BiT
-and uploading it here, or re-keying data from here into BiT. Parsing an
-uploaded PDF is the only contact, and it is one-way.
+**BiT has no API or connector**, so every exchange is a person downloading a
+PDF from BiT and uploading it here, or re-keying data from here into BiT.
+Parsing an uploaded PDF is the only contact, and it is one-way. That is BiT's
+limitation, not the shop's preference, and BiT is being replaced by a system
+with an API. Until then, don't scrape or script BiT's screens.
 
 Parsing happens **in the browser** (pdfjs), never in Apps Script. The relevant
 modules — `assets/lib/lines.js`, `parse-work-order.js`, `parse-invoice.js`,
