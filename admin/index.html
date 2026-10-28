@@ -1120,6 +1120,12 @@ async function drawJob(id, data, savedAt) {
     mail.kind === 'customer_arrived' || mail.kind === 'customer_arrived_test');
   const arrivalSent = arrivalEmail && arrivalEmail.status !== 'failed' && arrivalEmail.status !== 'skipped';
   const arrivalTexted = emails.find((mail) => mail.kind === 'customer_arrived_text');
+  // The order's receipt — usually sent the day it is paid for, while the
+  // parts are still on order. Its own kinds, for the same reason.
+  const receiptEmail = emails.find((mail) =>
+    mail.kind === 'customer_order_receipt' || mail.kind === 'customer_order_receipt_test');
+  const receiptSent = receiptEmail && receiptEmail.status !== 'failed' && receiptEmail.status !== 'skipped';
+  const receiptTexted = emails.find((mail) => mail.kind === 'customer_receipt_text');
   const arrived = job.status === 'work_finished' || job.status === 'done';
   // Every line on the parts list is in: the order is very likely sitting on
   // the shelf, and the writer should hear that from the page.
@@ -1209,27 +1215,43 @@ async function drawJob(id, data, savedAt) {
             ${job.customerEmail ? '' : '<p class="hint" style="margin-top:8px">No email address on file for this customer.</p>'}
 
             <p class="hint" style="margin:14px 0 8px">Or text it. BiT sends the text; we only write it.
-              Copy this into BiT, send it from there, then tell us you have.</p>
-            ${arrivalTexted ? `<p class="hint" style="margin:0 0 10px">Texted ${formatDateTime(arrivalTexted.created_at)}
+              Copy it into BiT, send it from there, then tell us you have.</p>
+            ${arrivalTexted ? `<p class="hint" style="margin:0 0 10px">Arrival texted ${formatDateTime(arrivalTexted.created_at)}
               to ${esc(arrivalTexted.recipient)}.</p>` : ''}
-            ${data.testMode ? `<div class="banner warn" style="margin:0 0 10px">Test mode holds the
-              <b>email</b> back. It cannot hold this one back — we do not send it, BiT does.</div>` : ''}
-            <div id="textbox" hidden>
-              <label class="fld" for="invoicetext">The message</label>
-              <textarea class="txt" id="invoicetext" rows="4" readonly></textarea>
-              <p class="hint" id="invoicetextmeta"></p>
-              <div class="row tight" style="margin-top:10px">
-                <button class="btn ghost sm" type="button" id="copyinvoicetext">Copy the message</button>
-                <button class="btn ghost sm" type="button" id="opentextlink">Open the link</button>
-                <button class="btn gold sm" type="button" id="marktexted">I have sent it</button>
-              </div>
-            </div>
-            <button class="btn ${arrivalTexted ? 'ghost' : 'gold'} block" type="button" id="writetext" style="margin-top:10px">
-              ${arrivalTexted ? 'Write the text again' : 'Write the text message'}
+            <button class="btn ${arrivalTexted ? 'ghost' : 'gold'} block" type="button" id="writetext">
+              ${arrivalTexted ? 'Write the arrival text again' : 'Write the arrival text'}
             </button>
 
             <hr style="border:0;border-top:1px solid var(--ice);margin:18px 0">
             <button class="btn navy block" type="button" id="markdone">Mark picked up</button>`}
+
+          <hr style="border:0;border-top:1px solid var(--ice);margin:18px 0">
+
+          <h3 style="font-family:var(--disp);font-size:17px;color:var(--navy);margin:0 0 4px">Send a receipt</h3>
+          <p class="hint" style="margin:0 0 8px">What they ordered, what they have paid, and where the
+            order is — ${esc(job.status === 'done' ? 'collected' : arrived ? 'arrived' : 'on order')}, right now.
+            The invoice goes with the email. For a customer who paid up front and wants it in writing.</p>
+          ${receiptSent ? `<p class="hint" style="margin:0 0 8px">Receipt emailed ${formatDateTime(receiptEmail.created_at)}
+            to ${esc(receiptEmail.recipient)}${data.testMode ? ' — test mode, so that was the shop, not the customer' : ''}.</p>` : ''}
+          ${receiptTexted ? `<p class="hint" style="margin:0 0 8px">Receipt texted ${formatDateTime(receiptTexted.created_at)}
+            to ${esc(receiptTexted.recipient)}.</p>` : ''}
+          <button class="btn ghost block" type="button" id="sendorderreceipt"${job.customerEmail ? '' : ' disabled title="Add a customer email address first"'}>
+            ${settled ? 'Email a paid receipt' : 'Email an order receipt'}</button>
+          <button class="btn ghost block" type="button" id="writereceipttext" style="margin-top:8px">
+            ${receiptTexted ? 'Write the receipt text again' : 'Write the receipt text'}</button>
+
+          <div id="textbox" hidden style="margin-top:14px">
+            ${data.testMode ? `<div class="banner warn" style="margin:0 0 10px">Test mode holds the
+              <b>email</b> back. It cannot hold a text back — we do not send it, BiT does.</div>` : ''}
+            <label class="fld" for="invoicetext" id="invoicetextlabel">The message</label>
+            <textarea class="txt" id="invoicetext" rows="4" readonly></textarea>
+            <p class="hint" id="invoicetextmeta"></p>
+            <div class="row tight" style="margin-top:10px">
+              <button class="btn ghost sm" type="button" id="copyinvoicetext">Copy the message</button>
+              <button class="btn ghost sm" type="button" id="opentextlink">Open the link</button>
+              <button class="btn gold sm" type="button" id="marktexted">I have sent it</button>
+            </div>
+          </div>
         </section>
 ${paymentCard}
       </div>
@@ -2169,18 +2191,23 @@ ${emailLogCard}
   // so nothing exists until somebody presses this — and pressing it does not
   // count as having sent anything. "I have sent it" is the separate act, the
   // same way the email's own button is separate from marking a job done.
-  const writetext = $('writetext');
-  if (writetext) writetext.onclick = async () => {
+  // An order has two of these — its receipt and its arrival notice — sharing
+  // the one message box. `purpose` is which, and it rides along to
+  // markInvoiceTexted so the log says which one the customer was sent.
+  const writeText = (writetext, purpose) => async () => {
     writetext.disabled = true;
     const was = writetext.textContent;
     writetext.textContent = 'Writing…';
     try {
-      const text = await api('invoiceText', [job.id]);
+      const text = await api('invoiceText', [job.id, purpose]);
+      const label = $('invoicetextlabel');
+      if (label) label.textContent = purpose === 'receipt' ? 'The receipt message' : 'The arrival message';
       $('invoicetext').value = text.message;
       $('invoicetextmeta').textContent =
         `${text.characters} characters — ${text.segments === 1 ? 'one text' : `${text.segments} texts`}` +
         (text.phone ? ` · ${text.phone}` : ' · no number on file');
       $('textbox').hidden = false;
+      if (order) $('textbox').scrollIntoView({ block: 'nearest' });
       $('opentextlink').onclick = () => window.open(text.url, '_blank', 'noreferrer');
       $('copyinvoicetext').onclick = async () => {
         const field = $('invoicetext');
@@ -2196,9 +2223,10 @@ ${emailLogCard}
         }
       };
       $('marktexted').onclick = async () => {
-        if (!confirm(`Record that the ${order ? 'arrival' : 'invoice'} text for ${job.id} has been sent?`)) return;
+        const what = !order ? 'invoice' : purpose === 'receipt' ? 'receipt' : 'arrival';
+        if (!confirm(`Record that the ${what} text for ${job.id} has been sent?`)) return;
         try {
-          const { jobPage } = await api('markInvoiceTexted', [job.id], withPage(job.id));
+          const { jobPage } = await api('markInvoiceTexted', [job.id, purpose], withPage(job.id));
           renderJob(job.id, jobPage);
           toast('Logged against the job.');
         } catch (error) { notice('warn', error.message); }
@@ -2208,6 +2236,31 @@ ${emailLogCard}
     } catch (error) {
       writetext.disabled = false;
       writetext.textContent = was;
+      notice('warn', error.message);
+    }
+  };
+  const writetext = $('writetext');
+  if (writetext) writetext.onclick = writeText(writetext, order ? 'arrival' : 'invoice');
+  const writereceipttext = $('writereceipttext');
+  if (writereceipttext) writereceipttext.onclick = writeText(writereceipttext, 'receipt');
+
+  // A parts order's receipt by email. A writer's button like every send;
+  // nothing about the order changes for pressing it.
+  const sendorderreceipt = $('sendorderreceipt');
+  if (sendorderreceipt) sendorderreceipt.onclick = async () => {
+    if (!confirm(`Email a receipt for order ${job.id} to ${job.customerEmail}?`)) return;
+    const was = sendorderreceipt.textContent;
+    sendorderreceipt.disabled = true;
+    sendorderreceipt.textContent = 'Sending…';
+    try {
+      const result = await api('sendOrderReceipt', [job.id], withPage(job.id));
+      renderJob(job.id, result.jobPage);
+      toast(!result.emailed ? 'That email did not send — check the log.'
+        : result.testMode ? `Test mode: it went to ${result.sentTo}, not the customer.`
+        : `Receipt emailed to ${result.sentTo}.`);
+    } catch (error) {
+      sendorderreceipt.disabled = false;
+      sendorderreceipt.textContent = was;
       notice('warn', error.message);
     }
   };

@@ -32,9 +32,10 @@ These apply everywhere and are not negotiable by any skill.
    writes the message and mints the code, a person sends it from BiT, and
    `markInvoiceTexted` is them saying so afterwards. Nothing here dials out.
 
-   A **customer parts order** has one more: the arrival notice, by email
-   (`sendArrivalEmail`) or by a text written here and sent from BiT. Same
-   rules — `markOrderArrived` tells nobody, and the notice is its own button.
+   A **customer parts order** has two more: its receipt (`sendOrderReceipt`)
+   and the arrival notice (`sendArrivalEmail`), each by email or by a text
+   written here and sent from BiT. Same rules — `markOrderArrived` tells
+   nobody, and each message is its own button.
 
    `/i/?c=code` is what that link opens: the invoice PDF, the balance and the
    Pay button. It is an invoice, not a log — `invoicePage` puts no log entry

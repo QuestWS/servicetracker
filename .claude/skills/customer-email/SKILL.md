@@ -155,6 +155,14 @@ button only when something is owed and there is a link. Logged as
 `customer_arrived` (`_test` in a rehearsal); the text version is logged as
 `customer_arrived_text`. `markOrderArrived` sends nothing.
 
+An order also has a **receipt** that is not about one payment:
+`sendOrderReceipt` (`orderReceiptContent_`, logged `customer_order_receipt`)
+and its text, `invoiceText(id, 'receipt')`, logged
+`customer_receipt_text` by `markInvoiceTexted(id, 'receipt')`. It is what a
+customer who paid at the counter wants that day: paid in full, the parts are
+on order, we will tell you when they arrive. Both texts share the one copy
+box on the order page; `purpose` says which.
+
 An order is never sent the "service complete" invoice email —
 `sendInvoiceEmail` refuses it. Its receipt (`sendPaymentEmail_`) carries the
 invoice PDF instead.

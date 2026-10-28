@@ -120,7 +120,7 @@ function render(data) {
   // should be able to see why the figure is what it is.
   const owed = invoice.amountDue === null ? '' : `
     <div class="card flat" style="background:var(--paper);margin:0 0 16px">
-      ${invoice.deposits ? `<div class="kv"><span class="k">Deposits already paid</span>
+      ${invoice.deposits ? `<div class="kv"><span class="k">${invoice.order ? 'Paid when ordered' : 'Deposits already paid'}</span>
         <b>${formatMoney(invoice.deposits)}</b></div>` : ''}
       ${invoice.paidTotal ? `<div class="kv"><span class="k">Payments received</span>
         <b>${formatMoney(invoice.paidTotal)}</b></div>` : ''}
@@ -154,6 +154,7 @@ function render(data) {
   // ready to collect — not that any work was done.
   const headline = !invoice.order ? `${greeting} service is complete`
     : invoice.pickedUp ? `${greeting} order`
+    : invoice.arrived === false ? (invoice.settled ? `${greeting} order is paid in full` : `${greeting} order is placed`)
     : `${greeting} order is ready for pick-up`;
   const lead = !invoice.order
     ? (invoice.settled
@@ -161,6 +162,11 @@ function render(data) {
       : 'The work you asked for has been done. Your invoice is below, and you can pay online.')
     : invoice.pickedUp
       ? (invoice.settled ? 'Collected and paid for. Thank you.' : 'Your invoice is below, and you can pay online.')
+    // Still on order: this is the receipt a customer is sent the day they pay.
+    : invoice.arrived === false
+      ? `${invoice.settled ? 'Thank you. ' : ''}The parts are on order, and we will let you know as soon as they arrive.${
+        invoice.settled ? '' : invoice.paymentLink ? ' You can pay the balance online now, or when you collect it.'
+          : ' The balance can be paid when you collect it.'}`
       : (invoice.settled
         ? `It is all paid for, so just come and collect it${shop && shop.address ? ` at ${esc(shop.address)}` : ''}.`
         : `Collect it${shop && shop.address ? ` at ${esc(shop.address)}` : ''}.${invoice.paymentLink

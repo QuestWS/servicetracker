@@ -103,6 +103,13 @@ portal (`?view=neworder`). Listed under **Customer orders** (`?view=orders`).
   arrived: `sendArrivalEmail`, or `invoiceText` worded "ready for pick-up"
   and sent from BiT. Both are refused until the order has arrived. The
   "service complete" invoice email is refused for an order altogether.
+- **A receipt can go out at any stage**, and the usual one is the day it is
+  paid for, while the parts are still on order: `sendOrderReceipt` by email
+  (with the invoice attached), or `invoiceText(id, 'receipt')` for the writer
+  to copy into BiT. Both say what was ordered, what has been paid (the
+  invoice's deposits plus anything recorded here, `orderPaid_`) and where
+  the order is. Neither changes the order. The texted page answers for an
+  order at every stage for that reason.
 - **Adding `kind` means `setup()` has to be run once.** `createPartsOrder`
   calls `requireColumn_` first — without the column every order would save
   as a work order and land on the mechanics' phones.

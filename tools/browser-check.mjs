@@ -2932,6 +2932,35 @@ check('with nothing on it for a mechanic',
 check('and only the ticked line on the parts list',
   /18-3250/.test(orderPage) && (await admin.locator('.ticketparts .kv').count()) === 1);
 
+// Paid up front and wants it in writing, today, while the parts are on order.
+await admin.click('#writereceipttext');
+await admin.waitForSelector('#textbox:not([hidden])', { timeout: 30000 });
+const receiptText = await admin.inputValue('#invoicetext');
+check('a receipt text can be written while the parts are on order',
+  /Parts on order/.test(receiptText) && /\$70\.50 due/.test(receiptText), receiptText);
+check('ready to copy into BiT, in one text',
+  (await admin.locator('#copyinvoicetext').count()) === 1 && /one text/.test(await admin.textContent('#invoicetextmeta')));
+const receiptCode = receiptText.match(/\/i\/\?c=([0-9A-HJ-NP-TV-Z]{8})/)[1];
+const receiptPhone = await shopContext({ viewport: { width: 390, height: 844 } });
+const receiptLink = await receiptPhone.newPage();
+await receiptLink.goto(`${BASE}/i/?c=${receiptCode}`, { waitUntil: 'networkidle' });
+await receiptLink.waitForSelector('.card h2', { timeout: 20000 });
+const receiptLinkText = await receiptLink.evaluate(() => document.body.innerText);
+check('its link opens before the order has arrived, saying the parts are on order',
+  /on order/i.test(receiptLinkText) && /70\.50/.test(receiptLinkText) && !/120\.50/.test(receiptLinkText),
+  receiptLinkText.slice(0, 300));
+await receiptPhone.close();
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#marktexted');
+await admin.waitForFunction(() => /Receipt texted/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+check('and is logged as a receipt text once the writer says it went', true);
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#sendorderreceipt');
+await admin.waitForFunction(() => /Receipt emailed/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+check('the receipt can be emailed too, and the order is still on order',
+  /Ordered/i.test(await admin.evaluate(() => document.getElementById('view').innerText))
+    && (await admin.locator('#markarrived').count()) === 1);
+
 await admin.click('#markarrived');
 await admin.waitForSelector('#sendarrival', { timeout: 30000 });
 check('marking it arrived tells nobody',
@@ -2961,7 +2990,7 @@ check('showing the balance, never the grand total',
 await orderPhone.close();
 admin.once('dialog', (dialog) => dialog.accept());
 await admin.click('#marktexted');
-await admin.waitForFunction(() => /Texted /.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+await admin.waitForFunction(() => /Arrival texted /.test(document.getElementById('view').innerText), null, { timeout: 30000 });
 check('sending the text from BiT is recorded when the writer says so', true);
 
 // Money before it is collected — the usual way with parts.

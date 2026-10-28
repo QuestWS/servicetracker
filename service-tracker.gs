@@ -968,8 +968,9 @@ function apiFns_(data) {
     saveInvoice:      function (a) { return saveInvoice(data.token, a[0], a[1], a[2], a[3]); },
     markDone:         function (a) { return markDone(data.token, a[0]); },
     sendInvoiceEmail: function (a) { return sendInvoiceEmail(data.token, a[0]); },
-    invoiceText:      function (a) { return invoiceText(data.token, a[0]); },
-    markInvoiceTexted: function (a) { return markInvoiceTexted(data.token, a[0]); },
+    invoiceText:      function (a) { return invoiceText(data.token, a[0], a[1]); },
+    markInvoiceTexted: function (a) { return markInvoiceTexted(data.token, a[0], a[1]); },
+    sendOrderReceipt: function (a) { return sendOrderReceipt(data.token, a[0]); },
     createPartsOrder: function (a) { return createPartsOrder(data.token, a[0]); },
     markOrderArrived: function (a) { return markOrderArrived(data.token, a[0]); },
     sendArrivalEmail: function (a) { return sendArrivalEmail(data.token, a[0]); },
@@ -5344,6 +5345,132 @@ function sendInvoiceEmail(token, id) {
   };
 }
 
+/**
+ * What has been paid on an order so far: the deposits BiT shows on the
+ * invoice, plus anything recorded here since. A parts order is very often
+ * paid in full at the counter, and BiT prints that payment as a deposit.
+ */
+function orderPaid_(job) {
+  return money2_((numberOrNull_(job.deposits) || 0) + (numberOrNull_(job.paid_total) || 0));
+}
+
+/** Where an order is, in the words a customer is told. */
+function orderStageWords_(job) {
+  if (job.status === 'done') return 'has been collected';
+  if (orderArrived_(job)) return 'has arrived and is ready for pick-up';
+  return 'is on order';
+}
+
+/**
+ * The receipt for a parts order: what they bought, what they have paid, and
+ * where the order stands — usually "on order", because this is what a
+ * customer who paid up front wants in hand the day they pay.
+ *
+ * Not the payment receipt (sendPaymentEmail_), which is about one payment
+ * being recorded and says nothing of the parts. Recording a payment is not
+ * needed first: an order paid at the counter in BiT arrives here with the
+ * payment already on the invoice as a deposit. A writer's button, like every
+ * other send.
+ */
+function sendOrderReceipt(token, id) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such order.');
+  if (!isPartsOrder_(job)) throw new Error('That is a work order, not a parts order.');
+  if (!normalizeEmails_(job.customer_email)) {
+    throw new Error('This order has no customer email address, so there is nobody to send the receipt to.');
+  }
+  return {
+    emailed: send_(orderReceiptContent_(job)),
+    testMode: testMode_(),
+    sentTo: testMode_() ? testEmail_() : normalizeEmails_(job.customer_email)
+  };
+}
+
+function orderReceiptContent_(job) {
+  const rehearsal = testMode_();
+  const due = jobBalance_(job);
+  const owed = due !== null && !settled_(due);
+  const paid = orderPaid_(job);
+  const first = String(job.customer_name || '').split(' ')[0];
+  const items = String(job.work_requested || '').split('\n')
+    .map(function (line) { return line.trim(); }).filter(String);
+  const stage = orderStageWords_(job);
+  const onOrder = stage === 'is on order';
+
+  const banner = rehearsal
+    ? mailBox_('#FBEEE2', '#E4B48F',
+      '<div style="' + MAIL_FONT + ';font-size:14px;line-height:21px;color:#A6541F">' +
+        '<b>TEST MODE &mdash; not sent to the customer.</b><br>This is what ' +
+        esc_(normalizeEmails_(job.customer_email)) + ' would have received for order ' + esc_(job.id) + '.' +
+        '<br>Generated ' + esc_(rehearsalStamp_()) + '.</div>',
+      ';border-left:4px solid #A6541F')
+    : '';
+
+  const itemBox = items.length ? mailBox_('#FDFCF7', '#C7D5E0',
+    '<div style="' + MAIL_FONT + ';font-size:13px;line-height:19px;color:#5C7185;margin-bottom:4px">' +
+      'Your order</div>' +
+    items.map(function (line) {
+      return '<div style="' + MAIL_FONT + ';font-size:14.5px;line-height:22px;color:#14293E">' + esc_(line) + '</div>';
+    }).join('')) : '';
+
+  const cell = 'padding:3px 0;color:#5C7185;font-size:13px;line-height:19px';
+  const money = mailBox_('#FDFCF7', '#C7D5E0',
+    '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">' +
+      (paid ? '<tr><td style="' + MAIL_FONT + ';' + cell + '">Paid</td>' +
+        '<td align="right" style="' + MAIL_FONT + ';' + cell + '">' + money_(paid) + '</td></tr>' : '') +
+      '<tr><td style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;font-size:15px;line-height:23px">' +
+        (owed ? 'Left to pay' : 'Paid in full') + '</td>' +
+      '<td align="right" style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;' +
+        'font-size:17px;line-height:24px">' + money_(owed ? due : 0) + '</td></tr>' +
+    '</table>');
+
+  // The invoice is the itemised record of what they paid for, so it goes
+  // with every receipt for an order.
+  const attachments = [];
+  let invoiceAttached = false;
+  if (job.invoice_file) {
+    try {
+      attachments.push(DriveApp.getFileById(job.invoice_file).getBlob().setName('Invoice-' + job.id + '.pdf'));
+      invoiceAttached = true;
+    } catch (err) {
+      /* Binned by hand. The receipt still goes. */
+    }
+  }
+
+  const intro = (owed ? 'Thank you for your order.' : 'Thank you &mdash; your order is paid in full.') +
+    ' It ' + esc_(stage) + '.' +
+    (onOrder ? ' We will let you know as soon as it arrives.' : '') +
+    (invoiceAttached ? ' Your invoice is attached.' : '');
+
+  const to = rehearsal ? testEmail_() : normalizeEmails_(job.customer_email);
+  return {
+    to: to,
+    cc: shopCc_(to),
+    jobId: job.id,
+    kind: rehearsal ? 'customer_order_receipt_test' : 'customer_order_receipt',
+    suppressed: rehearsal,
+    intendedFor: normalizeEmails_(job.customer_email),
+    subject: (rehearsal ? '[TEST ' + rehearsalStamp_() + '] ' : '') +
+      (owed ? 'Your order — ' : 'Paid receipt — ') + SHOP_NAME + ' invoice ' + job.id,
+    html: noticeHtml_({
+      banner: banner,
+      greeting: first,
+      intro: intro + itemBox + money,
+      meta: 'INVOICE# ' + job.id,
+      buttons: owed && job.payment_link ? button_(job.payment_link, 'Pay ' + money_(due), '#C08A22') : ''
+    }),
+    text: (owed ? 'Thank you for your order.' : 'Thank you - your order is paid in full.') +
+      ' It ' + stage + '.' + (onOrder ? ' We will let you know as soon as it arrives.' : '') +
+      (items.length ? '\n\n' + items.join('\n') : '') +
+      (paid ? '\n\nPaid: ' + money_(paid) : '') +
+      (owed ? '\nLeft to pay: ' + money_(due) : '\nPaid in full.') +
+      (owed && job.payment_link ? '\nPay online: ' + job.payment_link : '') +
+      '\n\nInvoice ' + job.id + '\n' + SHOP_NAME + ' · ' + SHOP_PHONE,
+    attachments: attachments
+  };
+}
+
 /** An order that has come in — still waiting, or already collected. */
 function orderArrived_(job) {
   return isPartsOrder_(job) && (job.status === 'work_finished' || job.status === 'done');
@@ -5502,9 +5629,18 @@ function textSegments_(message) {
  * here, and a customer who has already paid most of it must not be asked for
  * the lot.
  */
-function invoiceTextMessage_(job, code) {
+function invoiceTextMessage_(job, code, purpose) {
   const due = jobBalance_(job);
   const owed = due === null || settled_(due) ? '' : money_(due);
+  // A parts order's receipt, sent the day it is paid for: what it is for,
+  // that it is paid, and that the parts are coming. One segment.
+  if (isPartsOrder_(job) && purpose === 'receipt') {
+    const onOrder = !orderArrived_(job);
+    return gsmSafe_(
+      SHOP_NAME + ': order ' + job.id + (owed ? ', ' + owed + ' due.' : ' paid in full, thanks.') +
+      (onOrder ? " Parts on order, we'll text when in." : '') +
+      ' Receipt: ' + invoiceUrl_(code));
+  }
   // A parts order is texted when it arrives, and that is the news: it is in
   // and can be collected. Same link, same balance rule, one segment.
   if (isPartsOrder_(job)) {
@@ -5531,17 +5667,22 @@ function invoiceTextMessage_(job, code) {
  * the customer has heard from. markInvoiceTexted is that second, separate
  * act, exactly like the email's own button.
  */
-function invoiceText(token, id) {
+function invoiceText(token, id, purpose) {
   requireAdmin_(token);
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
+  // A parts order has two texts: its receipt, any time, and its arrival
+  // notice, once it is in. A work order has the one.
+  purpose = isPartsOrder_(job) && purpose === 'receipt' ? 'receipt' : 'invoice';
   if (isPartsOrder_(job)) {
-    if (!orderArrived_(job)) throw new Error('Mark the order arrived first — the text tells them it is ready.');
+    if (purpose !== 'receipt' && !orderArrived_(job)) {
+      throw new Error('Mark the order arrived first — the text tells them it is ready.');
+    }
   } else if (job.status !== 'done') {
     throw new Error('That job is not marked done yet.');
   }
   const code = invoiceCodeFor_(job);
-  const message = invoiceTextMessage_(job, code);
+  const message = invoiceTextMessage_(job, code, purpose);
   return {
     code: code,
     url: invoiceUrl_(code),
@@ -5561,7 +5702,7 @@ function invoiceText(token, id) {
  * program, and the alternative — inferring it from the copy button — would
  * mark a job texted because somebody looked at the wording.
  */
-function markInvoiceTexted(token, id) {
+function markInvoiceTexted(token, id, purpose) {
   requireAdmin_(token);
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
@@ -5569,9 +5710,11 @@ function markInvoiceTexted(token, id) {
   // Its own kind for an order, so the page can tell "told them it is in"
   // apart from anything else that went to the same number.
   const order = isPartsOrder_(job);
-  logEmail_(job.id, order ? 'customer_arrived_text' : 'customer_text',
+  const receipt = order && purpose === 'receipt';
+  logEmail_(job.id, receipt ? 'customer_receipt_text' : order ? 'customer_arrived_text' : 'customer_text',
     job.customer_phone || '(no number on file)',
-    order ? 'Arrival text sent from BiT' : 'Invoice text sent from BiT', 'sent', '');
+    receipt ? 'Receipt text sent from BiT' : order ? 'Arrival text sent from BiT' : 'Invoice text sent from BiT',
+    'sent', '');
   return { code: code, url: invoiceUrl_(code) };
 }
 
@@ -5602,9 +5745,10 @@ function invoicePage(code) {
   const shop = { name: SHOP_NAME, phone: SHOP_PHONE, email: SERVICE_EMAIL, address: SHOP_ADDRESS };
   // The same answer for a code that never existed and a code on a job that is
   // not finished: nothing to be learned by trying codes. A parts order is
-  // live once it has arrived, which is when its text is written.
+  // live from the start: it is already an invoice, and its receipt text is
+  // sent the day it is paid for. The page says where it is.
   const order = isPartsOrder_(job);
-  if (!job || !(job.status === 'done' || (order && orderArrived_(job)))) return { notFound: true, shop: shop };
+  if (!job || !(job.status === 'done' || order)) return { notFound: true, shop: shop };
 
   const due = jobBalance_(job);
   return {
@@ -5625,7 +5769,10 @@ function invoicePage(code) {
       // Worded as an order on the page: "ready for pick-up", not "service
       // complete". pickedUp says it has already been collected.
       order: order,
-      pickedUp: order && job.status === 'done'
+      pickedUp: order && job.status === 'done',
+      arrived: order && orderArrived_(job),
+      // What has gone in so far, so a receipt can say "paid" with a figure.
+      paidSoFar: order ? orderPaid_(job) : null
     },
     // The same files the invoice email would carry, decided the same way:
     // whatever the writer marked for the customer when they added it.

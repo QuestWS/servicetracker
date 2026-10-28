@@ -4779,6 +4779,96 @@ describe('customer parts orders', () => {
     expect(backend.fn('archiveJobs', adminToken, ['01-9131'], true).changed).toBe(1);
   });
 
+  it('emails a paid receipt while the parts are still on order', () => {
+    goLive();
+    // Paid at the counter in BiT, so the payment is on the invoice as a deposit.
+    takeOrder('01-9131', { deposits: 2408.80, amountDue: 0 });
+    const result = backend.fn('sendOrderReceipt', adminToken, '01-9131');
+    expect(result.emailed).toBe(true);
+    const mail = backend.sentMail[0];
+    expect(mail.to).toBe('pat@example.com');
+    expect(mail.subject).toContain('Paid receipt');
+    const html = mail.opts.htmlBody;
+    expect(html).toContain('paid in full');
+    expect(html).toContain('is on order');
+    expect(html).toContain('let you know as soon as it arrives');
+    expect(html).toContain('TRIM ASSY,POWER');
+    expect(html).toContain('$2,408.80');
+    expect(html).not.toContain('pos.example.com');
+    expect(mail.opts.attachments.map((blob) => blob.getName())).toEqual(['Invoice-01-9131.pdf']);
+    const page = backend.fn('getJob', adminToken, '01-9131');
+    expect(page.emails[0].kind).toBe('customer_order_receipt');
+    // Sending a receipt changes nothing about the order.
+    expect(page.job.statusLabel).toBe('Ordered');
+    expect(page.job.paidAt).toBe(null);
+  });
+
+  it('says what is left, with a Pay button, on a receipt for a part-paid order', () => {
+    goLive();
+    takeOrder();
+    backend.fn('sendOrderReceipt', adminToken, '01-9131');
+    const mail = backend.sentMail[0];
+    expect(mail.subject).toContain('Your order');
+    expect(mail.opts.htmlBody).toContain('Left to pay');
+    expect(mail.opts.htmlBody).toContain('$1,408.80');
+    expect(mail.opts.htmlBody).toContain('https://pos.example.com/pay/order');
+    expect(mail.opts.htmlBody).not.toContain('2,408.80');
+  });
+
+  it('says where the order is on a receipt sent after it has come in', () => {
+    goLive();
+    takeOrder('01-9131', { deposits: 2408.80, amountDue: 0 });
+    backend.fn('markOrderArrived', adminToken, '01-9131');
+    backend.fn('sendOrderReceipt', adminToken, '01-9131');
+    expect(backend.sentMail[0].opts.htmlBody).toContain('ready for pick-up');
+    expect(backend.sentMail[0].opts.htmlBody).not.toContain('on order');
+  });
+
+  it('refuses a receipt with nobody to send it to, and for a work order', () => {
+    takeOrder('01-9131', { customerEmail: '' });
+    expect(() => backend.fn('sendOrderReceipt', adminToken, '01-9131')).toThrow(/no customer email/);
+    seedJob('01-8886');
+    expect(() => backend.fn('sendOrderReceipt', adminToken, '01-8886')).toThrow(/work order/);
+  });
+
+  it('writes a receipt text the day it is paid for, in one segment, logged only when sent', () => {
+    takeOrder('01-9131', { deposits: 2408.80, amountDue: 0 });
+    const text = backend.fn('invoiceText', adminToken, '01-9131', 'receipt');
+    expect(text.message).toContain('paid in full');
+    expect(text.message).toContain('Parts on order');
+    expect(text.message).toMatch(/\/i\/\?c=[0-9A-HJ-NP-TV-Z]{8}$/);
+    expect(text.segments).toBe(1);
+    expect(backend.fn('getJob', adminToken, '01-9131').emails).toHaveLength(0);
+    backend.fn('markInvoiceTexted', adminToken, '01-9131', 'receipt');
+    const logged = backend.fn('getJob', adminToken, '01-9131').emails;
+    expect(logged[0].kind).toBe('customer_receipt_text');
+    expect(logged[0].subject).toContain('Receipt');
+    expect(backend.sentMail).toHaveLength(0);
+  });
+
+  it('keeps a part-paid receipt text to one segment, with the balance', () => {
+    takeOrder('01-9131', { deposits: 0, amountDue: 12408.80 });
+    const text = backend.fn('invoiceText', adminToken, '01-9131', 'receipt');
+    expect(text.message).toContain('$12,408.80 due');
+    expect(text.segments).toBe(1);
+  });
+
+  it('opens the receipt link while the parts are still on order', () => {
+    takeOrder('01-9131', { deposits: 2408.80, amountDue: 0 });
+    const { code } = backend.fn('invoiceText', adminToken, '01-9131', 'receipt');
+    const page = backend.fn('invoicePage', code);
+    expect(page.notFound).toBeUndefined();
+    expect(page.invoice.order).toBe(true);
+    expect(page.invoice.arrived).toBe(false);
+    expect(page.invoice.settled).toBe(true);
+    expect(page.invoice.paidSoFar).toBe(2408.8);
+  });
+
+  it('gives a work order no receipt text of its own', () => {
+    const { id } = seedJob('01-8886');
+    expect(() => backend.fn('invoiceText', adminToken, id, 'receipt')).toThrow(/not marked done/);
+  });
+
   it('saving its details does not ask for a boat', () => {
     takeOrder();
     const { job } = backend.fn('saveJobDetails', adminToken, '01-9131', {
