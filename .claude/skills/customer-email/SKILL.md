@@ -145,6 +145,20 @@ verify, browser-check if a page was touched, commit, push to the feature
 branch *and* `main`, deploy only if `service-tracker.gs` changed, then report —
 flagging clearly if `setup()` now has to be run.
 
+## The arrival notice, for a parts order
+
+A customer parts order (see `parts-props`) has one message a work order does
+not: **your order has arrived**. `sendArrivalEmail` builds it from
+`arrivalEmailContent_` — what came in (`work_requested`, one line per part),
+where to collect it, and the balance, never the grand total, with a Pay
+button only when something is owed and there is a link. Logged as
+`customer_arrived` (`_test` in a rehearsal); the text version is logged as
+`customer_arrived_text`. `markOrderArrived` sends nothing.
+
+An order is never sent the "service complete" invoice email —
+`sendInvoiceEmail` refuses it. Its receipt (`sendPaymentEmail_`) carries the
+invoice PDF instead.
+
 ## The invoice by text
 
 Plenty of customers here never give an email address — a phone number at the

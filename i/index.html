@@ -150,16 +150,28 @@ function render(data) {
       </div>
     </section>` : '';
 
+  // A parts order is texted when it arrives, so its news is that it is in and
+  // ready to collect — not that any work was done.
+  const headline = !invoice.order ? `${greeting} service is complete`
+    : invoice.pickedUp ? `${greeting} order`
+    : `${greeting} order is ready for pick-up`;
+  const lead = !invoice.order
+    ? (invoice.settled
+      ? 'The work you asked for has been done and your account is settled. Thank you.'
+      : 'The work you asked for has been done. Your invoice is below, and you can pay online.')
+    : invoice.pickedUp
+      ? (invoice.settled ? 'Collected and paid for. Thank you.' : 'Your invoice is below, and you can pay online.')
+      : (invoice.settled
+        ? `It is all paid for, so just come and collect it${shop && shop.address ? ` at ${esc(shop.address)}` : ''}.`
+        : `Collect it${shop && shop.address ? ` at ${esc(shop.address)}` : ''}.${invoice.paymentLink
+          ? ' You can pay online now, or when you come in.' : ' The balance can be paid when you come in.'}`);
+
   main.innerHTML = `
     <section class="card" style="margin-top:22px">
       <p class="hint mono" style="margin:0 0 6px;letter-spacing:0.06em">
         INVOICE# ${esc(invoice.id)}${invoice.unit ? ` · ${esc(invoice.unit)}` : ''}</p>
-      <h2 class="invoice-headline">${greeting} service is complete</h2>
-      <p class="lead" style="margin:8px 0 16px">
-        ${invoice.settled
-          ? 'The work you asked for has been done and your account is settled. Thank you.'
-          : 'The work you asked for has been done. Your invoice is below, and you can pay online.'}
-      </p>
+      <h2 class="invoice-headline">${headline}</h2>
+      <p class="lead" style="margin:8px 0 16px">${lead}</p>
       ${owed}
       ${pay}
       ${pdf}

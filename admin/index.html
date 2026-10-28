@@ -26,6 +26,7 @@
   <nav>
     <a class="linkbtn" href="?" data-nav="jobs">Jobs</a>
     <a class="linkbtn" href="?view=intake" data-nav="intake">New work order</a>
+    <a class="linkbtn" href="?view=orders" data-nav="orders">Customer orders</a>
     <a class="linkbtn" href="?view=statements" data-nav="statements">Statements</a>
     <a class="linkbtn" href="?view=parts" data-nav="parts">Parts</a>
     <a class="linkbtn" href="?view=props" data-nav="props">Props</a>
@@ -43,10 +44,11 @@ import { api as callBackend, storeSession, storedToken, tokenExpiry, clearSessio
          savedCopy, saveCopy, savedOneOf, saveOneOf } from '../assets/lib/api.js';
 import { byLastName } from '../assets/lib/names.js';
 import { SITE_URL } from '../assets/lib/config.js';
-import { ENTRY_LABEL, STATUSES, STATUS_LABEL, STATUS_PILL, formatHours, decimalHours } from '../assets/lib/entry-types.js';
+import { ENTRY_LABEL, STATUSES, STATUS_LABEL, STATUS_PILL, ORDER_STATUSES, ORDER_STATUS_LABEL, statusLabelFor,
+  formatHours, decimalHours } from '../assets/lib/entry-types.js';
 import { extractPdf } from '../assets/lib/extract.js';
 import { parseWorkOrder, FIELD_LABELS } from '../assets/lib/parse-work-order.js';
-import { parseInvoiceTotals, formatMoney } from '../assets/lib/parse-invoice.js';
+import { parseInvoiceTotals, parseInvoiceItems, describeItems, formatMoney } from '../assets/lib/parse-invoice.js';
 import { stampWorkOrder, qrSvg } from '../assets/lib/stamp.js';
 import { trackingUrl } from '../assets/lib/tracking.js';
 import { emailList, joinEmails } from '../assets/lib/emails.js';
@@ -302,6 +304,13 @@ async function consumeMagicLink(nonce) {
 // next to Done — the two you go looking for rather than land on.
 const JOB_FILTERS = ['open', 'received', 'work_underway', 'work_finished', 'all', 'done', 'archived'];
 const JOB_FILTER_LABEL = Object.assign({ open: 'Open jobs', all: 'All', archived: 'Archived' }, STATUS_LABEL);
+// A customer's parts order: the same list, the same chips, its own words.
+// Open is the same rule too — not (picked up AND paid).
+const ORDER_FILTERS = ['open', 'received', 'work_finished', 'all', 'done', 'archived'];
+const ORDER_FILTER_LABEL = Object.assign({}, ORDER_STATUS_LABEL, { open: 'Open orders', all: 'All', archived: 'Archived' });
+
+/** Which list a row belongs on. A row from before orders existed is a job. */
+const kindOf = (job) => (job.kind === 'parts' ? 'parts' : 'job');
 
 /**
  * The three ways the writer looks for a job.
@@ -502,9 +511,10 @@ let jobsCacheAt = null;
 let jobsFreshAsked = false;
 
 /** The same rules listJobs applies on the backend, applied to the cached list. */
-function filterJobs(all, status, search) {
+function filterJobs(all, status, search, kind = 'job') {
   const wanted = search.trim().toLowerCase();
   return all.filter((job) => {
+    if (kindOf(job) !== kind) return false;
     // An archived job is on the Archived list and no other — not even All.
     if (status === 'archived') {
       if (!job.archivedAt) return false;
@@ -516,12 +526,38 @@ function filterJobs(all, status, search) {
       return false;
     }
     if (!wanted) return true;
-    return [job.id, job.customerName, job.boatInfo, job.customerPhone]
+    // An order is looked for by what was ordered as often as by who.
+    return [job.id, job.customerName, job.boatInfo, job.customerPhone, kind === 'parts' ? job.workRequested : '']
       .join(' ').toLowerCase().indexOf(wanted) !== -1;
   });
 }
 
-async function renderJobs() {
+/** What the stats and chips count, worked out here for the orders list. */
+function countJobs(all, kind) {
+  const counts = { open: 0, archived: 0 };
+  all.forEach((job) => {
+    if (kindOf(job) !== kind) return;
+    if (job.archivedAt) { counts.archived += 1; return; }
+    counts[job.status] = (counts[job.status] || 0) + 1;
+    if (!(job.status === 'done' && job.paidAt)) counts.open += 1;
+  });
+  return counts;
+}
+
+async function renderJobs(kind = 'job') {
+  // Customer parts orders are drawn by this same page off the same fetch:
+  // only the words, the chips and the address differ.
+  const orders = kind === 'parts';
+  const filters = orders ? ORDER_FILTERS : JOB_FILTERS;
+  const filterLabel = orders ? ORDER_FILTER_LABEL : JOB_FILTER_LABEL;
+  const stages = orders ? ORDER_STATUSES : STATUSES;
+  const stageLabel = orders ? ORDER_STATUS_LABEL : STATUS_LABEL;
+  const home = orders ? '?view=orders' : '?';
+  const startQuery = () => {
+    const next = new URLSearchParams();
+    if (orders) next.set('view', 'orders');
+    return next;
+  };
   // Open is the default, so it is the one that carries no parameter.
   const status = params.get('status') || 'open';
   const search = params.get('q') || '';
@@ -566,19 +602,20 @@ async function renderJobs() {
     view.insertAdjacentHTML('afterbegin', `<div class="banner ${tone}" id="liststrip" style="margin-bottom:12px">${esc(text)}</div>`);
   }
 
-  function draw({ jobs: everything, counts, testMode: mode }, stale) {
+  function draw({ jobs: everything, counts: jobCounts, testMode: mode }, stale) {
+    const counts = orders ? countJobs(everything, 'parts') : jobCounts;
     // Somebody may already be typing a search into the list drawn from the
     // cache; the fresh copy landing must not take the words out from under them.
     const typing = !stale && document.activeElement && document.activeElement.id === 'q'
       ? { value: $('q').value, at: $('q').selectionStart } : null;
     showTestBanner(mode);
-    const jobs = sortJobs(filterJobs(everything, status, search), sort);
+    const jobs = sortJobs(filterJobs(everything, status, search, kind), sort);
     // Done is where finished jobs are cleared off in bulk, and Archived is
     // where a mistake is put back — the two lists with a tick on every row.
     const picking = status === 'done' || status === 'archived';
 
     const href = (value) => {
-      const next = new URLSearchParams();
+      const next = startQuery();
       if (value !== 'open') next.set('status', value);
       if (search) next.set('q', search);
       // The order carries across the chips: picking a different stage should
@@ -590,25 +627,28 @@ async function renderJobs() {
 
     view.innerHTML = `
       <div class="row" style="justify-content:space-between;margin-bottom:14px">
-        <h1 class="page-title">Jobs</h1>
-        <a class="btn navy" href="?view=intake">New work order</a>
+        <h1 class="page-title">${orders ? 'Customer orders' : 'Jobs'}</h1>
+        ${orders ? `<a class="btn navy" href="?view=neworder">New parts order</a>`
+          : `<a class="btn navy" href="?view=intake">New work order</a>`}
       </div>
+      ${orders ? `<p class="lead" style="margin-top:-6px">Parts a customer has bought from a BiT invoice:
+        ordered, arrived, picked up. No mechanic, no work order — nothing here reaches the shop floor.</p>` : ''}
 
       <div class="stats" style="margin-bottom:16px">
-        ${STATUSES.map((value) => `<a class="stat" href="${href(value)}">
-          <div class="v">${counts[value] || 0}</div><div class="k">${STATUS_LABEL[value]}</div></a>`).join('')}
+        ${stages.map((value) => `<a class="stat" href="${href(value)}">
+          <div class="v">${counts[value] || 0}</div><div class="k">${stageLabel[value]}</div></a>`).join('')}
       </div>
 
       <form class="row" id="searchform" style="margin-bottom:14px">
-        <input class="txt" id="q" placeholder="Invoice #, customer or boat" value="${esc(search)}" style="flex:1 1 240px">
+        <input class="txt" id="q" placeholder="${orders ? 'Invoice #, customer or part' : 'Invoice #, customer or boat'}" value="${esc(search)}" style="flex:1 1 240px">
         <button class="btn ghost" type="submit">Search</button>
-        ${search || status !== 'open' ? `<a class="btn ghost" href="?">Clear</a>` : ''}
+        ${search || status !== 'open' ? `<a class="btn ghost" href="${home}">Clear</a>` : ''}
       </form>
 
       <div class="row filterbar" style="margin-bottom:14px">
         <div class="row tight" style="flex:1 1 auto">
-          ${JOB_FILTERS.map((value) => `<a class="chip${status === value ? ' on' : ''}" href="${href(value)}">${
-            JOB_FILTER_LABEL[value]}${value === 'open' ? ` (${counts.open || 0})`
+          ${filters.map((value) => `<a class="chip${status === value ? ' on' : ''}" href="${href(value)}">${
+            filterLabel[value]}${value === 'open' ? ` (${counts.open || 0})`
               : value === 'archived' && counts.archived ? ` (${counts.archived})` : ''}</a>`).join('')}
         </div>
         <label class="sortby" for="sortby">Sort
@@ -635,16 +675,27 @@ async function renderJobs() {
           </div>
           <div class="grow">
             <div class="who">${esc(job.customerName || '(no name on file)')}</div>
-            <div class="sub">${esc(job.boatInfo || '(no boat details)')}</div>
+            <div class="sub">${esc(orders
+              ? (String(job.workRequested || '').split('\n')[0] || '(no parts listed)')
+              : (job.boatInfo || '(no boat details)'))}</div>
           </div>
           <div class="row tight jobmeta">
             ${job.needsReview.length ? `<span class="pill red">${job.needsReview.length} to fill in</span>` : ''}
-            ${job.hours ? `<span class="pill frost">${formatHours(job.hours)}</span>` : ''}
-            <span class="pill grey">${job.entryCount} log</span>
-            <span class="pill ${STATUS_PILL[job.status]}">${STATUS_LABEL[job.status]}</span>
+            ${orders
+              ? (job.balance > 0.005 ? `<span class="pill gold">${formatMoney(job.balance)} due</span>`
+                : job.balance !== null && job.balance !== undefined ? '<span class="pill grey">Paid</span>' : '')
+              : `${job.hours ? `<span class="pill frost">${formatHours(job.hours)}</span>` : ''}
+            <span class="pill grey">${job.entryCount} log</span>`}
+            <span class="pill ${STATUS_PILL[job.status]}">${stageLabel[job.status]}</span>
             <span class="sub" style="min-width:78px;text-align:right">${relativeDays(job.updatedAt)}</span>
           </div>
         </a>${picking ? '</div>' : ''}`).join('')}</div>`
+      : orders ? `<div class="empty">${
+          search ? 'No orders match that search.'
+          : status === 'open' ? 'Nothing open. Every order is picked up and paid.'
+          : status === 'archived' ? 'Nothing archived. Picked-up orders can be filed away from the Picked up list.'
+          : status !== 'all' ? 'No orders at that stage.'
+          : 'No customer orders yet. Upload a BiT invoice to start the first one.'}</div>`
       : `<div class="empty">${
           search ? 'No jobs match that search.'
           : status === 'open' ? 'Nothing open. Every job is done and paid.'
@@ -654,7 +705,7 @@ async function renderJobs() {
 
     $('searchform').onsubmit = (event) => {
       event.preventDefault();
-      const next = new URLSearchParams();
+      const next = startQuery();
       if (status !== 'all') next.set('status', status);
       if ($('q').value.trim()) next.set('q', $('q').value.trim());
       if (sort !== 'newest') next.set('sort', sort);
@@ -664,13 +715,13 @@ async function renderJobs() {
     // In the address, so it survives a refresh and the browser's Back button
     // walks the list the way the writer walked it.
     $('sortby').onchange = (event) => {
-      const next = new URLSearchParams();
+      const next = startQuery();
       if (status !== 'open') next.set('status', status);
       if (search) next.set('q', search);
       if (event.target.value !== 'newest') next.set('sort', event.target.value);
       go(next.toString());
     };
-    if (picking && jobs.length) wirePicking(status === 'done');
+    if (picking && jobs.length) wirePicking(status === 'done', kind);
     if (typing) {
       $('q').value = typing.value;
       $('q').focus();
@@ -683,7 +734,7 @@ async function renderJobs() {
  * The ticks on the Done and Archived lists. "Select all" is all of what is on
  * screen — the search narrows it — and is half-ticked when some are.
  */
-function wirePicking(archiving) {
+function wirePicking(archiving, kind = 'job') {
   const boxes = Array.from(view.querySelectorAll('[data-pick]'));
   const all = $('pickall');
   const go = $('pickgo');
@@ -720,7 +771,7 @@ function wirePicking(archiving) {
       }
       toast(`${result.changed} job${result.changed === 1 ? '' : 's'} ${archiving ? 'archived' : 'restored'}.`
         + (result.skipped ? ` ${result.skipped} skipped — only a done job can be archived.` : ''));
-      await renderJobs();
+      await renderJobs(kind);
     } catch (error) {
       go.textContent = archiving ? 'Archive selected' : 'Restore selected';
       sync();
@@ -868,8 +919,340 @@ async function drawJob(id, data, savedAt) {
   // The review ask hangs off the shop having actually set a review link. An
   // ask that links nowhere loses the review AND annoys the customer.
   const reviewUrl = data.reviewUrl || '';
+  // A customer's parts order: same row, same money, no mechanic.
+  const order = job.kind === 'parts';
 
-  view.innerHTML = `
+  // The cards a customer's parts order shares with a work order, drawn once
+  // here so both pages carry the same markup and the same element ids — the
+  // handlers further down wire whichever page is on screen.
+  const invoiceForm = `
+          <form id="invoiceform">
+            <label class="fld" for="invoice">${order ? 'Invoice PDF (from BiT)' : 'Final invoice PDF (from BiT — no QR needed)'}</label>
+            <input class="txt" id="invoice" type="file" accept="application/pdf">
+            ${job.invoiceFile ? `<p class="hint">On file:
+              <a href="${driveFileUrl(job.invoiceFile)}" target="_blank" rel="noreferrer">invoice-${esc(job.id)}.pdf</a>
+              — uploading again replaces it.</p>` : ''}
+            <p class="msg" id="totalsmsg"></p>
+
+            <label class="fld" for="amountDue">Amount due${job.deposits ? ` (after ${formatMoney(job.deposits)} in deposits)` : ''}</label>
+            <input class="txt mono" id="amountDue" inputmode="decimal" placeholder="read from the invoice"
+              value="${job.amountDue === null ? '' : job.amountDue.toFixed(2)}">
+            <input type="hidden" id="grandTotal" value="${job.grandTotal === null ? '' : job.grandTotal}">
+            <input type="hidden" id="deposits" value="${job.deposits === null ? '' : job.deposits}">
+            <p class="hint">Read off the invoice when you upload it, and shown to the customer with
+              the payment link. Deposits mean this is not the grand total — check it before you send.</p>
+
+            <label class="fld" for="paymentLink">POS+ payment link</label>
+            <input class="txt mono" id="paymentLink" placeholder="https://..." value="${esc(job.paymentLink || '')}">
+            <p class="hint">Generate the link in POS+ and paste it here — we only store it.</p>
+            <button class="btn ghost" type="submit" style="margin-top:14px">Save invoice &amp; link</button>
+          </form>`;
+  const paymentCard = (job.status === 'done' || order) ? `<section class="card">
+          <h2>Record a payment</h2>
+          <p class="hint" style="margin-top:0">Money taken against this invoice, and the receipt
+            that goes back with it. Several payments recorded together go out as one receipt —
+            a card at the counter and a check in the post are one payment as far as the
+            customer is concerned.</p>
+
+          <div id="paylines">${payLineHtml(0, balance !== null && (balance > 0 || !job.paidAt)
+            ? Math.max(balance, 0).toFixed(2) : '')}</div>
+          <button class="btn ghost sm" type="button" id="addpayline" style="margin-top:8px">
+            Add another payment</button>
+
+          <label class="fld" for="paynote" style="margin-top:14px">Anything to add (optional)</label>
+          <textarea class="txt" id="paynote" rows="2"
+            placeholder="Your spare prop is on the rack by the door whenever you want it."></textarea>
+          <p class="hint">Goes in the receipt, in the shop's own words.</p>
+
+          <label class="fld" for="payfiles">Attach to the receipt</label>
+          <input id="payfiles" type="file" multiple>
+          <p class="hint">${order ? 'The invoice on file always goes with the receipt for an order. Add'
+            : 'The invoice with the payment noted on it, and'} the card receipt if there
+            was one. Anything too big to email goes to the customer as a Drive link instead, and
+            everything here is kept on the job under Attachments.</p>
+
+          <label class="checkline" style="margin-top:6px">
+            <input type="checkbox" id="payfull">
+            <span>This settles the account in full
+              <small>Ticking this is what closes the ticket and takes it off the open jobs list.
+                Nothing else does &mdash; not the balance reaching zero, and not sending the
+                receipt.</small></span>
+          </label>
+          <label class="checkline">
+            <input type="checkbox" id="payreview"${reviewUrl ? '' : ' disabled'}>
+            <span>Ask for a Google review
+              <small>${reviewUrl
+                ? 'For a customer you would be glad to hear from again. Leave it off and the same receipt goes without the ask.'
+                : 'Set the shop\'s review link on the <a href="?view=setup">App setup</a> page first — an ask that links nowhere is worse than no ask.'}</small></span>
+          </label>
+
+          <div id="paysummary"></div>
+          <div id="paymsg"></div>
+
+          <button class="btn gold block" type="button" id="paysend" style="margin-top:12px"${
+            job.customerEmail ? '' : ' disabled title="Add a customer email address first"'}>
+            Record it and email the receipt</button>
+          <button class="btn ghost block" type="button" id="payrecord" style="margin-top:8px">
+            Record it without emailing</button>
+          ${job.customerEmail ? '' : `<p class="hint" style="margin-top:8px">No email address on file,
+            so the payment can be recorded but no receipt can go out.</p>`}
+        </section>` : '';
+  const attachmentsCard = `
+        <section class="card">
+          <h2>Attachments${files.length ? ` (${files.length})` : ''}</h2>
+          <p class="hint" style="margin-top:0">Anything else that belongs on this job — a photo of
+            what you found, a supplier quote. You say which kind as you add it, and that is the
+            only thing that decides whether a customer ever sees it.</p>
+
+          ${files.length ? `<div class="filelist">${files.map((file) => `
+            <div class="filerow">
+              <span class="pill ${file.visibility === 'customer' ? 'green' : 'grey'}">${
+                file.visibility === 'customer' ? 'Customer' : 'Internal'}</span>
+              <a class="grow" href="${driveFileUrl(file.driveFile)}" target="_blank" rel="noreferrer">${esc(file.name)}</a>
+              ${file.size ? `<span class="filesize">${esc(formatBytes(file.size))}</span>` : ''}
+              <button type="button" data-delfile="${esc(file.id)}" aria-label="Remove ${esc(file.name)}">Remove</button>
+            </div>`).join('')}</div>` : ''}
+          ${overMailLimit ? `<div class="msg note" id="filelimit">The customer files come to
+            ${esc(formatBytes(customerBytes))}, and an email will only carry
+            ${esc(formatBytes(mailLimit))}. Whatever does not fit goes to the customer as a
+            <b>Drive link</b> in the invoice email instead of an attachment. The invoice PDF
+            is always attached.</div>` : ''}
+
+          <label class="fld" for="jobfile">Add a file</label>
+          <input id="jobfile" type="file">
+          <div class="row tight" style="margin-top:10px">
+            <button class="btn ghost sm" type="button" id="addfilecustomer" disabled>Attach for the customer</button>
+            <button class="btn ghost sm" type="button" id="addfileinternal" disabled>Keep internal</button>
+          </div>
+          <p class="hint">${order
+            ? 'A customer file is offered on the page the arrival text opens. An internal one never leaves the shop.'
+            : `A customer file is attached to the invoice email when you send it —
+            or sent as a Drive link if it is too big to email. An internal one never leaves
+            the shop.`}</p>
+          <div id="filemsg"></div>
+        </section>`;
+  const owesCard = job.amountDue !== null ? `<section class="card">
+          <h2>What the customer owes</h2>
+          <div class="hourstotal">${formatMoney(balance === null ? job.amountDue : balance)}</div>
+          ${job.grandTotal !== null ? `<div class="kv"><span class="k">Grand total</span>
+            <b style="font-family:var(--mono)">${formatMoney(job.grandTotal)}</b></div>` : ''}
+          ${job.deposits ? `<div class="kv"><span class="k">Deposits already paid</span>
+            <b style="font-family:var(--mono)">${formatMoney(job.deposits)}</b></div>` : ''}
+          <div class="kv"><span class="k">Invoice amount due</span>
+            <b style="font-family:var(--mono)">${formatMoney(job.amountDue)}</b></div>
+          ${paidTotal ? `<div class="kv"><span class="k">Payments received</span>
+            <b style="font-family:var(--mono)">&minus;${formatMoney(paidTotal)}</b></div>` : ''}
+          <p class="hint">The figure at the top is what is left to collect: the invoice's own
+            amount due, less everything recorded against it. That is what a customer is shown
+            and what a statement would chase.</p>
+
+          ${payments.length ? `
+            <div class="subhead">Payments recorded (${payments.length})</div>
+            ${payments.map((payment) => `<div class="kv">
+              <span class="k">${esc(payment.methodLabel)}${payment.reference ? ` · ${esc(payment.reference)}` : ''}
+                <div style="font-size:12px;color:var(--muted)">${formatDate(payment.receivedAt)}</div></span>
+              <b style="font-family:var(--mono)">${formatMoney(payment.amount)}</b></div>`).join('')}
+            ${job.paidAt && balance !== null && balance > 0.005 ? `<p class="hint">
+              Closed as settled with ${formatMoney(balance)} not collected.</p>` : ''}`
+            : ''}
+          ${settled && !job.paidAt ? `<div class="banner warn" style="margin-top:10px">
+            Nothing left to collect, but the ticket is still open. Tick <b>${order ? 'Paid in full'
+            : 'Invoice paid, ticket closed'}</b> above, or record the last payment as settling the account in full.</div>` : ''}
+        </section>` : '';
+  const timelineCard = `
+        <section class="card">
+          <h2>Timeline</h2>
+          <p class="hint" style="margin-top:0">When this job changed hands and status.</p>
+          <button class="btn ghost block" type="button" id="showhistory">Show the timeline</button>
+          <div id="history"></div>
+        </section>`;
+  const partsCard = `
+        <section class="card">
+          <h2>${order ? 'On the parts list' : 'Parts for this job'}</h2>
+          <p class="hint" style="margin-top:0">${order
+            ? `What this order is waiting on from a supplier. Each line is on the <a href="?view=parts">parts
+               list</a>, where it is ordered in the normal batch and ticked off when it comes in.`
+            : `For when somebody rings up wanting a part ordered.
+            It goes straight onto the <a href="?view=parts">parts list</a>, where it takes a supplier
+            and order number and gets ticked off when it arrives.`}</p>
+
+          ${parts && parts.length ? `<div class="ticketparts">${parts.map((part) => `
+            <div class="kv">
+              <span class="k">
+                ${part.quantity ? `${part.quantity}&times; ` : ''}<b style="font-family:var(--mono)">${esc(part.partIdentifier || '(no number)')}</b>
+                ${part.description ? `<span class="sub"> · ${esc(part.description)}</span>` : ''}
+              </span>
+              <b><span class="pill ${{ needed: 'red', ordered: 'gold', received: 'green' }[part.status]}">${
+                { needed: 'To order', ordered: 'On order', received: 'Arrived' }[part.status] || esc(part.status)
+              }</span></b>
+            </div>
+            ${part.vendor ? `<div class="sub" style="margin:-4px 0 8px">${esc(part.vendor)}${part.orderNumber ? ` · order ${esc(part.orderNumber)}` : ''}</div>` : ''}`).join('')}</div>`
+            : ''}
+
+          <label class="fld" for="jobpartnum">Part number</label>
+          <input class="txt mono" id="jobpartnum" placeholder="Optional — a description will do">
+          <label class="fld" for="jobpartdesc">What is it</label>
+          <input class="txt" id="jobpartdesc" placeholder="Impeller kit, 3.0L">
+          <div class="grid2">
+            <div>
+              <label class="fld" for="jobpartqty">How many</label>
+              <input class="txt mono" id="jobpartqty" inputmode="decimal" placeholder="1">
+            </div>
+            <div>
+              <label class="fld" for="jobpartnote">Note (optional)</label>
+              <input class="txt" id="jobpartnote" placeholder="Customer called Tuesday">
+            </div>
+          </div>
+          <button class="btn ghost block" type="button" id="addjobpart" style="margin-top:10px">Add to the parts list</button>
+        </section>`;
+  const emailLogCard = emails.length ? `<section class="card">
+          <h2>Email log</h2>
+          ${emails.map((mail) => `<div class="kv">
+            <span class="k">${formatDateTime(mail.created_at)} · ${esc(String(mail.kind).replace('_', ' '))}</span>
+            <b><span class="pill ${mail.status === 'sent' ? 'green' : mail.status === 'skipped' ? 'grey' : 'red'}">${esc(mail.status)}</span>
+              <div style="font-weight:400;font-size:12px;color:var(--muted)">${esc(mail.recipient)}${mail.error ? ` — ${esc(mail.error)}` : ''}</div></b>
+          </div>`).join('')}
+        </section>` : '';
+
+  // The order's own messages: arrival email, arrival text. Their own kinds
+  // in the log, so "told them it is in" is never read off anything else.
+  const arrivalEmail = emails.find((mail) =>
+    mail.kind === 'customer_arrived' || mail.kind === 'customer_arrived_test');
+  const arrivalSent = arrivalEmail && arrivalEmail.status !== 'failed' && arrivalEmail.status !== 'skipped';
+  const arrivalTexted = emails.find((mail) => mail.kind === 'customer_arrived_text');
+  const arrived = job.status === 'work_finished' || job.status === 'done';
+  // Every line on the parts list is in: the order is very likely sitting on
+  // the shelf, and the writer should hear that from the page.
+  const partsIn = parts && parts.length && parts.every((part) => part.status === 'received');
+  const step = (label, at, on) => `<div class="kv"><span class="k">${label}</span>
+    <b>${on ? `<span class="pill green">${at ? formatDate(at) : 'Done'}</span>` : '<span class="pill grey">Not yet</span>'}</b></div>`;
+
+  const orderHtml = order ? `
+    <div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <div>
+        <h1 class="page-title">Order ${esc(job.id)}</h1>
+        <div class="row tight" style="margin-top:6px">
+          <span class="pill ${STATUS_PILL[job.status]}">${statusLabelFor(job)}</span>
+          <span class="sub" style="color:var(--muted)">Taken ${formatDateTime(job.createdAt)}</span>
+        </div>
+      </div>
+      <a class="btn ghost" href="?view=orders">Back to orders</a>
+    </div>
+
+    <div id="notice"></div>
+
+    ${job.needsReview.length ? `<div class="banner warn" style="margin:14px 0">
+      Still needed: ${job.needsReview.map((f) => FIELD_LABELS[f] || f).join(', ')}.
+      The customer cannot be emailed without an address.</div>` : ''}
+
+    <div class="split" style="margin-top:16px">
+      <div class="stack">
+        <section class="card">
+          <h2>Customer</h2>
+          <form id="details">
+            <label class="fld" for="customerName">Customer name</label>
+            <input class="txt${job.needsReview.includes('customerName') ? ' field-flag' : ''}" id="customerName" value="${esc(job.customerName || '')}">
+            <label class="fld" for="customerPhone">Phone</label>
+            <input class="txt${job.needsReview.includes('customerPhone') ? ' field-flag' : ''}" id="customerPhone" value="${esc(job.customerPhone || '')}">
+            <label class="fld" for="customerEmail">Email</label>
+            ${emailFieldHtml('jobemails', job.customerEmail, job.needsReview.includes('customerEmail'))}
+            <label class="fld" for="workRequested">What was ordered</label>
+            <textarea class="txt" id="workRequested" rows="3">${esc(job.workRequested || '')}</textarea>
+            <p class="hint">One part per line. This is what the arrival email lists.</p>
+            <label class="fld" for="boatInfo">For (optional)</label>
+            <input class="txt" id="boatInfo" value="${esc(job.boatInfo || '')}" placeholder="2019 Yamaha 242X">
+            <button class="btn navy" type="submit" style="margin-top:14px">Save details</button>
+          </form>
+        </section>
+
+        <section class="card">
+          <h2>The order</h2>
+          ${step('Ordered', job.createdAt, true)}
+          ${step('Arrived', job.arrivedAt, arrived)}
+          ${step('Picked up', job.doneAt, job.status === 'done')}
+          <label class="checkline">
+            <input type="checkbox" id="ck-paid" ${job.paidAt ? 'checked' : ''}>
+            <span>Paid in full
+              <small>${job.paidAt
+                ? `Ticked ${formatDate(job.paidAt)}`
+                : 'Recording a payment as settling the account in full ticks it for you. Picked up and paid is what takes an order off the open list.'}</small></span>
+          </label>
+
+          <hr style="border:0;border-top:1px solid var(--ice);margin:18px 0">
+
+          ${!arrived ? `
+            ${partsIn ? `<div class="banner ok" style="margin-bottom:10px">Everything on the parts
+              list for this order has come in.</div>` : ''}
+            <p class="hint" style="margin:0 0 10px">When it is on the shelf. This tells nobody —
+              letting the customer know is the next step, and it is up to you.</p>
+            <button class="btn gold block" type="button" id="markarrived">Mark arrived</button>`
+          : job.status === 'done' ? `
+            <div class="banner ok">Picked up ${formatDateTime(job.doneAt)}.</div>
+            ${job.archivedAt ? `
+              <div class="banner info" style="margin-top:10px">Archived ${formatDateTime(job.archivedAt)} —
+                off every orders list but Archived.</div>
+              <button class="btn ghost block" type="button" id="archivejob" style="margin-top:8px">Restore to the orders list</button>`
+            : payments.length || job.paidAt ? `
+              <button class="btn ghost block" type="button" id="archivejob" style="margin-top:10px">Archive this order</button>
+              <p class="hint" style="margin-top:6px">Takes it off the Picked up list. Nothing on it
+                changes, and it can be restored from Archived.</p>` : ''}`
+          : `
+            <h3 style="font-family:var(--disp);font-size:17px;color:var(--navy);margin:0 0 4px">Tell the customer it is in</h3>
+            ${arrivalSent
+              ? `<p class="hint" style="margin:0 0 8px">Arrival emailed ${formatDateTime(arrivalEmail.created_at)}
+                 to ${esc(arrivalEmail.recipient)}${data.testMode ? ' — test mode, so that was the shop, not the customer' : ''}.</p>`
+              : `<p class="hint" style="margin:0 0 8px">Nothing has been sent. Marking it arrived never
+                 tells anybody by itself.</p>`}
+            <button class="btn ${arrivalSent ? 'ghost' : 'gold'} block" type="button" id="sendarrival"${job.customerEmail ? '' : ' disabled title="Add a customer email address first"'}>
+              ${arrivalSent ? 'Send the arrival email again' : 'Email the customer it has arrived'}
+            </button>
+            ${job.customerEmail ? '' : '<p class="hint" style="margin-top:8px">No email address on file for this customer.</p>'}
+
+            <p class="hint" style="margin:14px 0 8px">Or text it. BiT sends the text; we only write it.
+              Copy this into BiT, send it from there, then tell us you have.</p>
+            ${arrivalTexted ? `<p class="hint" style="margin:0 0 10px">Texted ${formatDateTime(arrivalTexted.created_at)}
+              to ${esc(arrivalTexted.recipient)}.</p>` : ''}
+            ${data.testMode ? `<div class="banner warn" style="margin:0 0 10px">Test mode holds the
+              <b>email</b> back. It cannot hold this one back — we do not send it, BiT does.</div>` : ''}
+            <div id="textbox" hidden>
+              <label class="fld" for="invoicetext">The message</label>
+              <textarea class="txt" id="invoicetext" rows="4" readonly></textarea>
+              <p class="hint" id="invoicetextmeta"></p>
+              <div class="row tight" style="margin-top:10px">
+                <button class="btn ghost sm" type="button" id="copyinvoicetext">Copy the message</button>
+                <button class="btn ghost sm" type="button" id="opentextlink">Open the link</button>
+                <button class="btn gold sm" type="button" id="marktexted">I have sent it</button>
+              </div>
+            </div>
+            <button class="btn ${arrivalTexted ? 'ghost' : 'gold'} block" type="button" id="writetext" style="margin-top:10px">
+              ${arrivalTexted ? 'Write the text again' : 'Write the text message'}
+            </button>
+
+            <hr style="border:0;border-top:1px solid var(--ice);margin:18px 0">
+            <button class="btn navy block" type="button" id="markdone">Mark picked up</button>`}
+        </section>
+${paymentCard}
+      </div>
+
+      <div class="stack">
+${owesCard}
+        <section class="card">
+          <h2>Invoice</h2>
+${invoiceForm}
+        </section>
+${partsCard}
+${attachmentsCard}
+${timelineCard}
+${emailLogCard}
+      </div>
+    </div>` : '';
+
+  // The nav says where the writer is: an order belongs under Customer orders.
+  document.querySelectorAll('[data-nav]').forEach((link) => {
+    link.classList.toggle('on', link.dataset.nav === (order ? 'orders' : 'jobs'));
+  });
+
+  view.innerHTML = order ? orderHtml : `
     <div class="row" style="justify-content:space-between;margin-bottom:6px">
       <div>
         <h1 class="page-title">Job ${esc(job.id)}</h1>
@@ -908,41 +1291,7 @@ async function drawJob(id, data, savedAt) {
           </form>
         </section>
 
-        <section class="card">
-          <h2>Parts for this job</h2>
-          <p class="hint" style="margin-top:0">For when somebody rings up wanting a part ordered.
-            It goes straight onto the <a href="?view=parts">parts list</a>, where it takes a supplier
-            and order number and gets ticked off when it arrives.</p>
-
-          ${parts && parts.length ? `<div class="ticketparts">${parts.map((part) => `
-            <div class="kv">
-              <span class="k">
-                ${part.quantity ? `${part.quantity}&times; ` : ''}<b style="font-family:var(--mono)">${esc(part.partIdentifier || '(no number)')}</b>
-                ${part.description ? `<span class="sub"> · ${esc(part.description)}</span>` : ''}
-              </span>
-              <b><span class="pill ${{ needed: 'red', ordered: 'gold', received: 'green' }[part.status]}">${
-                { needed: 'To order', ordered: 'On order', received: 'Arrived' }[part.status] || esc(part.status)
-              }</span></b>
-            </div>
-            ${part.vendor ? `<div class="sub" style="margin:-4px 0 8px">${esc(part.vendor)}${part.orderNumber ? ` · order ${esc(part.orderNumber)}` : ''}</div>` : ''}`).join('')}</div>`
-            : ''}
-
-          <label class="fld" for="jobpartnum">Part number</label>
-          <input class="txt mono" id="jobpartnum" placeholder="Optional — a description will do">
-          <label class="fld" for="jobpartdesc">What is it</label>
-          <input class="txt" id="jobpartdesc" placeholder="Impeller kit, 3.0L">
-          <div class="grid2">
-            <div>
-              <label class="fld" for="jobpartqty">How many</label>
-              <input class="txt mono" id="jobpartqty" inputmode="decimal" placeholder="1">
-            </div>
-            <div>
-              <label class="fld" for="jobpartnote">Note (optional)</label>
-              <input class="txt" id="jobpartnote" placeholder="Customer called Tuesday">
-            </div>
-          </div>
-          <button class="btn ghost block" type="button" id="addjobpart" style="margin-top:10px">Add to the parts list</button>
-        </section>
+${partsCard}
 
         <section class="card">
           <h2>Close out checklist</h2>
@@ -969,27 +1318,7 @@ async function drawJob(id, data, savedAt) {
 
         <section class="card">
           <h2>Close out</h2>
-          <form id="invoiceform">
-            <label class="fld" for="invoice">Final invoice PDF (from BiT — no QR needed)</label>
-            <input class="txt" id="invoice" type="file" accept="application/pdf">
-            ${job.invoiceFile ? `<p class="hint">On file:
-              <a href="${driveFileUrl(job.invoiceFile)}" target="_blank" rel="noreferrer">invoice-${esc(job.id)}.pdf</a>
-              — uploading again replaces it.</p>` : ''}
-            <p class="msg" id="totalsmsg"></p>
-
-            <label class="fld" for="amountDue">Amount due${job.deposits ? ` (after ${formatMoney(job.deposits)} in deposits)` : ''}</label>
-            <input class="txt mono" id="amountDue" inputmode="decimal" placeholder="read from the invoice"
-              value="${job.amountDue === null ? '' : job.amountDue.toFixed(2)}">
-            <input type="hidden" id="grandTotal" value="${job.grandTotal === null ? '' : job.grandTotal}">
-            <input type="hidden" id="deposits" value="${job.deposits === null ? '' : job.deposits}">
-            <p class="hint">Read off the invoice when you upload it, and shown to the customer with
-              the payment link. Deposits mean this is not the grand total — check it before you send.</p>
-
-            <label class="fld" for="paymentLink">POS+ payment link</label>
-            <input class="txt mono" id="paymentLink" placeholder="https://..." value="${esc(job.paymentLink || '')}">
-            <p class="hint">Generate the link in POS+ and paste it here — we only store it.</p>
-            <button class="btn ghost" type="submit" style="margin-top:14px">Save invoice &amp; link</button>
-          </form>
+${invoiceForm}
 
           <hr style="border:0;border-top:1px solid var(--ice);margin:18px 0">
 
@@ -1055,55 +1384,7 @@ async function drawJob(id, data, savedAt) {
             </form>`}
         </section>
 
-        ${job.status === 'done' ? `<section class="card">
-          <h2>Record a payment</h2>
-          <p class="hint" style="margin-top:0">Money taken against this invoice, and the receipt
-            that goes back with it. Several payments recorded together go out as one receipt —
-            a card at the counter and a check in the post are one payment as far as the
-            customer is concerned.</p>
-
-          <div id="paylines">${payLineHtml(0, balance !== null && (balance > 0 || !job.paidAt)
-            ? Math.max(balance, 0).toFixed(2) : '')}</div>
-          <button class="btn ghost sm" type="button" id="addpayline" style="margin-top:8px">
-            Add another payment</button>
-
-          <label class="fld" for="paynote" style="margin-top:14px">Anything to add (optional)</label>
-          <textarea class="txt" id="paynote" rows="2"
-            placeholder="Your spare prop is on the rack by the door whenever you want it."></textarea>
-          <p class="hint">Goes in the receipt, in the shop's own words.</p>
-
-          <label class="fld" for="payfiles">Attach to the receipt</label>
-          <input id="payfiles" type="file" multiple>
-          <p class="hint">The invoice with the payment noted on it, and the card receipt if there
-            was one. Anything too big to email goes to the customer as a Drive link instead, and
-            everything here is kept on the job under Attachments.</p>
-
-          <label class="checkline" style="margin-top:6px">
-            <input type="checkbox" id="payfull">
-            <span>This settles the account in full
-              <small>Ticking this is what closes the ticket and takes it off the open jobs list.
-                Nothing else does &mdash; not the balance reaching zero, and not sending the
-                receipt.</small></span>
-          </label>
-          <label class="checkline">
-            <input type="checkbox" id="payreview"${reviewUrl ? '' : ' disabled'}>
-            <span>Ask for a Google review
-              <small>${reviewUrl
-                ? 'For a customer you would be glad to hear from again. Leave it off and the same receipt goes without the ask.'
-                : 'Set the shop\'s review link on the <a href="?view=setup">App setup</a> page first — an ask that links nowhere is worse than no ask.'}</small></span>
-          </label>
-
-          <div id="paysummary"></div>
-          <div id="paymsg"></div>
-
-          <button class="btn gold block" type="button" id="paysend" style="margin-top:12px"${
-            job.customerEmail ? '' : ' disabled title="Add a customer email address first"'}>
-            Record it and email the receipt</button>
-          <button class="btn ghost block" type="button" id="payrecord" style="margin-top:8px">
-            Record it without emailing</button>
-          ${job.customerEmail ? '' : `<p class="hint" style="margin-top:8px">No email address on file,
-            so the payment can be recorded but no receipt can go out.</p>`}
-        </section>` : ''}
+${paymentCard}
       </div>
 
       <div class="stack">
@@ -1165,66 +1446,9 @@ async function drawJob(id, data, savedAt) {
           </div>
         </section>
 
-        <section class="card">
-          <h2>Attachments${files.length ? ` (${files.length})` : ''}</h2>
-          <p class="hint" style="margin-top:0">Anything else that belongs on this job — a photo of
-            what you found, a supplier quote. You say which kind as you add it, and that is the
-            only thing that decides whether a customer ever sees it.</p>
+${attachmentsCard}
 
-          ${files.length ? `<div class="filelist">${files.map((file) => `
-            <div class="filerow">
-              <span class="pill ${file.visibility === 'customer' ? 'green' : 'grey'}">${
-                file.visibility === 'customer' ? 'Customer' : 'Internal'}</span>
-              <a class="grow" href="${driveFileUrl(file.driveFile)}" target="_blank" rel="noreferrer">${esc(file.name)}</a>
-              ${file.size ? `<span class="filesize">${esc(formatBytes(file.size))}</span>` : ''}
-              <button type="button" data-delfile="${esc(file.id)}" aria-label="Remove ${esc(file.name)}">Remove</button>
-            </div>`).join('')}</div>` : ''}
-          ${overMailLimit ? `<div class="msg note" id="filelimit">The customer files come to
-            ${esc(formatBytes(customerBytes))}, and an email will only carry
-            ${esc(formatBytes(mailLimit))}. Whatever does not fit goes to the customer as a
-            <b>Drive link</b> in the invoice email instead of an attachment. The invoice PDF
-            is always attached.</div>` : ''}
-
-          <label class="fld" for="jobfile">Add a file</label>
-          <input id="jobfile" type="file">
-          <div class="row tight" style="margin-top:10px">
-            <button class="btn ghost sm" type="button" id="addfilecustomer" disabled>Attach for the customer</button>
-            <button class="btn ghost sm" type="button" id="addfileinternal" disabled>Keep internal</button>
-          </div>
-          <p class="hint">A customer file is attached to the invoice email when you send it —
-            or sent as a Drive link if it is too big to email. An internal one never leaves
-            the shop.</p>
-          <div id="filemsg"></div>
-        </section>
-
-        ${job.amountDue !== null ? `<section class="card">
-          <h2>What the customer owes</h2>
-          <div class="hourstotal">${formatMoney(balance === null ? job.amountDue : balance)}</div>
-          ${job.grandTotal !== null ? `<div class="kv"><span class="k">Grand total</span>
-            <b style="font-family:var(--mono)">${formatMoney(job.grandTotal)}</b></div>` : ''}
-          ${job.deposits ? `<div class="kv"><span class="k">Deposits already paid</span>
-            <b style="font-family:var(--mono)">${formatMoney(job.deposits)}</b></div>` : ''}
-          <div class="kv"><span class="k">Invoice amount due</span>
-            <b style="font-family:var(--mono)">${formatMoney(job.amountDue)}</b></div>
-          ${paidTotal ? `<div class="kv"><span class="k">Payments received</span>
-            <b style="font-family:var(--mono)">&minus;${formatMoney(paidTotal)}</b></div>` : ''}
-          <p class="hint">The figure at the top is what is left to collect: the invoice's own
-            amount due, less everything recorded against it. That is what a customer is shown
-            and what a statement would chase.</p>
-
-          ${payments.length ? `
-            <div class="subhead">Payments recorded (${payments.length})</div>
-            ${payments.map((payment) => `<div class="kv">
-              <span class="k">${esc(payment.methodLabel)}${payment.reference ? ` · ${esc(payment.reference)}` : ''}
-                <div style="font-size:12px;color:var(--muted)">${formatDate(payment.receivedAt)}</div></span>
-              <b style="font-family:var(--mono)">${formatMoney(payment.amount)}</b></div>`).join('')}
-            ${job.paidAt && balance !== null && balance > 0.005 ? `<p class="hint">
-              Closed as settled with ${formatMoney(balance)} not collected.</p>` : ''}`
-            : ''}
-          ${settled && !job.paidAt ? `<div class="banner warn" style="margin-top:10px">
-            Nothing left to collect, but the ticket is still open. Tick <b>Invoice paid, ticket
-            closed</b> above, or record the last payment as settling the account in full.</div>` : ''}
-        </section>` : ''}
+${owesCard}
 
         <section class="card">
           <h2>Labor logged</h2>
@@ -1278,21 +1502,9 @@ async function drawJob(id, data, savedAt) {
             : `<div class="empty">Nothing logged yet. Entries appear here as mechanics add them.</div>`}
         </section>
 
-        <section class="card">
-          <h2>Timeline</h2>
-          <p class="hint" style="margin-top:0">When this job changed hands and status.</p>
-          <button class="btn ghost block" type="button" id="showhistory">Show the timeline</button>
-          <div id="history"></div>
-        </section>
+${timelineCard}
 
-        ${emails.length ? `<section class="card">
-          <h2>Email log</h2>
-          ${emails.map((mail) => `<div class="kv">
-            <span class="k">${formatDateTime(mail.created_at)} · ${esc(String(mail.kind).replace('_', ' '))}</span>
-            <b><span class="pill ${mail.status === 'sent' ? 'green' : mail.status === 'skipped' ? 'grey' : 'red'}">${esc(mail.status)}</span>
-              <div style="font-weight:400;font-size:12px;color:var(--muted)">${esc(mail.recipient)}${mail.error ? ` — ${esc(mail.error)}` : ''}</div></b>
-          </div>`).join('')}
-        </section>` : ''}
+${emailLogCard}
       </div>
     </div>`;
   // Back to where the writer was, not the top of the page they just saved on.
@@ -1553,7 +1765,8 @@ async function drawJob(id, data, savedAt) {
     }
   };
 
-  $('copy').onclick = async () => {
+  const copy = $('copy');
+  if (copy) copy.onclick = async () => {
     try {
       await navigator.clipboard.writeText(job.trackingUrl);
       toast('Work order link copied.');
@@ -1883,15 +2096,52 @@ async function drawJob(id, data, savedAt) {
 
   const markdone = $('markdone');
   if (markdone) markdone.onclick = async () => {
+    const was = markdone.textContent;
     markdone.disabled = true;
     markdone.textContent = 'Closing…';
     try {
       const { jobPage } = await api('markDone', [job.id], withPage(job.id));
       renderJob(job.id, jobPage);
-      toast('Marked done. Nothing has been emailed.');
+      toast(order ? 'Marked picked up.' : 'Marked done. Nothing has been emailed.');
     } catch (error) {
       markdone.disabled = false;
-      markdone.textContent = 'Mark done';
+      markdone.textContent = was;
+      notice('warn', error.message);
+    }
+  };
+
+  // The order is in. Sends nothing: telling the customer is the two buttons
+  // this one brings up, exactly as closing a work order never mails anybody.
+  const markarrived = $('markarrived');
+  if (markarrived) markarrived.onclick = async () => {
+    markarrived.disabled = true;
+    markarrived.textContent = 'Saving…';
+    try {
+      const { jobPage } = await api('markOrderArrived', [job.id], withPage(job.id));
+      renderJob(job.id, jobPage);
+      toast('Marked arrived. Nobody has been told yet.');
+    } catch (error) {
+      markarrived.disabled = false;
+      markarrived.textContent = 'Mark arrived';
+      notice('warn', error.message);
+    }
+  };
+
+  const sendarrival = $('sendarrival');
+  if (sendarrival) sendarrival.onclick = async () => {
+    if (!confirm(`Email ${job.customerEmail} that order ${job.id} has arrived?`)) return;
+    const was = sendarrival.textContent;
+    sendarrival.disabled = true;
+    sendarrival.textContent = 'Sending…';
+    try {
+      const result = await api('sendArrivalEmail', [job.id], withPage(job.id));
+      renderJob(job.id, result.jobPage);
+      toast(!result.emailed ? 'That email did not send — check the log.'
+        : result.testMode ? `Test mode: it went to ${result.sentTo}, not the customer.`
+        : `Arrival emailed to ${result.sentTo}.`);
+    } catch (error) {
+      sendarrival.disabled = false;
+      sendarrival.textContent = was;
       notice('warn', error.message);
     }
   };
@@ -1946,7 +2196,7 @@ async function drawJob(id, data, savedAt) {
         }
       };
       $('marktexted').onclick = async () => {
-        if (!confirm(`Record that the invoice text for ${job.id} has been sent?`)) return;
+        if (!confirm(`Record that the ${order ? 'arrival' : 'invoice'} text for ${job.id} has been sent?`)) return;
         try {
           const { jobPage } = await api('markInvoiceTexted', [job.id], withPage(job.id));
           renderJob(job.id, jobPage);
@@ -2150,6 +2400,173 @@ function renderCreated(job, stampedBytes, warning) {
     try { await navigator.clipboard.writeText($('newlink').value); toast('Work order link copied.'); }
     catch { $('newlink').select(); }
   };
+}
+
+/* ------------------------------------------------- customer parts order --- */
+
+/**
+ * A customer buying parts, rung up in BiT as an ordinary invoice. The writer
+ * downloads it and drops it here; the browser reads the customer, the totals
+ * and the part lines off it, exactly as the work order intake does, and
+ * nothing is created until the writer confirms. No QR: an order never goes
+ * in the folder and never reaches the floor.
+ */
+let newOrder = null;
+
+function renderNewOrder() {
+  newOrder = null;
+  view.className = 'wrap narrow';
+  view.innerHTML = `
+    <h1 class="page-title">New parts order</h1>
+    <p class="lead">
+      Ring the order up in BiT, download the invoice and drop it here. Your browser reads the
+      customer, the parts and what is owed off it — nothing is saved until you confirm.
+    </p>
+    <section class="card">
+      <div id="orderupload">
+        <div class="dropzone" id="orderdrop">
+          <b>Choose the BiT invoice PDF</b>
+          <span>or drop it here</span>
+        </div>
+        <input type="file" id="orderpdf" accept="application/pdf" class="hidden">
+        <p class="msg" id="orderreadmsg"></p>
+      </div>
+      <div id="orderreview"></div>
+    </section>`;
+
+  const drop = $('orderdrop');
+  const input = $('orderpdf');
+  drop.onclick = () => input.click();
+  drop.ondragover = (event) => { event.preventDefault(); drop.classList.add('hot'); };
+  drop.ondragleave = () => drop.classList.remove('hot');
+  drop.ondrop = (event) => {
+    event.preventDefault();
+    drop.classList.remove('hot');
+    if (event.dataTransfer.files[0]) readOrderPdf(event.dataTransfer.files[0]);
+  };
+  input.onchange = () => { if (input.files[0]) readOrderPdf(input.files[0]); };
+}
+
+async function readOrderPdf(file) {
+  const message = $('orderreadmsg');
+  message.className = 'msg';
+  message.textContent = 'Reading the invoice…';
+  try {
+    if (file.type !== 'application/pdf') throw new Error('That does not look like a PDF. Download the invoice from BiT and try again.');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const extracted = await extractPdf(bytes);
+    newOrder = {
+      bytes,
+      filename: file.name,
+      scanned: !extracted.lines.length,
+      info: parseWorkOrder(extracted),
+      totals: parseInvoiceTotals(extracted),
+      items: parseInvoiceItems(extracted),
+    };
+    message.textContent = '';
+    $('orderupload').hidden = true;
+    renderOrderReview();
+  } catch (error) {
+    message.className = 'msg err';
+    message.textContent = error.message;
+  }
+}
+
+function renderOrderReview() {
+  const { info, totals, items, filename, scanned } = newOrder;
+  const money = (value) => (value === null || value === undefined ? '' : Number(value).toFixed(2));
+  $('orderreview').innerHTML = `
+    <h2>Check what we read</h2>
+    ${scanned ? `<div class="banner warn" style="margin-bottom:12px">That PDF has no text layer — it
+      looks like a scan. Type the details in by hand, or re-download the invoice straight from BiT.</div>` : ''}
+    <label class="fld" for="ordernumber">Invoice # (this becomes the order number)</label>
+    <input class="txt mono${info.invoiceNumber ? '' : ' field-flag'}" id="ordernumber" value="${esc(info.invoiceNumber || '')}">
+    <label class="fld" for="ordername">Customer name</label>
+    <input class="txt${info.customerName ? '' : ' field-flag'}" id="ordername" value="${esc(info.customerName || '')}">
+    <label class="fld" for="orderphone">Phone</label>
+    <input class="txt${info.customerPhone ? '' : ' field-flag'}" id="orderphone" value="${esc(info.customerPhone || '')}">
+    <label class="fld">Email (for the arrival email and receipts)</label>
+    ${emailFieldHtml('orderemails', info.customerEmail, !info.customerEmail)}
+
+    <label class="fld" for="orderitems">What was ordered</label>
+    <textarea class="txt" id="orderitems" rows="3">${esc(describeItems(items))}</textarea>
+    <p class="hint">${items.length ? `Read off the invoice — ${items.length} line${items.length === 1 ? '' : 's'}.`
+      : 'No part lines found on the invoice — type what was ordered.'} The arrival email lists these.</p>
+
+    <label class="fld" for="orderdue">Amount due</label>
+    <input class="txt mono${totals.amountDue === null ? ' field-flag' : ''}" id="orderdue" inputmode="decimal" value="${money(totals.amountDue)}">
+    <p class="hint">${totals.grandTotal !== null
+      ? `Grand total ${formatMoney(totals.grandTotal)}${totals.deposits ? `, less ${formatMoney(totals.deposits)} already paid` : ''}.`
+      : 'Could not find the totals — type what is left to pay.'}
+      ${totals.amountDue === 0 ? ' Nothing left to pay: it was paid when it was ordered.' : ''}</p>
+
+    <label class="fld" for="orderlink">POS+ payment link (optional)</label>
+    <input class="txt mono" id="orderlink" placeholder="https://...">
+
+    ${items.length ? `
+      <div class="subhead" style="margin-top:16px">Order from a supplier</div>
+      <p class="hint" style="margin-top:0">Ticked lines go on the <a href="?view=parts">parts list</a>,
+        to be ordered in the normal batch. Untick anything already ordered or on the shelf.</p>
+      ${items.map((item, index) => `<label class="checkline">
+        <input type="checkbox" data-orderpart="${index}" checked>
+        <span>${item.quantity && item.quantity !== 1 ? `${item.quantity}&times; ` : ''}<b style="font-family:var(--mono)">${esc(item.sku)}</b>
+          ${esc(item.description)}${item.note ? `<small>${esc(item.note)}</small>` : ''}</span>
+      </label>`).join('')}` : ''}
+
+    <div class="row" style="margin-top:16px">
+      <button class="btn navy" type="button" id="createorder">Create the order</button>
+      <button class="btn ghost" type="button" id="orderrestart">Start over</button>
+    </div>
+    <p class="hint">Read from ${esc(filename)}. Nothing is sent to the customer.</p>
+    <p class="msg" id="ordermsg"></p>`;
+
+  wireEmailField('orderemails');
+  $('orderrestart').onclick = renderNewOrder;
+  $('createorder').onclick = createOrder;
+}
+
+async function createOrder() {
+  const button = $('createorder');
+  const message = $('ordermsg');
+  const invoiceNumber = $('ordernumber').value.trim().toUpperCase();
+  if (!invoiceNumber) {
+    message.className = 'msg err';
+    message.textContent = 'An invoice number is required — it identifies the order.';
+    return;
+  }
+  const due = $('orderdue').value.trim();
+  const { items, totals, bytes } = newOrder;
+  const parts = Array.from(view.querySelectorAll('[data-orderpart]'))
+    .filter((box) => box.checked)
+    .map((box) => items[Number(box.dataset.orderpart)])
+    .map((item) => ({ partIdentifier: item.sku, description: item.description, quantity: item.quantity }));
+  button.disabled = true;
+  message.className = 'msg';
+  message.innerHTML = '<span class="spinner"></span> Saving the order…';
+  try {
+    const { job } = await api('createPartsOrder', [{
+      invoiceNumber,
+      customerName: $('ordername').value.trim(),
+      customerPhone: $('orderphone').value.trim(),
+      customerEmail: readEmailField('orderemails'),
+      items: $('orderitems').value.trim(),
+      invoicePdf: bytesToBase64(bytes),
+      grandTotal: totals.grandTotal,
+      deposits: totals.deposits,
+      amountDue: due === '' ? null : Number(due),
+      paymentLink: $('orderlink').value.trim(),
+      parts,
+    }]);
+    // The orders list on hand does not have it yet; drop it so coming back
+    // to the list asks the backend rather than drawing the list without it.
+    jobsCache = null;
+    toast(`Order ${job.id} created.`);
+    navigate(`?job=${encodeURIComponent(job.id)}`);
+  } catch (error) {
+    button.disabled = false;
+    message.className = 'msg err';
+    message.textContent = error.message;
+  }
 }
 
 /* ---------------------------------------------------------- mechanics --- */
@@ -3699,12 +4116,14 @@ async function route() {
   const which = params.get('view');
   const job = params.get('job');
   document.querySelectorAll('[data-nav]').forEach((link) => {
-    link.classList.toggle('on', link.dataset.nav === (which || 'jobs'));
+    link.classList.toggle('on', link.dataset.nav === (which === 'neworder' ? 'orders' : which || 'jobs'));
   });
 
   try {
     if (job) return await renderJob(job);
     if (which === 'intake') return renderIntake();
+    if (which === 'orders') return await renderJobs('parts');
+    if (which === 'neworder') return renderNewOrder();
     if (which === 'statements') return await renderStatements();
     if (which === 'parts') return await renderParts();
     if (which === 'props') return await renderProps();

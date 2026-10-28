@@ -61,6 +61,18 @@ along with `lookupJob` (a typed number means the paper is elsewhere) and with
 the open-jobs list. **It is never in `missing`**: plenty of jobs are written up
 with that band empty.
 
+## Part lines, for a customer parts order
+
+`parseInvoiceItems` reads the band between the printed header `SKU
+Description Qty Retail Price Extended` and the totals. A line is the SKU,
+the description, then the quantity and three money columns, the price to
+three places — anchored from the right so a number inside a description
+survives. A line that does not fit that shape is a note on the line above
+(BiT prints `Superseded from 48000-96J10` under a renumbered part). The end
+marker matches anywhere in a line, because on an invoice raised off a work
+order the totals share their rows with the legal text. Measured from a real
+parts order, `01-9131`; the test copies its shape with an invented customer.
+
 ## Stamping
 
 The browser opens the PDF (pdfjs) and stamps the QR onto it (pdf-lib). Apps

@@ -277,6 +277,19 @@ const STATUS_LABEL = {
   work_finished: 'Work finished (pending invoice)',
   done: 'Done'
 };
+/**
+ * A customer's parts order runs on the same Jobs row and the same status
+ * column as a work order, so payments, receipts, the texted invoice page,
+ * archiving and statements all work on it unchanged. Only the words differ:
+ * nobody works on anything, a part is ordered, arrives and is collected.
+ * `work_underway` never happens to an order — nothing scans one.
+ */
+const ORDER_STATUS_LABEL = {
+  received: 'Ordered',
+  work_underway: 'Ordered',
+  work_finished: 'Arrived',
+  done: 'Picked up'
+};
 /** Why a part is on the list. */
 /**
  * Where a prop is in its trip out of the building.
@@ -389,7 +402,12 @@ const SHEETS = {
          // Filed away by the writer: off every list but Archived. A stamp,
          // not a status — the job is still done, still paid or not, and
          // restoring it puts it back exactly where it was. See archiveJobs.
-         'archived_at'],
+         'archived_at',
+         // What sort of ticket this is. Empty is a work order, which is every
+         // row written before the column existed. 'parts' is a customer's
+         // parts order: a BiT invoice for parts they are buying, with no
+         // mechanic and no boat in the shop — see createPartsOrder.
+         'kind'],
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
                'transcript_id', 'transcript_error', 'notified_at', 'created_at',
@@ -952,6 +970,9 @@ function apiFns_(data) {
     sendInvoiceEmail: function (a) { return sendInvoiceEmail(data.token, a[0]); },
     invoiceText:      function (a) { return invoiceText(data.token, a[0]); },
     markInvoiceTexted: function (a) { return markInvoiceTexted(data.token, a[0]); },
+    createPartsOrder: function (a) { return createPartsOrder(data.token, a[0]); },
+    markOrderArrived: function (a) { return markOrderArrived(data.token, a[0]); },
+    sendArrivalEmail: function (a) { return sendArrivalEmail(data.token, a[0]); },
     recordPayment:    function (a) { return recordPayment(data.token, a[0], a[1]); },
     listOpenStatements: function (a) { return listOpenStatements(data.token); },
     sendCustomerStatement: function (a) { return sendCustomerStatement(data.token, a[0], a[1]); },
@@ -1473,16 +1494,26 @@ function settled_(balance) {
   return balance !== null && balance <= 0.005;
 }
 
+/** A customer's parts order rather than a work order. */
+function isPartsOrder_(job) {
+  return Boolean(job) && String(job.kind || '') === 'parts';
+}
+
+function statusLabel_(job) {
+  return (isPartsOrder_(job) ? ORDER_STATUS_LABEL : STATUS_LABEL)[job.status];
+}
+
 function jobSummary_(job) {
   return {
     id: job.id,
     token: job.token,
+    kind: isPartsOrder_(job) ? 'parts' : 'job',
     customerName: job.customer_name,
     customerPhone: job.customer_phone,
     customerEmail: job.customer_email,
     boatInfo: job.boat_info,
     status: job.status,
-    statusLabel: STATUS_LABEL[job.status],
+    statusLabel: statusLabel_(job),
     needsReview: job.needs_review ? String(job.needs_review).split(',').filter(String) : [],
     workOrderFile: job.work_order_file || null,
     invoiceFile: job.invoice_file || null,
@@ -1497,6 +1528,9 @@ function jobSummary_(job) {
     alertAt: job.alert_at || null,
     partsOrderedAt: job.parts_ordered_at || null,
     paidAt: job.paid_at || null,
+    // When a parts order came in. The same stamp a work order gets when the
+    // mechanic finishes, because it is the same step in the same column.
+    arrivedAt: isPartsOrder_(job) ? (job.work_finished_at || null) : null,
     trackingUrl: trackingUrl_(job),
     // The texted invoice page, once a writer has asked for one. Null until
     // then, because the code is only minted when somebody texts the job —
@@ -1569,8 +1603,14 @@ function shopCc_(to) {
 
 const REVIEW_FIELDS = ['customerName', 'customerPhone', 'customerEmail', 'boatInfo'];
 
-function missingFields_(fields) {
+/**
+ * What still has to be filled in. A parts order is not asked for a boat:
+ * somebody buying a trim pump over the counter may not have one with us, and
+ * a flag that can never be cleared is a flag everybody learns to ignore.
+ */
+function missingFields_(fields, kind) {
   return REVIEW_FIELDS.filter(function (name) {
+    if (kind === 'parts' && name === 'boatInfo') return false;
     return !String(fields[name] || '').trim();
   });
 }
@@ -1673,6 +1713,120 @@ function backfillInvoice(token, payload) {
 }
 
 /* ------------------------------------------------- statement drafts ---- */
+
+/**
+ * A customer's parts order: somebody buying parts, not leaving anything to be
+ * worked on. The writer rings it up in BiT, downloads the invoice and drops
+ * it here, and from then on it is tracked like a job without a mechanic —
+ * Ordered, Arrived, Picked up — with payments, receipts and the arrival
+ * notice hanging off the same row.
+ *
+ * The invoice number is the key, exactly as for a work order: BiT never
+ * recycles one, so the two cannot collide.
+ *
+ * The browser has read the PDF already (see parseInvoiceItems); what arrives
+ * is the invoice itself, the figures the writer confirmed, and the part lines
+ * as a list. `items` is those lines as the writer wants them worded, kept in
+ * work_requested — the "what is this ticket for" field of any job. `parts`
+ * are the lines to put on the shop's parts list, so the order goes out to a
+ * supplier in the normal batch; empty when the writer has already ordered it
+ * or the parts are on the shelf.
+ *
+ * Nothing is sent. Telling the customer it has arrived is its own button.
+ */
+function createPartsOrder(token, payload) {
+  requireAdmin_(token);
+  payload = payload || {};
+  const id = String(payload.invoiceNumber || '').trim().toUpperCase();
+  if (!id) throw new Error('An invoice number is required — it identifies the order.');
+  if (!payload.invoicePdf) throw new Error('The invoice PDF is required.');
+  // Without the column every order would save as a work order and land on
+  // the mechanics' phones.
+  requireColumn_('Jobs', 'kind');
+  if (jobRow_(id)) throw new Error(id + ' is already in the tracker. Open it from the list instead.');
+
+  const lines = (payload.parts || []).map(function (line) {
+    const identifier = String((line && line.partIdentifier) || '').trim();
+    const description = String((line && line.description) || '').trim();
+    const quantity = numberOrNull_(line && line.quantity);
+    return {
+      partIdentifier: identifier,
+      description: description,
+      quantity: quantity !== null && quantity > 0 ? quantity : null
+    };
+  }).filter(function (line) { return line.partIdentifier || line.description; });
+
+  // Drive before the lock, like every other upload: the lock is the whole
+  // shop's, and a PDF upload is not a reason for a mechanic's save to wait.
+  const invoiceFile = saveFile_(id, 'invoice-' + id + '.pdf', 'application/pdf', payload.invoicePdf);
+  const money = function (value) { return numberOrNull_(value) === null ? '' : Number(value); };
+
+  return withLock_(function () {
+    forget_('Jobs');
+    if (jobRow_(id)) throw new Error(id + ' is already in the tracker. Open it from the list instead.');
+    const at = nowIso_();
+    const fields = Object.assign({}, payload, { customerEmail: normalizeEmails_(payload.customerEmail) });
+    if (payload.paymentLink && !/^https?:\/\//i.test(payload.paymentLink)) {
+      throw new Error('The payment link must start with http:// or https://');
+    }
+    const job = {
+      id: id,
+      // Never printed or scanned — an order has no paper in the shop's
+      // folder — but every row carries one, and a blank would match the
+      // first blank a lookup was ever handed.
+      token: newTrackingToken_(),
+      customer_name: payload.customerName || '',
+      customer_phone: payload.customerPhone || '',
+      customer_email: fields.customerEmail,
+      boat_info: payload.boatInfo || '',
+      work_requested: String(payload.items || '').trim(),
+      status: 'received',
+      needs_review: missingFields_(fields, 'parts').join(','),
+      work_order_file: '',
+      invoice_file: invoiceFile,
+      payment_link: payload.paymentLink || '',
+      created_at: at,
+      updated_at: at,
+      work_started_at: '',
+      work_finished_at: '',
+      done_at: '',
+      grand_total: money(payload.grandTotal),
+      deposits: money(payload.deposits),
+      amount_due: money(payload.amountDue),
+      kind: 'parts'
+    };
+    appendRow_('Jobs', job);
+    recordStatus_(id, '', 'received', 'service_writer', '', 'Parts order taken');
+    lines.forEach(function (line) {
+      addPartOrder_({
+        jobId: id,
+        partIdentifier: line.partIdentifier,
+        description: line.description,
+        quantity: line.quantity,
+        reason: 'job',
+        notes: 'Customer order',
+        requestedBy: SHOP_WRITER_NAME
+      });
+    });
+    return { job: jobSummary_(job), partsListed: lines.length };
+  });
+}
+
+/**
+ * The parts are in. Sends nothing — telling the customer is the arrival
+ * email or the text, each its own button, for the same reason closing a
+ * work order never posts the invoice: a writer decides what goes out.
+ */
+function markOrderArrived(token, id) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such order.');
+  if (!isPartsOrder_(job)) throw new Error('That is a work order, not a parts order.');
+  if (job.status === 'work_finished') throw new Error('That order is already marked arrived.');
+  if (job.status === 'done') throw new Error('That order has already been picked up.');
+  setStatus_(job, 'work_finished', 'service_writer', '', 'Order arrived');
+  return { job: jobSummary_(jobRow_(id)) };
+}
 
 function statementDraftRow_(id) {
   const all = rows_('StatementDrafts');
@@ -1826,7 +1980,7 @@ function listJobs(token, filter) {
 }
 
 // Bump whenever a job summary gains a field, for the reason OPEN_JOBS_V_ says.
-const JOBS_LIST_V_ = 2;
+const JOBS_LIST_V_ = 3;
 const JOBS_LIST_KEY_ = 'JOBSLIST_v' + JOBS_LIST_V_ + '_';
 
 /** The writer's list, read from the sheet. Writes nothing, caches nothing. */
@@ -1863,8 +2017,11 @@ function jobsListFromSheet_(filter) {
     })
     .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
 
+  // The counts are the Jobs page's stats, and an order on them would read as
+  // a boat waiting. The Orders page counts its own off the list.
   const byStatus = { open: 0, archived: 0 };
   rows_('Jobs').forEach(function (job) {
+    if (isPartsOrder_(job)) return;
     if (job.archived_at) {
       byStatus.archived += 1;
       return;
@@ -2091,7 +2248,7 @@ function saveJobDetails(token, id, fields) {
     boat_info: saved.boatInfo || '',
     work_requested: saved.workRequested || '',
     // The flag list is derived, never typed: filling a field clears its flag.
-    needs_review: missingFields_(saved).join(','),
+    needs_review: missingFields_(saved, isPartsOrder_(job) ? 'parts' : '').join(','),
     updated_at: nowIso_()
   });
   return { job: jobSummary_(jobRow_(id)) };
@@ -3663,6 +3820,11 @@ function adminSignIn(password) {
 function lookupJob(code, source, token) {
   const job = jobByToken_(String(code || '').trim().toUpperCase()) || jobByNumber_(code);
   if (!job) throw new Error('No job found for that code. Check the number on the work order.');
+  // An order's number is a real BiT invoice number, so a mechanic can type
+  // one. Saying what it is beats "not found" for a number they can see.
+  if (isPartsOrder_(job)) {
+    throw new Error(job.id + ' is a customer parts order, not a work order — there is nothing on it for the shop floor.');
+  }
 
   if (source === 'scan' && job.status === 'received') {
     setStatus_(job, 'work_underway', 'system', '', 'First scan of the work order');
@@ -3900,7 +4062,10 @@ function cacheGetBig_(key) {
 /** The list itself, read from the sheet. Writes nothing, caches nothing. */
 function openJobsFromSheet_() {
   const jobs = rows_('Jobs')
-    .filter(function (job) { return job.status !== 'done' && job.status !== 'work_finished'; })
+    // A customer's parts order has nothing on it for the floor to do.
+    .filter(function (job) {
+      return job.status !== 'done' && job.status !== 'work_finished' && !isPartsOrder_(job);
+    })
     .map(function (job) {
       return {
         id: job.id,
@@ -4729,8 +4894,10 @@ function recordPayment(token, id, payload) {
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
   // The same gate as the invoice email: a receipt saying what is owed on a
-  // finished invoice needs there to be a finished invoice.
-  if (job.status !== 'done') {
+  // finished invoice needs there to be a finished invoice. A parts order IS
+  // its finished invoice from the moment it is taken — customers pay for
+  // parts up front, at pick-up, or some of each — so it is never gated.
+  if (job.status !== 'done' && !isPartsOrder_(job)) {
     throw new Error('Mark the job done first — a payment is recorded against the final invoice.');
   }
   // Both are new with this feature, so until setup() has run the rows would
@@ -4882,7 +5049,23 @@ function recordPayment(token, id, payload) {
  * receipt that silently re-attaches them is a surprise rather than a service.
  */
 function sendPaymentEmail_(job, options) {
-  const packed = packAttachments_(MAIL_ATTACHMENT_BUDGET, options.files || []);
+  // A parts order's receipt carries its invoice. There is no "service
+  // complete" email for an order to have sent it already, and the BiT invoice
+  // is the itemised record of what they paid for.
+  const blobs = [];
+  const names = [];
+  let budget = MAIL_ATTACHMENT_BUDGET;
+  if (isPartsOrder_(job) && job.invoice_file) {
+    try {
+      const invoice = DriveApp.getFileById(job.invoice_file).getBlob().setName('Invoice-' + job.id + '.pdf');
+      blobs.push(invoice);
+      names.push('Invoice-' + job.id + '.pdf');
+      budget -= invoice.getBytes().length;
+    } catch (err) {
+      /* Binned by hand. The receipt still goes. */
+    }
+  }
+  const packed = packAttachments_(budget, options.files || []);
   return send_(paymentEmailContent_(job, {
     payments: options.payments,
     paidInFull: options.paidInFull,
@@ -4890,8 +5073,8 @@ function sendPaymentEmail_(job, options) {
     paidTotal: options.paidTotal,
     note: options.note,
     requestReview: options.requestReview,
-    attachments: packed.blobs,
-    attached: packed.attached,
+    attachments: blobs.concat(packed.blobs),
+    attached: names.concat(packed.attached),
     linked: packed.linked
   }));
 }
@@ -4907,8 +5090,10 @@ function markDone(token, id) {
   requireAdmin_(token);
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
-  if (job.status === 'done') throw new Error('That job was already marked done.');
-  setStatus_(job, 'done', 'service_writer', '', 'Marked done');
+  if (job.status === 'done') {
+    throw new Error(isPartsOrder_(job) ? 'That order was already marked picked up.' : 'That job was already marked done.');
+  }
+  setStatus_(job, 'done', 'service_writer', '', isPartsOrder_(job) ? 'Picked up' : 'Marked done');
   return { job: jobSummary_(jobRow_(id)) };
 }
 
@@ -5144,6 +5329,10 @@ function sendInvoiceEmail(token, id) {
   requireAdmin_(token);
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
+  // "The work you requested has been done" is not something to tell a
+  // customer who bought a part. An order goes out as its arrival notice and
+  // its receipt, which carries the invoice.
+  if (isPartsOrder_(job)) throw new Error('A parts order is not sent the service invoice — use the arrival email or the receipt.');
   if (job.status !== 'done') throw new Error('That job is not marked done yet.');
   if (!normalizeEmails_(job.customer_email)) {
     throw new Error('This job has no customer email address, so there is nobody to send the invoice to.');
@@ -5152,6 +5341,99 @@ function sendInvoiceEmail(token, id) {
     emailed: sendInvoiceEmail_(job),
     testMode: testMode_(),
     sentTo: testMode_() ? testEmail_() : normalizeEmails_(job.customer_email)
+  };
+}
+
+/** An order that has come in — still waiting, or already collected. */
+function orderArrived_(job) {
+  return isPartsOrder_(job) && (job.status === 'work_finished' || job.status === 'done');
+}
+
+/**
+ * "Your order is in." The one email a parts order has that a work order does
+ * not, and like every other send here it is a writer pressing a button:
+ * marking the order arrived posts nothing.
+ *
+ * What it says is what is wanted at the counter — what came in, that it is
+ * ready, where to collect it and what is left to pay. The balance is the
+ * balance, never the grand total, and a Pay button only when something is
+ * owed and there is a link to pay it with.
+ */
+function sendArrivalEmail(token, id) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such order.');
+  if (!isPartsOrder_(job)) throw new Error('That is a work order, not a parts order.');
+  if (!orderArrived_(job)) throw new Error('Mark the order arrived first.');
+  if (!normalizeEmails_(job.customer_email)) {
+    throw new Error('This order has no customer email address, so there is nobody to tell.');
+  }
+  return {
+    emailed: send_(arrivalEmailContent_(job)),
+    testMode: testMode_(),
+    sentTo: testMode_() ? testEmail_() : normalizeEmails_(job.customer_email)
+  };
+}
+
+function arrivalEmailContent_(job) {
+  const rehearsal = testMode_();
+  const due = jobBalance_(job);
+  const owed = due !== null && !settled_(due);
+  const first = String(job.customer_name || '').split(' ')[0];
+  const items = String(job.work_requested || '').split('\n')
+    .map(function (line) { return line.trim(); }).filter(String);
+
+  const banner = rehearsal
+    ? mailBox_('#FBEEE2', '#E4B48F',
+      '<div style="' + MAIL_FONT + ';font-size:14px;line-height:21px;color:#A6541F">' +
+        '<b>TEST MODE &mdash; not sent to the customer.</b><br>This is what ' +
+        esc_(normalizeEmails_(job.customer_email)) + ' would have received for order ' + esc_(job.id) + '.' +
+        '<br>Generated ' + esc_(rehearsalStamp_()) + '.</div>',
+      ';border-left:4px solid #A6541F')
+    : '';
+
+  const itemBox = items.length ? mailBox_('#FDFCF7', '#C7D5E0',
+    '<div style="' + MAIL_FONT + ';font-size:13px;line-height:19px;color:#5C7185;margin-bottom:4px">' +
+      'What came in</div>' +
+    items.map(function (line) {
+      return '<div style="' + MAIL_FONT + ';font-size:14.5px;line-height:22px;color:#14293E">' + esc_(line) + '</div>';
+    }).join('')) : '';
+
+  const balance = due === null ? '' : mailBox_('#FDFCF7', '#C7D5E0',
+    '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0"><tr>' +
+      '<td style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;font-size:15px;line-height:23px">' +
+        (owed ? 'Left to pay' : 'Paid in full') + '</td>' +
+      '<td align="right" style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;' +
+        'font-size:17px;line-height:24px">' + money_(owed ? due : 0) + '</td>' +
+    '</tr></table>');
+
+  const to = rehearsal ? testEmail_() : normalizeEmails_(job.customer_email);
+  const intro = 'Good news &mdash; your order has arrived and is ready for pick-up at ' +
+    esc_(SHOP_ADDRESS) + '.' +
+    (owed ? (job.payment_link ? ' You can pay the balance online with the button below, or when you collect it.'
+      : ' The balance can be paid when you collect it.') : ' It is all paid for, so just come and get it.');
+
+  return {
+    to: to,
+    cc: shopCc_(to),
+    jobId: job.id,
+    kind: rehearsal ? 'customer_arrived_test' : 'customer_arrived',
+    suppressed: rehearsal,
+    intendedFor: normalizeEmails_(job.customer_email),
+    subject: (rehearsal ? '[TEST ' + rehearsalStamp_() + '] ' : '') +
+      'Your order has arrived — ' + SHOP_NAME + ' invoice ' + job.id,
+    html: noticeHtml_({
+      banner: banner,
+      greeting: first,
+      intro: intro + itemBox + balance,
+      meta: 'INVOICE# ' + job.id,
+      buttons: owed && job.payment_link ? button_(job.payment_link, 'Pay ' + money_(due), '#C08A22') : ''
+    }),
+    text: 'Your order has arrived and is ready for pick-up at ' + SHOP_ADDRESS + '.' +
+      (items.length ? '\n\n' + items.join('\n') : '') +
+      (due === null ? '' : (owed ? '\n\nLeft to pay: ' + money_(due) : '\n\nPaid in full.')) +
+      (owed && job.payment_link ? '\nPay online: ' + job.payment_link : '') +
+      '\n\nInvoice ' + job.id + '\n' + SHOP_NAME + ' · ' + SHOP_PHONE
   };
 }
 
@@ -5223,6 +5505,15 @@ function textSegments_(message) {
 function invoiceTextMessage_(job, code) {
   const due = jobBalance_(job);
   const owed = due === null || settled_(due) ? '' : money_(due);
+  // A parts order is texted when it arrives, and that is the news: it is in
+  // and can be collected. Same link, same balance rule, one segment.
+  if (isPartsOrder_(job)) {
+    return gsmSafe_(
+      SHOP_NAME + ': your order is ready for pick-up. Invoice ' + job.id +
+      (owed ? ', ' + owed + ' due' : '') + '. ' +
+      (owed && job.payment_link ? 'Pay here: ' : 'Details: ') +
+      invoiceUrl_(code));
+  }
   return gsmSafe_(
     SHOP_NAME + ': your service is complete. Invoice ' + job.id +
     (owed ? ', ' + owed + ' due' : '') + '. ' +
@@ -5244,7 +5535,11 @@ function invoiceText(token, id) {
   requireAdmin_(token);
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
-  if (job.status !== 'done') throw new Error('That job is not marked done yet.');
+  if (isPartsOrder_(job)) {
+    if (!orderArrived_(job)) throw new Error('Mark the order arrived first — the text tells them it is ready.');
+  } else if (job.status !== 'done') {
+    throw new Error('That job is not marked done yet.');
+  }
   const code = invoiceCodeFor_(job);
   const message = invoiceTextMessage_(job, code);
   return {
@@ -5271,8 +5566,12 @@ function markInvoiceTexted(token, id) {
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
   const code = invoiceCodeFor_(job);
-  logEmail_(job.id, 'customer_text', job.customer_phone || '(no number on file)',
-    'Invoice text sent from BiT', 'sent', '');
+  // Its own kind for an order, so the page can tell "told them it is in"
+  // apart from anything else that went to the same number.
+  const order = isPartsOrder_(job);
+  logEmail_(job.id, order ? 'customer_arrived_text' : 'customer_text',
+    job.customer_phone || '(no number on file)',
+    order ? 'Arrival text sent from BiT' : 'Invoice text sent from BiT', 'sent', '');
   return { code: code, url: invoiceUrl_(code) };
 }
 
@@ -5302,8 +5601,10 @@ function invoicePage(code) {
   const job = jobByInvoiceCode_(code);
   const shop = { name: SHOP_NAME, phone: SHOP_PHONE, email: SERVICE_EMAIL, address: SHOP_ADDRESS };
   // The same answer for a code that never existed and a code on a job that is
-  // not finished: nothing to be learned by trying codes.
-  if (!job || job.status !== 'done') return { notFound: true, shop: shop };
+  // not finished: nothing to be learned by trying codes. A parts order is
+  // live once it has arrived, which is when its text is written.
+  const order = isPartsOrder_(job);
+  if (!job || !(job.status === 'done' || (order && orderArrived_(job)))) return { notFound: true, shop: shop };
 
   const due = jobBalance_(job);
   return {
@@ -5320,7 +5621,11 @@ function invoicePage(code) {
       deposits: numberOrNull_(job.deposits),
       paidTotal: money2_(numberOrNull_(job.paid_total) || 0),
       paymentLink: job.payment_link || '',
-      invoiceFile: job.invoice_file || ''
+      invoiceFile: job.invoice_file || '',
+      // Worded as an order on the page: "ready for pick-up", not "service
+      // complete". pickedUp says it has already been collected.
+      order: order,
+      pickedUp: order && job.status === 'done'
     },
     // The same files the invoice email would carry, decided the same way:
     // whatever the writer marked for the customer when they added it.

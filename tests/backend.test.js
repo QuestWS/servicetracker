@@ -4607,3 +4607,183 @@ describe('archiving jobs', () => {
     expect(groups.find((g) => g.customerEmail === 'owes@example.com').totalDue).toBe(250);
   });
 });
+
+describe('customer parts orders', () => {
+  /** A parts order as the portal sends it: the invoice read in the browser. */
+  const takeOrder = (id = '01-9131', fields = {}) => backend.fn('createPartsOrder', adminToken, {
+    invoiceNumber: id,
+    customerName: 'Pat Example',
+    customerPhone: '(815) 555-0199',
+    customerEmail: 'pat@example.com',
+    items: '48000-96J16 TRIM ASSY,POWER',
+    invoicePdf: 'JVBERi0=',
+    grandTotal: 2408.80,
+    deposits: 1000,
+    amountDue: 1408.80,
+    paymentLink: 'https://pos.example.com/pay/order',
+    parts: [{ partIdentifier: '48000-96J16', description: 'TRIM ASSY,POWER', quantity: 1 }],
+    ...fields,
+  });
+
+  it('is taken off the invoice as an Ordered parts order, with nothing to fill in for a boat', () => {
+    const { job, partsListed } = takeOrder();
+    expect(job.kind).toBe('parts');
+    expect(job.statusLabel).toBe('Ordered');
+    expect(job.needsReview).toEqual([]);
+    expect(job.invoiceFile).toBeTruthy();
+    expect(job.balance).toBe(1408.8);
+    expect(job.workRequested).toBe('48000-96J16 TRIM ASSY,POWER');
+    expect(partsListed).toBe(1);
+    // On the shop's own parts list, so it goes to a supplier in the normal batch.
+    const page = backend.fn('getJob', adminToken, '01-9131');
+    expect(page.parts.map((part) => [part.partIdentifier, part.status])).toEqual([['48000-96J16', 'needed']]);
+    expect(backend.sentMail).toHaveLength(0);
+  });
+
+  it('refuses a second order on the same invoice, and one with no invoice', () => {
+    takeOrder();
+    expect(() => takeOrder()).toThrow(/already in the tracker/);
+    expect(() => takeOrder('01-9132', { invoicePdf: '' })).toThrow(/invoice PDF/);
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => backend.fn('createPartsOrder', mech, { invoiceNumber: '01-9133', invoicePdf: 'JVBERi0=' }))
+      .toThrow(/Sign in/);
+  });
+
+  it('says to run setup() rather than saving an order as a work order', () => {
+    const jobs = backend.sheet('Jobs');
+    jobs.rows[0] = jobs.rows[0].filter((column) => column !== 'kind');
+    expect(() => takeOrder()).toThrow(/run setup\(\)/);
+  });
+
+  it('never reaches the shop floor', () => {
+    takeOrder();
+    seedJob('01-8886');
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(backend.fn('openJobs', mech).jobs.map((job) => job.id)).toEqual(['01-8886']);
+    expect(() => backend.fn('lookupJob', '01-9131', 'typed', mech)).toThrow(/parts order/);
+    // Nor onto the Jobs page's counts, where it would read as a boat waiting.
+    const list = backend.fn('listJobs', adminToken, { status: 'every', fresh: true });
+    expect(list.counts.open).toBe(1);
+    expect(list.counts.received || 0).toBe(0);
+    expect(list.jobs.find((job) => job.id === '01-9131').kind).toBe('parts');
+    expect(list.jobs.find((job) => job.id === '01-8886').kind).toBe('job');
+  });
+
+  it('marking it arrived tells nobody — the arrival email is its own button', () => {
+    takeOrder();
+    expect(() => backend.fn('sendArrivalEmail', adminToken, '01-9131')).toThrow(/arrived first/);
+    const { job } = backend.fn('markOrderArrived', adminToken, '01-9131');
+    expect(job.statusLabel).toBe('Arrived');
+    expect(job.arrivedAt).toBeTruthy();
+    expect(backend.sentMail).toHaveLength(0);
+    expect(() => backend.fn('markOrderArrived', adminToken, '01-9131')).toThrow(/already/);
+  });
+
+  it('emails the customer that it has arrived, with the balance and never the grand total', () => {
+    goLive();
+    takeOrder();
+    backend.fn('markOrderArrived', adminToken, '01-9131');
+    const result = backend.fn('sendArrivalEmail', adminToken, '01-9131');
+    expect(result.emailed).toBe(true);
+    const mail = backend.sentMail[0];
+    expect(mail.to).toBe('pat@example.com');
+    expect(mail.opts.cc).toBe('service@questwatersports.com');
+    expect(mail.subject).toContain('Your order has arrived');
+    expect(mail.opts.htmlBody).toContain('ready for pick-up');
+    expect(mail.opts.htmlBody).toContain('TRIM ASSY,POWER');
+    expect(mail.opts.htmlBody).toContain('$1,408.80');
+    expect(mail.opts.htmlBody).not.toContain('2,408.80');
+    expect(mail.opts.htmlBody).toContain('https://pos.example.com/pay/order');
+    expect(mail.opts.htmlBody).not.toMatch(/\bboat\b/i);
+    const logged = backend.fn('getJob', adminToken, '01-9131').emails;
+    expect(logged[0].kind).toBe('customer_arrived');
+  });
+
+  it('rehearses the arrival email to the shop in test mode', () => {
+    takeOrder();
+    backend.fn('markOrderArrived', adminToken, '01-9131');
+    backend.fn('sendArrivalEmail', adminToken, '01-9131');
+    expect(backend.sentMail[0].to).toBe('service@questwatersports.com');
+    expect(backend.sentMail[0].subject).toMatch(/^\[TEST /);
+    expect(backend.fn('getJob', adminToken, '01-9131').emails[0].kind).toBe('customer_arrived_test');
+  });
+
+  it('says it is paid for, with no Pay button, when nothing is owed', () => {
+    goLive();
+    takeOrder('01-9131', { deposits: 2408.80, amountDue: 0 });
+    backend.fn('markOrderArrived', adminToken, '01-9131');
+    backend.fn('sendArrivalEmail', adminToken, '01-9131');
+    const html = backend.sentMail[0].opts.htmlBody;
+    expect(html).toContain('Paid in full');
+    expect(html).not.toContain('pos.example.com');
+  });
+
+  it('writes an arrival text that fits one segment, and logs it only when the writer says it went', () => {
+    takeOrder();
+    expect(() => backend.fn('invoiceText', adminToken, '01-9131')).toThrow(/arrived first/);
+    backend.fn('markOrderArrived', adminToken, '01-9131');
+    const text = backend.fn('invoiceText', adminToken, '01-9131');
+    expect(text.message).toContain('ready for pick-up');
+    expect(text.message).toContain('$1,408.80');
+    expect(text.message).not.toContain('2,408.80');
+    expect(text.segments).toBe(1);
+    expect(backend.fn('getJob', adminToken, '01-9131').emails).toHaveLength(0);
+    backend.fn('markInvoiceTexted', adminToken, '01-9131');
+    expect(backend.fn('getJob', adminToken, '01-9131').emails[0].kind).toBe('customer_arrived_text');
+    expect(backend.sentMail).toHaveLength(0);
+  });
+
+  it('opens on the texted page once it has arrived, worded as an order', () => {
+    takeOrder();
+    backend.fn('markOrderArrived', adminToken, '01-9131');
+    const { code } = backend.fn('invoiceText', adminToken, '01-9131');
+    const page = backend.fn('invoicePage', code);
+    expect(page.invoice.order).toBe(true);
+    expect(page.invoice.pickedUp).toBe(false);
+    expect(page.invoice.amountDue).toBe(1408.8);
+    expect(JSON.stringify(page)).not.toContain('2408.8');
+    expect(JSON.stringify(page)).not.toContain('TRIM ASSY');
+  });
+
+  it('takes a payment before it is picked up, and the receipt carries the invoice', () => {
+    goLive();
+    takeOrder();
+    const result = backend.fn('recordPayment', adminToken, '01-9131', {
+      payments: [{ amount: 1408.80, method: 'card' }],
+      paidInFull: true,
+      sendEmail: true,
+    });
+    expect(result.balance).toBe(0);
+    expect(result.emailed).toBe(true);
+    const mail = backend.sentMail[0];
+    expect(mail.subject).toContain('paid in full');
+    expect(mail.opts.attachments.map((blob) => blob.getName())).toContain('Invoice-01-9131.pdf');
+    // Paid, but not collected: still on the open list until it is picked up.
+    const list = backend.fn('listJobs', adminToken, { status: 'open', fresh: true });
+    expect(list.jobs.map((job) => job.id)).toContain('01-9131');
+  });
+
+  it('is never sent the "service complete" invoice email', () => {
+    takeOrder();
+    backend.fn('markDone', adminToken, '01-9131');
+    expect(() => backend.fn('sendInvoiceEmail', adminToken, '01-9131')).toThrow(/parts order/);
+  });
+
+  it('is picked up, and once paid can be archived like any finished job', () => {
+    takeOrder('01-9131', { deposits: 2408.80, amountDue: 0 });
+    const { job } = backend.fn('markDone', adminToken, '01-9131');
+    expect(job.statusLabel).toBe('Picked up');
+    backend.fn('setJobFlag', adminToken, '01-9131', 'paid', true);
+    const open = backend.fn('listJobs', adminToken, { status: 'open', fresh: true });
+    expect(open.jobs.map((row) => row.id)).not.toContain('01-9131');
+    expect(backend.fn('archiveJobs', adminToken, ['01-9131'], true).changed).toBe(1);
+  });
+
+  it('saving its details does not ask for a boat', () => {
+    takeOrder();
+    const { job } = backend.fn('saveJobDetails', adminToken, '01-9131', {
+      customerName: 'Pat Example', customerPhone: '', customerEmail: 'pat@example.com', boatInfo: '',
+    });
+    expect(job.needsReview).toEqual(['customerPhone']);
+  });
+});

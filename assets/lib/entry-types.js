@@ -83,6 +83,25 @@ export const STATUS_SHORT = {
   done: 'Done',
 };
 
+/**
+ * A customer's parts order runs on the same status column as a work order —
+ * see ORDER_STATUS_LABEL in the backend — with its own words. It never passes
+ * through work_underway: nothing on the floor ever scans one.
+ */
+export const ORDER_STATUSES = ['received', 'work_finished', 'done'];
+
+export const ORDER_STATUS_LABEL = {
+  received: 'Ordered',
+  work_underway: 'Ordered',
+  work_finished: 'Arrived',
+  done: 'Picked up',
+};
+
+/** The label for whichever kind of ticket this is. */
+export function statusLabelFor(job) {
+  return (job && job.kind === 'parts' ? ORDER_STATUS_LABEL : STATUS_LABEL)[job && job.status];
+}
+
 export const STATUS_PILL = {
   received: 'blue',
   work_underway: 'gold',

@@ -73,6 +73,40 @@ mirrors the parts list and differs in the two ways that matter.
   PropRepairs row. It hides the note, recorder and photo controls, and it is
   fetched by `jobProps` only when that tab opens.
 
+## Customer parts orders
+
+Somebody buying parts, not leaving anything to be worked on. Rung up in BiT as
+an ordinary invoice, downloaded, and dropped on **New parts order** in the
+portal (`?view=neworder`). Listed under **Customer orders** (`?view=orders`).
+
+- **It is a Jobs row with `kind = 'parts'`**, not a tab of its own. That is
+  the whole design: payments, receipts, the texted invoice page, archiving,
+  statements and the open rule (`isOpenJob_`) all work on it unchanged. A
+  row with `kind` empty is a work order — every row from before the column.
+- **Same status column, its own words** (`ORDER_STATUS_LABEL` in the
+  backend and `entry-types.js`): `received` is Ordered, `work_finished` is
+  Arrived, `done` is Picked up. `work_underway` never happens — nothing scans
+  an order.
+- **It never reaches the floor.** `openJobsFromSheet_` leaves it out and
+  `lookupJob` refuses its number with a message saying what it is. The Jobs
+  page leaves it off its list and its counts; `listJobs` still returns it,
+  and the portal sorts by `kind` itself.
+- **The part lines are read in the browser** by `parseInvoiceItems` (see
+  `bit-forms`). They are kept as text in `work_requested`, which is what the
+  arrival email lists, and the ones the writer ticks go on the parts list
+  against the order, so they are bought from a supplier in the normal batch.
+- **Money is not gated on Picked up.** `recordPayment` refuses a work order
+  that is not done, but an order is its own finished invoice from the start —
+  parts are paid up front, at collection, or some of each. Its receipt
+  always carries the invoice PDF.
+- **Telling the customer is its own button**, never a side effect of Mark
+  arrived: `sendArrivalEmail`, or `invoiceText` worded "ready for pick-up"
+  and sent from BiT. Both are refused until the order has arrived. The
+  "service complete" invoice email is refused for an order altogether.
+- **Adding `kind` means `setup()` has to be run once.** `createPartsOrder`
+  calls `requireColumn_` first — without the column every order would save
+  as a work order and land on the mechanics' phones.
+
 ## Both
 
 - **None of it reaches `/t/`** — it is all shop bookkeeping. Props are their

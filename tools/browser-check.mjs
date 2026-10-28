@@ -2891,6 +2891,111 @@ check('with what was typed on the job',
 check('sign-in lapse console clean', lapseErrors.length === 0, lapseErrors.join(' | '));
 await lapse.close();
 
+/* ------------------------------------------------ a customer's parts order */
+console.log('\n== a customer parts order ==');
+// Parts a customer is buying, rung up in BiT as an invoice and dropped on
+// the portal. Ordered, arrived, picked up — and never on the shop floor.
+const ORDER_INVOICE = `01-${String(Math.floor(1000 + Math.random() * 8999))}`;
+const ORDER_PDF = 'scratch/browser-check-order.pdf';
+fs.writeFileSync(ORDER_PDF, await makeInvoicePdf({
+  invoice: ORDER_INVOICE,
+  grandTotal: 120.5,
+  deposits: 50,
+  amountDue: 70.5,
+  items: [
+    { sku: '18-3250', description: 'IMPELLER KIT', quantity: 2, retail: 41.99 },
+    { sku: '6BH-44352-00', description: 'GASKET', quantity: 1, retail: 9.5 },
+  ],
+}));
+await admin.goto(`${BASE}/admin/?view=orders`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.page-title');
+check('the orders list has its own page', (await admin.textContent('.page-title')).includes('Customer orders'));
+await admin.click('a[href="?view=neworder"]');
+await admin.waitForSelector('#orderpdf', { state: 'attached' });
+await admin.setInputFiles('#orderpdf', ORDER_PDF);
+await admin.waitForSelector('#createorder', { timeout: 30000 });
+check('the invoice number is read off the invoice', (await admin.inputValue('#ordernumber')) === ORDER_INVOICE,
+  await admin.inputValue('#ordernumber'));
+const orderItems = await admin.inputValue('#orderitems');
+check('so are the parts', /2 x 18-3250 IMPELLER KIT/.test(orderItems) && /6BH-44352-00 GASKET/.test(orderItems), orderItems);
+check('and the balance, not the grand total', (await admin.inputValue('#orderdue')) === '70.50',
+  await admin.inputValue('#orderdue'));
+check('each part is offered for the parts list', (await admin.locator('[data-orderpart]').count()) === 2);
+// The second line is already on the shelf.
+await admin.uncheck('[data-orderpart="1"]');
+await admin.click('#createorder');
+await admin.waitForSelector('#markarrived', { timeout: 30000 });
+const orderPage = await admin.evaluate(() => document.getElementById('view').innerText);
+check('it opens as an order', /Order 01-/i.test(orderPage) && /Ordered/i.test(orderPage), orderPage.slice(0, 200));
+check('with nothing on it for a mechanic',
+  !/For the mechanic|Labor logged|Shop log|Re-stamp/.test(orderPage), orderPage.slice(0, 400));
+check('and only the ticked line on the parts list',
+  /18-3250/.test(orderPage) && (await admin.locator('.ticketparts .kv').count()) === 1);
+
+await admin.click('#markarrived');
+await admin.waitForSelector('#sendarrival', { timeout: 30000 });
+check('marking it arrived tells nobody',
+  /Nothing has been sent/.test(await admin.evaluate(() => document.getElementById('view').innerText)));
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#sendarrival');
+await admin.waitForFunction(() => /Arrival emailed/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+check('the arrival email is its own button, and is logged',
+  /customer arrived/.test(await admin.evaluate(() => document.getElementById('view').innerText)));
+
+await admin.click('#writetext');
+await admin.waitForSelector('#textbox:not([hidden])', { timeout: 30000 });
+const orderText = await admin.inputValue('#invoicetext');
+check('the arrival text says it is ready, with the balance',
+  /ready for pick-up/.test(orderText) && /\$70\.50/.test(orderText) && !/120\.50/.test(orderText), orderText);
+check('in one text', /one text/.test(await admin.textContent('#invoicetextmeta')));
+const orderCode = orderText.match(/\/i\/\?c=([0-9A-HJ-NP-TV-Z]{8})/)[1];
+const orderPhone = await shopContext({ viewport: { width: 390, height: 844 } });
+const orderLink = await orderPhone.newPage();
+await orderLink.goto(`${BASE}/i/?c=${orderCode}`, { waitUntil: 'networkidle' });
+await orderLink.waitForSelector('.card h2', { timeout: 20000 });
+const orderLinkText = await orderLink.evaluate(() => document.body.innerText);
+check('the texted link opens on the order, worded as one',
+  /ready for pick-up/i.test(orderLinkText) && !/service is complete/i.test(orderLinkText), orderLinkText.slice(0, 200));
+check('showing the balance, never the grand total',
+  /70\.50/.test(orderLinkText) && !/120\.50/.test(orderLinkText), orderLinkText.slice(0, 300));
+await orderPhone.close();
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#marktexted');
+await admin.waitForFunction(() => /Texted /.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+check('sending the text from BiT is recorded when the writer says so', true);
+
+// Money before it is collected — the usual way with parts.
+check('a payment can be taken before it is picked up', (await admin.locator('#payrecord').count()) === 1);
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#payrecord');
+await admin.waitForFunction(() => /Payments recorded/i.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+check('and is recorded against the order', true);
+
+await admin.click('#markdone');
+await admin.waitForFunction(() => /Picked up [A-Z][a-z]{2} \d/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+check('it is picked up', true);
+
+await admin.goto(`${BASE}/admin/?view=orders&status=all`, { waitUntil: 'networkidle' });
+await admin.waitForFunction((id) => document.getElementById('view').innerText.includes(id), ORDER_INVOICE, { timeout: 30000 });
+check('it is on the orders list', true);
+await admin.goto(`${BASE}/admin/?status=all`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.joblist, .empty', { timeout: 30000 });
+check('and not on the jobs list',
+  !(await admin.evaluate(() => document.getElementById('view').innerText)).includes(ORDER_INVOICE));
+const floorView = await admin.evaluate(async ({ base, invoice }) => {
+  const post = async (fn, args, token) => (await fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn, token, args }),
+  })).json();
+  const mechToken = (await post('signIn', ['Dale', true])).token;
+  const open = await post('openJobs', [true], mechToken);
+  const typed = await post('lookupJob', [invoice, 'typed', mechToken]);
+  return { listed: (open.jobs || []).some((job) => job.id === invoice), typed: typed.error || '' };
+}, { base: BASE, invoice: ORDER_INVOICE });
+check('and never reaches a mechanic, listed or typed',
+  !floorView.listed && /parts order/.test(floorView.typed), JSON.stringify(floorView));
+
 /* --------------------------------------------------------------------- done */
 console.log('\n== page errors ==');
 check('service writer console clean', adminErrors.length === 0, adminErrors.join(' | '));

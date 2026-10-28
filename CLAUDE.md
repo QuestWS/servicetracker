@@ -32,6 +32,10 @@ These apply everywhere and are not negotiable by any skill.
    writes the message and mints the code, a person sends it from BiT, and
    `markInvoiceTexted` is them saying so afterwards. Nothing here dials out.
 
+   A **customer parts order** has one more: the arrival notice, by email
+   (`sendArrivalEmail`) or by a text written here and sent from BiT. Same
+   rules — `markOrderArrived` tells nobody, and the notice is its own button.
+
    `/i/?c=code` is what that link opens: the invoice PDF, the balance and the
    Pay button. It is an invoice, not a log — `invoicePage` puts no log entry
    within reach of it, and `verify.sh` fails the deploy if that changes.
@@ -121,6 +125,7 @@ carries the reasoning, the traps, and how to test that area.
 | `backend-data` | read/write paths in `service-tracker.gs` — schema, locking, the row cache, Drive, transcripts, speed |
 | `deploy-setup` | deploying, `setup()`, the two switches, script properties, sign-in and the magic link, triggers, quotas |
 | `bit-forms` | the BiT PDF shape and the parsers in `assets/lib` |
+| `parts-props` | also customer parts orders — the Orders page, `kind = 'parts'` on Jobs |
 
 **When the change is done, run `/ship`** — verify, browser-check, commit, push
 to the feature branch *and* `main`, deploy only if the backend changed, and say

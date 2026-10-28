@@ -133,6 +133,18 @@ export async function makeInvoicePdf(overrides = {}) {
     page.drawText(money(value), { x: 560, y, size: 9, font });
   };
 
+  // A parts order's table, as BiT prints one: the header row, then each part
+  // with its quantity and three money columns, the price to three places.
+  // Only drawn when asked for — a work order's invoice has its own body.
+  if (data.items) {
+    const cols = [36, 130, 330, 380, 440, 520];
+    const line = (cells, y) => cells.forEach((text, i) => page.drawText(String(text), { x: cols[i], y, size: 8, font }));
+    line(['SKU', 'Description', 'Qty', 'Retail', 'Price', 'Extended'], 196);
+    data.items.forEach((item, i) => {
+      const y = 184 - i * 12;
+      line([item.sku, item.description, item.quantity, money(item.retail), item.retail.toFixed(3), money(item.retail * item.quantity)], y);
+    });
+  }
   row('Sale Total', data.saleTotal, 134);
   row('Shop Supplies, Freight', data.shopSupplies, 122);
   row('Tax', data.tax, 111);
