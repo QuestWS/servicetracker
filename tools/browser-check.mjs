@@ -2910,6 +2910,8 @@ fs.writeFileSync(ORDER_PDF, await makeInvoicePdf({
 await admin.goto(`${BASE}/admin/?view=orders`, { waitUntil: 'networkidle' });
 await admin.waitForSelector('.page-title');
 check('the orders list has its own page', (await admin.textContent('.page-title')).includes('Customer orders'));
+check('reached from "Parts orders" in the menu',
+  (await admin.textContent('a[data-nav="orders"]')).trim() === 'Parts orders');
 await admin.click('a[href="?view=neworder"]');
 await admin.waitForSelector('#orderpdf', { state: 'attached' });
 await admin.setInputFiles('#orderpdf', ORDER_PDF);

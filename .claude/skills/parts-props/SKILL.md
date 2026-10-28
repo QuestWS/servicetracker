@@ -77,7 +77,7 @@ mirrors the parts list and differs in the two ways that matter.
 
 Somebody buying parts, not leaving anything to be worked on. Rung up in BiT as
 an ordinary invoice, downloaded, and dropped on **New parts order** in the
-portal (`?view=neworder`). Listed under **Customer orders** (`?view=orders`).
+portal (`?view=neworder`). Listed under **Parts orders** in the menu (`?view=orders`).
 
 - **It is a Jobs row with `kind = 'parts'`**, not a tab of its own. That is
   the whole design: payments, receipts, the texted invoice page, archiving,
