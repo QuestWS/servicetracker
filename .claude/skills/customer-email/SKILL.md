@@ -163,6 +163,12 @@ customer who paid at the counter wants that day: paid in full, the parts are
 on order, we will tell you when they arrive. Both texts share the one copy
 box on the order page; `purpose` says which.
 
+On a **cancelled** order the same receipt is the settlement: "cancelled and
+your account is settled", paid / refunded / kept for what / nothing owed, the
+shop's internal reason never shown. Every order receipt carries the invoice
+and then the customer files under the attach-or-link rule, which is how the
+refund receipts reach the customer.
+
 An order is never sent the "service complete" invoice email —
 `sendInvoiceEmail` refuses it. Its receipt (`sendPaymentEmail_`) carries the
 invoice PDF instead.

@@ -682,11 +682,13 @@ async function renderJobs(kind = 'job') {
           <div class="row tight jobmeta">
             ${job.needsReview.length ? `<span class="pill red">${job.needsReview.length} to fill in</span>` : ''}
             ${orders
-              ? (job.balance > 0.005 ? `<span class="pill gold">${formatMoney(job.balance)} due</span>`
+              ? (job.cancelledAt ? ''
+                : job.balance > 0.005 ? `<span class="pill gold">${formatMoney(job.balance)} due</span>`
                 : job.balance !== null && job.balance !== undefined ? '<span class="pill grey">Paid</span>' : '')
               : `${job.hours ? `<span class="pill frost">${formatHours(job.hours)}</span>` : ''}
             <span class="pill grey">${job.entryCount} log</span>`}
-            <span class="pill ${STATUS_PILL[job.status]}">${stageLabel[job.status]}</span>
+            <span class="pill ${job.cancelledAt ? 'red' : STATUS_PILL[job.status]}">${
+              orders ? statusLabelFor(job) : stageLabel[job.status]}</span>
             <span class="sub" style="min-width:78px;text-align:right">${relativeDays(job.updatedAt)}</span>
           </div>
         </a>${picking ? '</div>' : ''}`).join('')}</div>`
@@ -947,7 +949,7 @@ async function drawJob(id, data, savedAt) {
             <p class="hint">Generate the link in POS+ and paste it here — we only store it.</p>
             <button class="btn ghost" type="submit" style="margin-top:14px">Save invoice &amp; link</button>
           </form>`;
-  const paymentCard = (job.status === 'done' || order) ? `<section class="card">
+  const paymentCard = (job.status === 'done' || order) && !job.cancelledAt ? `<section class="card">
           <h2>Record a payment</h2>
           <p class="hint" style="margin-top:0">Money taken against this invoice, and the receipt
             that goes back with it. Several payments recorded together go out as one receipt —
@@ -1031,25 +1033,32 @@ async function drawJob(id, data, savedAt) {
             the shop.`}</p>
           <div id="filemsg"></div>
         </section>`;
+  // What went back, on a cancelled order: the refund rows, as a positive figure.
+  const refunded = -payments.filter((payment) => payment.refund)
+    .reduce((sum, payment) => sum + Number(payment.amount), 0);
   const owesCard = job.amountDue !== null ? `<section class="card">
           <h2>What the customer owes</h2>
           <div class="hourstotal">${formatMoney(balance === null ? job.amountDue : balance)}</div>
+          ${job.cancelledAt ? `<div class="banner info" style="margin:6px 0 10px">Cancelled
+            ${formatDateTime(job.cancelledAt)} — nothing is owed.${refunded ? ` ${formatMoney(refunded)} refunded.` : ''}</div>` : ''}
           ${job.grandTotal !== null ? `<div class="kv"><span class="k">Grand total</span>
             <b style="font-family:var(--mono)">${formatMoney(job.grandTotal)}</b></div>` : ''}
           ${job.deposits ? `<div class="kv"><span class="k">Deposits already paid</span>
             <b style="font-family:var(--mono)">${formatMoney(job.deposits)}</b></div>` : ''}
           <div class="kv"><span class="k">Invoice amount due</span>
             <b style="font-family:var(--mono)">${formatMoney(job.amountDue)}</b></div>
-          ${paidTotal ? `<div class="kv"><span class="k">Payments received</span>
+          ${paidTotal && !job.cancelledAt ? `<div class="kv"><span class="k">Payments received</span>
             <b style="font-family:var(--mono)">&minus;${formatMoney(paidTotal)}</b></div>` : ''}
-          <p class="hint">The figure at the top is what is left to collect: the invoice's own
+          <p class="hint">${job.cancelledAt
+            ? 'The invoice figures are as BiT printed them. What went back to the customer is listed below.'
+            : `The figure at the top is what is left to collect: the invoice's own
             amount due, less everything recorded against it. That is what a customer is shown
-            and what a statement would chase.</p>
+            and what a statement would chase.`}</p>
 
           ${payments.length ? `
             <div class="subhead">Payments recorded (${payments.length})</div>
             ${payments.map((payment) => `<div class="kv">
-              <span class="k">${esc(payment.methodLabel)}${payment.reference ? ` · ${esc(payment.reference)}` : ''}
+              <span class="k">${payment.refund ? 'Refund · ' : ''}${esc(payment.methodLabel)}${payment.reference ? ` · ${esc(payment.reference)}` : ''}
                 <div style="font-size:12px;color:var(--muted)">${formatDate(payment.receivedAt)}</div></span>
               <b style="font-family:var(--mono)">${formatMoney(payment.amount)}</b></div>`).join('')}
             ${job.paidAt && balance !== null && balance > 0.005 ? `<p class="hint">
@@ -1127,18 +1136,60 @@ async function drawJob(id, data, savedAt) {
   const receiptSent = receiptEmail && receiptEmail.status !== 'failed' && receiptEmail.status !== 'skipped';
   const receiptTexted = emails.find((mail) => mail.kind === 'customer_receipt_text');
   const arrived = job.status === 'work_finished' || job.status === 'done';
+  // What the customer has put in: the invoice's deposits, which is how BiT
+  // prints a payment taken at the counter, plus whatever was recorded here.
+  const paidSoFar = Math.max(0, (Number(job.deposits) || 0) + paidTotal);
+  // On a cancelled order the same sum is what the shop kept: the refund is
+  // already in paidTotal as a negative payment.
+  const kept = job.cancelledAt ? paidSoFar : 0;
+  // Lines bought from a supplier already. A cancellation cannot undo those.
+  const partsOnOrder = (parts || []).filter((part) => part.status === 'ordered').length;
   // Every line on the parts list is in: the order is very likely sitting on
   // the shelf, and the writer should hear that from the page.
   const partsIn = parts && parts.length && parts.every((part) => part.status === 'received');
   const step = (label, at, on) => `<div class="kv"><span class="k">${label}</span>
     <b>${on ? `<span class="pill green">${at ? formatDate(at) : 'Done'}</span>` : '<span class="pill grey">Not yet</span>'}</b></div>`;
 
+  // The receipt buttons and the one message box, on an open order and a
+  // cancelled one alike — a cancelled order's receipt is its settlement.
+  const receiptSection = `
+          <h3 style="font-family:var(--disp);font-size:17px;color:var(--navy);margin:0 0 4px">Send a receipt</h3>
+          <p class="hint" style="margin:0 0 8px">${job.cancelledAt
+            ? `That the order is cancelled and everything is settled: what they paid, what went back,
+               what was kept and why. The invoice and every file marked for the customer go with the
+               email — attach the refund receipts when you cancel, or under Attachments.`
+            : `What they ordered, what they have paid, and where the
+            order is — ${esc(job.status === 'done' ? 'collected' : arrived ? 'arrived' : 'on order')}, right now.
+            The invoice goes with the email. For a customer who paid up front and wants it in writing.`}</p>
+          ${receiptSent ? `<p class="hint" style="margin:0 0 8px">Receipt emailed ${formatDateTime(receiptEmail.created_at)}
+            to ${esc(receiptEmail.recipient)}${data.testMode ? ' — test mode, so that was the shop, not the customer' : ''}.</p>` : ''}
+          ${receiptTexted ? `<p class="hint" style="margin:0 0 8px">Receipt texted ${formatDateTime(receiptTexted.created_at)}
+            to ${esc(receiptTexted.recipient)}.</p>` : ''}
+          <button class="btn ghost block" type="button" id="sendorderreceipt"${job.customerEmail ? '' : ' disabled title="Add a customer email address first"'}>
+            ${job.cancelledAt ? 'Email the settlement receipt' : settled ? 'Email a paid receipt' : 'Email an order receipt'}</button>
+          <button class="btn ghost block" type="button" id="writereceipttext" style="margin-top:8px">
+            ${job.cancelledAt ? (receiptTexted ? 'Write the settlement text again' : 'Write the settlement text')
+              : receiptTexted ? 'Write the receipt text again' : 'Write the receipt text'}</button>
+
+          <div id="textbox" hidden style="margin-top:14px">
+            ${data.testMode ? `<div class="banner warn" style="margin:0 0 10px">Test mode holds the
+              <b>email</b> back. It cannot hold a text back — we do not send it, BiT does.</div>` : ''}
+            <label class="fld" for="invoicetext" id="invoicetextlabel">The message</label>
+            <textarea class="txt" id="invoicetext" rows="4" readonly></textarea>
+            <p class="hint" id="invoicetextmeta"></p>
+            <div class="row tight" style="margin-top:10px">
+              <button class="btn ghost sm" type="button" id="copyinvoicetext">Copy the message</button>
+              <button class="btn ghost sm" type="button" id="opentextlink">Open the link</button>
+              <button class="btn gold sm" type="button" id="marktexted">I have sent it</button>
+            </div>
+          </div>`;
+
   const orderHtml = order ? `
     <div class="row" style="justify-content:space-between;margin-bottom:6px">
       <div>
         <h1 class="page-title">Order ${esc(job.id)}</h1>
         <div class="row tight" style="margin-top:6px">
-          <span class="pill ${STATUS_PILL[job.status]}">${statusLabelFor(job)}</span>
+          <span class="pill ${job.cancelledAt ? 'red' : STATUS_PILL[job.status]}">${statusLabelFor(job)}</span>
           <span class="sub" style="color:var(--muted)">Taken ${formatDateTime(job.createdAt)}</span>
         </div>
       </div>
@@ -1173,6 +1224,27 @@ async function drawJob(id, data, savedAt) {
 
         <section class="card">
           <h2>The order</h2>
+${job.cancelledAt ? `
+          ${step('Ordered', job.createdAt, true)}
+          ${arrived && job.arrivedAt ? step('Arrived', job.arrivedAt, true) : ''}
+          <div class="kv"><span class="k">Cancelled</span>
+            <b><span class="pill red">${formatDate(job.cancelledAt)}</span></b></div>
+          <div class="banner info" style="margin-top:10px">Cancelled ${formatDateTime(job.cancelledAt)}.
+            ${refunded ? `${formatMoney(refunded)} refunded.` : 'Nothing was refunded.'} Nothing is owed.</div>
+          ${kept > 0.005 ? `<div class="kv" style="margin-top:8px"><span class="k">Kept${
+            job.cancelNote ? ` for ${esc(job.cancelNote)}` : ''}</span>
+            <b style="font-family:var(--mono)">${formatMoney(kept)}</b></div>` : ''}
+          ${partsOnOrder ? `<div class="banner warn" style="margin-top:10px">${partsOnOrder} line${
+            partsOnOrder === 1 ? ' is' : 's are'} still on order from the supplier — see the
+            <a href="?view=parts">parts list</a>.</div>` : ''}
+          ${job.archivedAt ? `
+            <div class="banner info" style="margin-top:10px">Archived ${formatDateTime(job.archivedAt)} —
+              off every orders list but Archived.</div>
+            <button class="btn ghost block" type="button" id="archivejob" style="margin-top:8px">Restore to the orders list</button>`
+          : `<button class="btn ghost block" type="button" id="archivejob" style="margin-top:10px">Archive this order</button>`}
+
+          <hr style="border:0;border-top:1px solid var(--ice);margin:18px 0">
+${receiptSection}` : `
           ${step('Ordered', job.createdAt, true)}
           ${step('Arrived', job.arrivedAt, arrived)}
           ${step('Picked up', job.doneAt, job.status === 'done')}
@@ -1227,31 +1299,53 @@ async function drawJob(id, data, savedAt) {
 
           <hr style="border:0;border-top:1px solid var(--ice);margin:18px 0">
 
-          <h3 style="font-family:var(--disp);font-size:17px;color:var(--navy);margin:0 0 4px">Send a receipt</h3>
-          <p class="hint" style="margin:0 0 8px">What they ordered, what they have paid, and where the
-            order is — ${esc(job.status === 'done' ? 'collected' : arrived ? 'arrived' : 'on order')}, right now.
-            The invoice goes with the email. For a customer who paid up front and wants it in writing.</p>
-          ${receiptSent ? `<p class="hint" style="margin:0 0 8px">Receipt emailed ${formatDateTime(receiptEmail.created_at)}
-            to ${esc(receiptEmail.recipient)}${data.testMode ? ' — test mode, so that was the shop, not the customer' : ''}.</p>` : ''}
-          ${receiptTexted ? `<p class="hint" style="margin:0 0 8px">Receipt texted ${formatDateTime(receiptTexted.created_at)}
-            to ${esc(receiptTexted.recipient)}.</p>` : ''}
-          <button class="btn ghost block" type="button" id="sendorderreceipt"${job.customerEmail ? '' : ' disabled title="Add a customer email address first"'}>
-            ${settled ? 'Email a paid receipt' : 'Email an order receipt'}</button>
-          <button class="btn ghost block" type="button" id="writereceipttext" style="margin-top:8px">
-            ${receiptTexted ? 'Write the receipt text again' : 'Write the receipt text'}</button>
+${receiptSection}
 
-          <div id="textbox" hidden style="margin-top:14px">
-            ${data.testMode ? `<div class="banner warn" style="margin:0 0 10px">Test mode holds the
-              <b>email</b> back. It cannot hold a text back — we do not send it, BiT does.</div>` : ''}
-            <label class="fld" for="invoicetext" id="invoicetextlabel">The message</label>
-            <textarea class="txt" id="invoicetext" rows="4" readonly></textarea>
-            <p class="hint" id="invoicetextmeta"></p>
-            <div class="row tight" style="margin-top:10px">
-              <button class="btn ghost sm" type="button" id="copyinvoicetext">Copy the message</button>
-              <button class="btn ghost sm" type="button" id="opentextlink">Open the link</button>
-              <button class="btn gold sm" type="button" id="marktexted">I have sent it</button>
+          <hr style="border:0;border-top:1px solid var(--ice);margin:18px 0">
+          <details id="cancelbox">
+            <summary style="cursor:pointer;color:var(--muted);font-weight:600">Cancel this order</summary>
+            <p class="hint">The customer has called it off. This records what went back to them,
+              closes the order with nothing owed, and takes lines nobody has ordered yet off the
+              parts list. It sends nothing.</p>
+            <div class="grid2">
+              <div>
+                <label class="fld" for="refundamount">Refunded</label>
+                <input class="txt mono" id="refundamount" inputmode="decimal" value="${paidSoFar.toFixed(2)}">
+              </div>
+              <div>
+                <label class="fld" for="refundmethod">How</label>
+                <select class="txt" id="refundmethod">${PAYMENT_METHODS.map(([value, label]) =>
+                  `<option value="${value}">${label}</option>`).join('')}</select>
+              </div>
             </div>
-          </div>
+            <div class="grid2">
+              <div>
+                <label class="fld" for="refundref">Reference (optional)</label>
+                <input class="txt" id="refundref" placeholder="Visa ending 4412">
+              </div>
+              <div>
+                <label class="fld" for="refunddate">Date</label>
+                <input class="txt" id="refunddate" type="date" value="${todayInShop()}">
+              </div>
+            </div>
+            <p class="hint">Paid so far: ${formatMoney(paidSoFar)} — the deposits on the invoice plus
+              any payments recorded here. Put 0 if nothing was paid. Refund less than that and the
+              rest is what the shop keeps.</p>
+            <label class="fld" for="refundkept">What anything kept is for</label>
+            <input class="txt" id="refundkept" placeholder="Return shipping">
+            <p class="hint">Only if you are keeping some of it. The customer sees this on their
+              settlement receipt.</p>
+            <label class="fld" for="refundnote">Why it was cancelled (shop only, optional)</label>
+            <input class="txt" id="refundnote" placeholder="Found the part elsewhere">
+            <label class="fld" for="refundfiles">Their refund receipts (optional)</label>
+            <input id="refundfiles" type="file" multiple>
+            <p class="hint">BiT's return invoice, the card refund slip. Kept on the order for the
+              customer, and sent with the settlement receipt.</p>
+            ${partsOnOrder ? `<div class="banner warn" style="margin-bottom:10px">${partsOnOrder} line${
+              partsOnOrder === 1 ? ' is' : 's are'} already ordered from the supplier. They stay on the
+              parts list for you to send back or keep as stock.</div>` : ''}
+            <button class="btn red block" type="button" id="cancelorder">Cancel the order and record the refund</button>
+          </details>`}
         </section>
 ${paymentCard}
       </div>
@@ -1676,7 +1770,13 @@ ${emailLogCard}
       const lines = readLines().filter((line) => line.amount !== '');
       if (!lines.length) return say('err', 'Put in what was taken first.');
       const bad = lines.find((line) => !(Number(line.amount) >= 0));
-      if (bad) return say('err', 'Every payment needs an amount, and it cannot be negative.');
+      // A refund is not a payment run backwards — on its own it would read as
+      // the whole bill owed again. An order has its own way to do it.
+      if (bad) {
+        return say('err', order && Number(bad.amount) < 0
+          ? 'A refund is not recorded here. To give money back on a cancelled order, use Cancel this order under The order.'
+          : 'Every payment needs an amount, and it cannot be negative.');
+      }
 
       const full = $('payfull').checked;
       if (!lines.some((line) => Number(line.amount) > 0) && !full) {
@@ -2145,6 +2245,54 @@ ${emailLogCard}
     } catch (error) {
       markarrived.disabled = false;
       markarrived.textContent = 'Mark arrived';
+      notice('warn', error.message);
+    }
+  };
+
+  // The customer called it off. One call records the refund and closes the
+  // order; the backend refuses a refund bigger than what was paid.
+  const cancelorder = $('cancelorder');
+  if (cancelorder) cancelorder.onclick = async () => {
+    const typed = $('refundamount').value.trim();
+    const amount = Number(typed);
+    if (typed === '' || !(amount >= 0)) {
+      notice('warn', 'Say how much was refunded — 0 if nothing was paid.');
+      return;
+    }
+    if (!confirm(`Cancel order ${job.id}${amount > 0 ? ` and record a ${formatMoney(amount)} refund` : ' with nothing refunded'}?`
+      + '\n\nThe order closes with nothing owed. Nothing is sent to the customer.')) return;
+    cancelorder.disabled = true;
+    cancelorder.textContent = 'Cancelling…';
+    try {
+      const chosen = Array.from($('refundfiles').files || []);
+      const tooBig = chosen.find((file) => file.size > UPLOAD_LIMIT);
+      if (tooBig) {
+        throw new Error(`${tooBig.name} is ${formatBytes(tooBig.size)}, and ${formatBytes(UPLOAD_LIMIT)} `
+          + 'is as much as one upload will carry.');
+      }
+      const files = [];
+      for (const file of chosen) {
+        files.push({
+          name: file.name,
+          mime: file.type || 'application/octet-stream',
+          base64: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
+        });
+      }
+      const result = await api('cancelPartsOrder', [job.id, {
+        amount,
+        method: $('refundmethod').value,
+        reference: $('refundref').value.trim(),
+        receivedAt: $('refunddate').value,
+        keptFor: $('refundkept').value.trim(),
+        note: $('refundnote').value.trim(),
+        files,
+      }], withPage(job.id));
+      renderJob(job.id, result.jobPage);
+      toast(`Order cancelled${result.refunded ? `, ${formatMoney(result.refunded)} refund recorded` : ''}.`
+        + (result.partsRemoved ? ` ${result.partsRemoved} line${result.partsRemoved === 1 ? '' : 's'} taken off the parts list.` : ''));
+    } catch (error) {
+      cancelorder.disabled = false;
+      cancelorder.textContent = 'Cancel the order and record the refund';
       notice('warn', error.message);
     }
   };

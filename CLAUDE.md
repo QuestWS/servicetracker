@@ -34,8 +34,9 @@ These apply everywhere and are not negotiable by any skill.
 
    A **customer parts order** has two more: its receipt (`sendOrderReceipt`)
    and the arrival notice (`sendArrivalEmail`), each by email or by a text
-   written here and sent from BiT. Same rules — `markOrderArrived` tells
-   nobody, and each message is its own button.
+   written here and sent from BiT. Same rules — `markOrderArrived` and
+   `cancelPartsOrder` tell nobody, and each message is its own button. On a
+   cancelled order the receipt is the settlement.
 
    `/i/?c=code` is what that link opens: the invoice PDF, the balance and the
    Pay button. It is an invoice, not a log — `invoicePage` puts no log entry

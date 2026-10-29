@@ -62,7 +62,9 @@ export function parseInvoiceTotals(input) {
 /** Money the way an invoice says it. */
 export function formatMoney(value) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return null;
-  return `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  // -$12.00, not $-12.00: a refund is the one negative figure shown.
+  const number = Number(value);
+  return `${number < 0 ? '-' : ''}$${Math.abs(number).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 /**

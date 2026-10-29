@@ -118,7 +118,22 @@ function render(data) {
   // was already down, what has been paid since, and what that leaves. A job
   // with a deposit against it owes nothing like its total, and the customer
   // should be able to see why the figure is what it is.
-  const owed = invoice.amountDue === null ? '' : `
+  // Not on a cancelled order: "paid when ordered" next to a refund is the
+  // wrong story, and there is nothing to pay.
+  // A cancelled order shows how it came out instead: paid, refunded, kept and
+  // what for, and that nothing is owed.
+  const done = invoice.settlement;
+  const settlementBox = invoice.cancelled && done ? `
+    <div class="card flat" style="background:var(--paper);margin:0 0 16px">
+      ${done.paid ? `<div class="kv"><span class="k">Paid</span><b>${formatMoney(done.paid)}</b></div>` : ''}
+      ${done.refunded ? `<div class="kv"><span class="k">Refunded to you</span><b>&minus;${formatMoney(done.refunded)}</b></div>` : ''}
+      ${done.kept ? `<div class="kv"><span class="k">Kept${done.keptFor ? ` for ${esc(done.keptFor)}` : ''}</span>
+        <b>${formatMoney(done.kept)}</b></div>` : ''}
+      <div class="kv" style="align-items:baseline">
+        <span class="k" style="color:var(--navy);font-weight:600">Nothing owed</span>
+        <b style="font-size:22px">${formatMoney(0)}</b></div>
+    </div>` : '';
+  const owed = invoice.amountDue === null || invoice.cancelled ? settlementBox : `
     <div class="card flat" style="background:var(--paper);margin:0 0 16px">
       ${invoice.deposits ? `<div class="kv"><span class="k">${invoice.order ? 'Paid when ordered' : 'Deposits already paid'}</span>
         <b>${formatMoney(invoice.deposits)}</b></div>` : ''}
@@ -142,7 +157,7 @@ function render(data) {
 
   const extras = files.length ? `
     <section class="card">
-      <h2>Also for you</h2>
+      <h2>${invoice.cancelled ? 'Your receipts' : 'Also for you'}</h2>
       <div class="filelist">
         ${files.map((file) => `<div class="filerow"><span class="grow">
           <a href="${driveFileUrl(file.driveFile)}" target="_blank" rel="noreferrer">${esc(file.name)}</a>
@@ -153,10 +168,13 @@ function render(data) {
   // A parts order is texted when it arrives, so its news is that it is in and
   // ready to collect — not that any work was done.
   const headline = !invoice.order ? `${greeting} service is complete`
+    : invoice.cancelled ? `${greeting} order was cancelled`
     : invoice.pickedUp ? `${greeting} order`
     : invoice.arrived === false ? (invoice.settled ? `${greeting} order is paid in full` : `${greeting} order is placed`)
     : `${greeting} order is ready for pick-up`;
-  const lead = !invoice.order
+  const lead = invoice.cancelled
+    ? 'Everything is settled and nothing is owed. Your receipts are below — if you have any questions about your refund, give us a call.'
+    : !invoice.order
     ? (invoice.settled
       ? 'The work you asked for has been done and your account is settled. Thank you.'
       : 'The work you asked for has been done. Your invoice is below, and you can pay online.')

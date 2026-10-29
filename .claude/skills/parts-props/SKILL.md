@@ -110,7 +110,23 @@ portal (`?view=neworder`). Listed under **Parts orders** in the menu (`?view=ord
   invoice's deposits plus anything recorded here, `orderPaid_`) and where
   the order is. Neither changes the order. The texted page answers for an
   order at every stage for that reason.
-- **Adding `kind` means `setup()` has to be run once.** `createPartsOrder`
+- **Cancelling is its own step, never a negative payment.** `recordPayment`
+  still refuses a negative line: balance is amount due less what was
+  collected, so a refund on its own reads as the whole order owed again and
+  a statement goes chasing a customer who was just paid back.
+  `cancelPartsOrder` records the refund as a negative Payments row (how,
+  reference, date), stamps `cancelled_at`, keeps `cancel_note` (what anything
+  not refunded is for, shown to the customer: "return shipping"), files any
+  refund receipts as customer files, closes the order (done + paid), and
+  takes unbought lines off the parts list. A cancelled order's balance is 0
+  by definition (`jobBalance_`). It sends nothing.
+- **The process after a cancellation is the receipt buttons.** On a
+  cancelled order they send the settlement: paid, refunded, kept and what
+  for, nothing owed, with the invoice and every customer file attached
+  (`orderSettlement_`). The texted page shows the same and lists the receipts.
+  Arrival and further payments are refused.
+- **Adding `kind` means `setup()` has to be run once.** So did
+  `cancelled_at` and `cancel_note`. `createPartsOrder`
   calls `requireColumn_` first — without the column every order would save
   as a work order and land on the mechanics' phones.
 

@@ -99,6 +99,7 @@ export const ORDER_STATUS_LABEL = {
 
 /** The label for whichever kind of ticket this is. */
 export function statusLabelFor(job) {
+  if (job && job.kind === 'parts' && job.cancelledAt) return 'Cancelled';
   return (job && job.kind === 'parts' ? ORDER_STATUS_LABEL : STATUS_LABEL)[job && job.status];
 }
 

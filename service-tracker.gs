@@ -407,7 +407,14 @@ const SHEETS = {
          // row written before the column existed. 'parts' is a customer's
          // parts order: a BiT invoice for parts they are buying, with no
          // mechanic and no boat in the shop — see createPartsOrder.
-         'kind'],
+         'kind',
+         // A parts order the customer called off, and when. A stamp rather than
+         // a status: the order still went through Ordered, maybe Arrived, and
+         // the refund is a row on Payments. See cancelPartsOrder.
+         'cancelled_at',
+         // What the shop kept on a cancelled order is for, in words the
+         // customer is shown: "return shipping", "restocking fee".
+         'cancel_note'],
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
                'transcript_id', 'transcript_error', 'notified_at', 'created_at',
@@ -971,6 +978,7 @@ function apiFns_(data) {
     invoiceText:      function (a) { return invoiceText(data.token, a[0], a[1]); },
     markInvoiceTexted: function (a) { return markInvoiceTexted(data.token, a[0], a[1]); },
     sendOrderReceipt: function (a) { return sendOrderReceipt(data.token, a[0]); },
+    cancelPartsOrder: function (a) { return cancelPartsOrder(data.token, a[0], a[1]); },
     createPartsOrder: function (a) { return createPartsOrder(data.token, a[0]); },
     markOrderArrived: function (a) { return markOrderArrived(data.token, a[0]); },
     sendArrivalEmail: function (a) { return sendArrivalEmail(data.token, a[0]); },
@@ -1439,6 +1447,9 @@ function paymentView_(row) {
     // one receipt went out covering the lot.
     batch: row.batch || '',
     amount: money2_(numberOrNull_(row.amount) || 0),
+    // Money that went back to the customer. Only a cancelled order writes
+    // one — see cancelPartsOrder; recordPayment refuses a negative line.
+    refund: (numberOrNull_(row.amount) || 0) < 0,
     method: PAYMENT_METHODS.indexOf(row.method) === -1 ? 'other' : row.method,
     methodLabel: PAYMENT_METHOD_LABEL[row.method] || PAYMENT_METHOD_LABEL.other,
     // Last four, a check number, an auth code — whatever the writer wrote
@@ -1485,6 +1496,10 @@ function paymentsForJob_(jobId) {
  * settled on one either.
  */
 function jobBalance_(job) {
+  // A cancelled order owes nothing. What was paid and what went back are on
+  // the Payments tab; the invoice's own figures are left as BiT printed them,
+  // so the arithmetic below would read the refund as money now owed.
+  if (isCancelledOrder_(job)) return 0;
   const due = numberOrNull_(job.amount_due);
   if (due === null) return null;
   return money2_(due - (numberOrNull_(job.paid_total) || 0));
@@ -1501,7 +1516,13 @@ function isPartsOrder_(job) {
 }
 
 function statusLabel_(job) {
+  if (isCancelledOrder_(job)) return 'Cancelled';
   return (isPartsOrder_(job) ? ORDER_STATUS_LABEL : STATUS_LABEL)[job.status];
+}
+
+/** A parts order the customer called off. Nothing is owed on it, either way. */
+function isCancelledOrder_(job) {
+  return isPartsOrder_(job) && Boolean(job.cancelled_at);
 }
 
 function jobSummary_(job) {
@@ -1532,6 +1553,8 @@ function jobSummary_(job) {
     // When a parts order came in. The same stamp a work order gets when the
     // mechanic finishes, because it is the same step in the same column.
     arrivedAt: isPartsOrder_(job) ? (job.work_finished_at || null) : null,
+    cancelledAt: isCancelledOrder_(job) ? job.cancelled_at : null,
+    cancelNote: isCancelledOrder_(job) ? (job.cancel_note || '') : '',
     trackingUrl: trackingUrl_(job),
     // The texted invoice page, once a writer has asked for one. Null until
     // then, because the code is only minted when somebody texts the job —
@@ -1823,10 +1846,134 @@ function markOrderArrived(token, id) {
   const job = jobRow_(id);
   if (!job) throw new Error('No such order.');
   if (!isPartsOrder_(job)) throw new Error('That is a work order, not a parts order.');
+  if (isCancelledOrder_(job)) throw new Error('That order was cancelled.');
   if (job.status === 'work_finished') throw new Error('That order is already marked arrived.');
   if (job.status === 'done') throw new Error('That order has already been picked up.');
   setStatus_(job, 'work_finished', 'service_writer', '', 'Order arrived');
   return { job: jobSummary_(jobRow_(id)) };
+}
+
+/**
+ * The customer has called the order off, and gets their money back.
+ *
+ * Not a negative payment through recordPayment, which refuses one: the
+ * balance there is the invoice's amount due less what was collected, so a
+ * refund on its own would read as the whole order owed again — and a
+ * statement would go chasing a customer who has just been paid back. A
+ * cancelled order owes nothing (see jobBalance_), its refund is a Payments
+ * row with a negative amount so the record says what went back and how, and
+ * the ticket closes: done, and paid, which is what takes it off every open
+ * list.
+ *
+ * The refund is typed as a positive figure, and may be nothing at all — an
+ * order cancelled before anybody paid. It cannot be more than was paid.
+ *
+ * Lines still waiting to be ordered come off the parts list, since nobody
+ * should buy them now. A line already ordered stays, and is counted in the
+ * answer: what happens to it — sent back, kept as stock — is the writer's
+ * call, not this function's.
+ *
+ * Sends nothing.
+ */
+function cancelPartsOrder(token, id, payload) {
+  requireAdmin_(token);
+  payload = payload || {};
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such order.');
+  if (!isPartsOrder_(job)) throw new Error('That is a work order, not a parts order.');
+  if (isCancelledOrder_(job)) throw new Error('That order is already cancelled.');
+  requireColumn_('Jobs', 'cancelled_at');
+
+  const typed = numberOrNull_(payload.amount);
+  if (typed === null || typed < 0) throw new Error('Say how much was refunded — 0 if nothing was paid.');
+  const refund = money2_(typed);
+  if (refund > orderPaid_(job) + 0.005) {
+    throw new Error('That is more than was paid on this order (' + money_(orderPaid_(job)) + ').');
+  }
+  const method = PAYMENT_METHODS.indexOf(String(payload.method || '')) === -1 ? 'other' : String(payload.method);
+  const when = /^\d{4}-\d{2}-\d{2}$/.test(String(payload.receivedAt || ''))
+    ? String(payload.receivedAt) : nowIso_().slice(0, 10);
+  const note = String(payload.note || '').trim().substr(0, 400);
+  // What anything not refunded is for. The customer is shown it, on the
+  // settlement receipt and the page their text opens.
+  const keptFor = String(payload.keptFor || '').trim().substr(0, 120);
+  if (refund > 0) requireColumn_('Payments', 'batch');
+  requireColumn_('Jobs', 'cancel_note');
+
+  // Their receipts for the refund — BiT's return invoice, the card slip.
+  // Customer files, so they go with the settlement receipt and show on the
+  // texted page; to Drive before the lock, like every other upload.
+  ((payload && payload.files) || []).forEach(function (file) {
+    if (!file || !file.base64) return;
+    const name = String(file.name || '').trim() || 'receipt';
+    appendRow_('JobFiles', {
+      id: newId_('file'),
+      job_id: job.id,
+      name: name,
+      mime: file.mime || '',
+      drive_file: saveFile_(job.id, name, file.mime || 'application/octet-stream', file.base64),
+      visibility: 'customer',
+      added_by: SHOP_WRITER_NAME,
+      created_at: nowIso_(),
+      size: base64Bytes_(file.base64)
+    });
+  });
+
+  const outcome = withLock_(function () {
+    forget_('Jobs');
+    const fresh = jobRow_(id);
+    if (isCancelledOrder_(fresh)) throw new Error('That order is already cancelled.');
+    const at = nowIso_();
+    const patch = { cancelled_at: at, cancel_note: keptFor, updated_at: at };
+    if (refund > 0) {
+      appendRow_('Payments', {
+        id: newId_('pmt'),
+        job_id: fresh.id,
+        batch: newId_('pay'),
+        amount: -refund,
+        method: method,
+        reference: String(payload.reference || '').trim().substr(0, 80),
+        received_at: when,
+        note: 'Refund, order cancelled' + (note ? ': ' + note : ''),
+        recorded_by: SHOP_WRITER_NAME,
+        created_at: at
+      });
+      patch.paid_total = money2_((numberOrNull_(fresh.paid_total) || 0) - refund);
+    }
+    if (!fresh.paid_at) patch.paid_at = at;
+    updateRow_('Jobs', fresh._row, patch);
+    const reason = 'Cancelled' + (refund > 0 ? ', refunded ' + money_(refund) : '') + (note ? ': ' + note : '');
+    if (!setStatus_(jobRow_(id), 'done', 'service_writer', '', reason)) {
+      recordStatus_(fresh.id, fresh.status, fresh.status, 'service_writer', '', reason);
+    }
+
+    // Off the parts list: whatever nobody has bought yet. Highest row first,
+    // because each delete moves every row below it up one.
+    const lines = rows_('PartsOrders').filter(function (part) { return part.job_id === fresh.id; });
+    const unbought = lines.filter(function (part) { return part.status === 'needed'; })
+      .map(function (part) { return part._row; })
+      .sort(function (a, b) { return b - a; });
+    if (unbought.length) {
+      const sheet = sheet_('PartsOrders');
+      unbought.forEach(function (rowNumber) { sheet.deleteRow(rowNumber); });
+      forget_('PartsOrders');
+    }
+    return {
+      removed: unbought.length,
+      stillOnOrder: lines.filter(function (part) { return part.status === 'ordered'; }).length
+    };
+  });
+
+  const after = jobRow_(id);
+  return {
+    job: jobSummary_(after),
+    payments: paymentsForJob_(id),
+    files: filesForJob_(id),
+    refunded: refund,
+    kept: orderPaid_(after),
+    partsRemoved: outcome.removed,
+    partsStillOnOrder: outcome.stillOnOrder
+  };
 }
 
 function statementDraftRow_(id) {
@@ -1981,7 +2128,7 @@ function listJobs(token, filter) {
 }
 
 // Bump whenever a job summary gains a field, for the reason OPEN_JOBS_V_ says.
-const JOBS_LIST_V_ = 3;
+const JOBS_LIST_V_ = 4;
 const JOBS_LIST_KEY_ = 'JOBSLIST_v' + JOBS_LIST_V_ + '_';
 
 /** The writer's list, read from the sheet. Writes nothing, caches nothing. */
@@ -4230,7 +4377,8 @@ function saveFile_(jobId, name, mime, base64) {
 function money_(value) {
   const number = numberOrNull_(value);
   if (number === null) return '';
-  return '$' + number.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  // -$12.00, not $-12.00: a refund is the one negative figure this prints.
+  return (number < 0 ? '-$' : '$') + Math.abs(number).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 function esc_(value) {
@@ -4898,6 +5046,9 @@ function recordPayment(token, id, payload) {
   // finished invoice needs there to be a finished invoice. A parts order IS
   // its finished invoice from the moment it is taken — customers pay for
   // parts up front, at pick-up, or some of each — so it is never gated.
+  if (isCancelledOrder_(job)) {
+    throw new Error('That order was cancelled. Its refund was recorded when it was cancelled.');
+  }
   if (job.status !== 'done' && !isPartsOrder_(job)) {
     throw new Error('Mark the job done first — a payment is recorded against the final invoice.');
   }
@@ -5350,6 +5501,18 @@ function sendInvoiceEmail(token, id) {
  * invoice, plus anything recorded here since. A parts order is very often
  * paid in full at the counter, and BiT prints that payment as a deposit.
  */
+/**
+ * How a cancelled order came out: what they paid, what went back, and what
+ * the shop kept. Reads the order's payments for the refund rows.
+ */
+function orderSettlement_(job) {
+  const refunded = money2_(-paymentsForJob_(job.id)
+    .filter(function (payment) { return payment.refund; })
+    .reduce(function (sum, payment) { return sum + payment.amount; }, 0));
+  const kept = Math.max(0, orderPaid_(job));
+  return { paid: money2_(kept + refunded), refunded: refunded, kept: money2_(kept), keptFor: job.cancel_note || '' };
+}
+
 function orderPaid_(job) {
   return money2_((numberOrNull_(job.deposits) || 0) + (numberOrNull_(job.paid_total) || 0));
 }
@@ -5377,6 +5540,8 @@ function sendOrderReceipt(token, id) {
   const job = jobRow_(id);
   if (!job) throw new Error('No such order.');
   if (!isPartsOrder_(job)) throw new Error('That is a work order, not a parts order.');
+  // A cancelled order still takes a receipt: it is the one that says the
+  // account is settled and carries the refund receipts.
   if (!normalizeEmails_(job.customer_email)) {
     throw new Error('This order has no customer email address, so there is nobody to send the receipt to.');
   }
@@ -5397,6 +5562,8 @@ function orderReceiptContent_(job) {
     .map(function (line) { return line.trim(); }).filter(String);
   const stage = orderStageWords_(job);
   const onOrder = stage === 'is on order';
+  const cancelled = isCancelledOrder_(job);
+  const settlement = cancelled ? orderSettlement_(job) : null;
 
   const banner = rehearsal
     ? mailBox_('#FBEEE2', '#E4B48F',
@@ -5415,7 +5582,22 @@ function orderReceiptContent_(job) {
     }).join('')) : '';
 
   const cell = 'padding:3px 0;color:#5C7185;font-size:13px;line-height:19px';
-  const money = mailBox_('#FDFCF7', '#C7D5E0',
+  const row = function (label, value) {
+    return '<tr><td style="' + MAIL_FONT + ';' + cell + '">' + esc_(label) + '</td>' +
+      '<td align="right" style="' + MAIL_FONT + ';' + cell + '">' + value + '</td></tr>';
+  };
+  // A cancelled order: paid, refunded, kept and what for, and the line that
+  // matters — nothing owed.
+  const money = cancelled ? mailBox_('#FDFCF7', '#C7D5E0',
+    '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">' +
+      (settlement.paid ? row('Paid', money_(settlement.paid)) : '') +
+      (settlement.refunded ? row('Refunded to you', '&minus;' + money_(settlement.refunded)) : '') +
+      (settlement.kept ? row('Kept' + (settlement.keptFor ? ' for ' + settlement.keptFor : ''), money_(settlement.kept)) : '') +
+      '<tr><td style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;font-size:15px;line-height:23px">' +
+        'Nothing owed</td>' +
+      '<td align="right" style="' + MAIL_FONT + ';padding:4px 0;font-weight:bold;color:#14293E;' +
+        'font-size:17px;line-height:24px">' + money_(0) + '</td></tr>' +
+    '</table>') : mailBox_('#FDFCF7', '#C7D5E0',
     '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">' +
       (paid ? '<tr><td style="' + MAIL_FONT + ';' + cell + '">Paid</td>' +
         '<td align="right" style="' + MAIL_FONT + ';' + cell + '">' + money_(paid) + '</td></tr>' : '') +
@@ -5426,22 +5608,40 @@ function orderReceiptContent_(job) {
     '</table>');
 
   // The invoice is the itemised record of what they paid for, so it goes
-  // with every receipt for an order.
+  // with every receipt for an order — and then whatever the writer marked
+  // for the customer, the refund receipts among them, under the same
+  // attach-or-link rule as the invoice email.
   const attachments = [];
-  let invoiceAttached = false;
+  const attachedNames = [];
+  let budget = MAIL_ATTACHMENT_BUDGET;
   if (job.invoice_file) {
     try {
-      attachments.push(DriveApp.getFileById(job.invoice_file).getBlob().setName('Invoice-' + job.id + '.pdf'));
-      invoiceAttached = true;
+      const invoice = DriveApp.getFileById(job.invoice_file).getBlob().setName('Invoice-' + job.id + '.pdf');
+      attachments.push(invoice);
+      attachedNames.push('Invoice-' + job.id + '.pdf');
+      budget -= invoice.getBytes().length;
     } catch (err) {
       /* Binned by hand. The receipt still goes. */
     }
   }
+  const packed = packAttachments_(budget, filesForJob_(job.id).filter(function (file) {
+    return file.visibility === 'customer';
+  }));
+  packed.blobs.forEach(function (blob) { attachments.push(blob); });
+  const named = attachedNames.concat(packed.attached);
+  const attachNote = (named.length ? '<div style="' + MAIL_FONT + ';margin-top:8px">Attached: ' +
+      named.map(esc_).join(', ') + '.</div>' : '') +
+    (packed.linked.length ? '<div style="' + MAIL_FONT + ';margin-top:8px">' +
+      (packed.linked.length === 1 ? 'This is too large to email, so it is here to download:'
+        : 'These are too large to email, so they are here to download:') +
+      '<br>' + linkListHtml_(packed.linked) + '</div>' : '');
 
-  const intro = (owed ? 'Thank you for your order.' : 'Thank you &mdash; your order is paid in full.') +
-    ' It ' + esc_(stage) + '.' +
-    (onOrder ? ' We will let you know as soon as it arrives.' : '') +
-    (invoiceAttached ? ' Your invoice is attached.' : '');
+  const intro = cancelled
+    ? 'Your order has been cancelled and your account is settled &mdash; nothing further is owed.' +
+      (settlement.refunded ? ' ' + money_(settlement.refunded) + ' has been refunded to you.' : '')
+    : (owed ? 'Thank you for your order.' : 'Thank you &mdash; your order is paid in full.') +
+      ' It ' + esc_(stage) + '.' +
+      (onOrder ? ' We will let you know as soon as it arrives.' : '');
 
   const to = rehearsal ? testEmail_() : normalizeEmails_(job.customer_email);
   return {
@@ -5452,20 +5652,31 @@ function orderReceiptContent_(job) {
     suppressed: rehearsal,
     intendedFor: normalizeEmails_(job.customer_email),
     subject: (rehearsal ? '[TEST ' + rehearsalStamp_() + '] ' : '') +
-      (owed ? 'Your order — ' : 'Paid receipt — ') + SHOP_NAME + ' invoice ' + job.id,
+      (cancelled ? 'Order cancelled, all settled — ' : owed ? 'Your order — ' : 'Paid receipt — ') +
+      SHOP_NAME + ' invoice ' + job.id,
     html: noticeHtml_({
       banner: banner,
       greeting: first,
-      intro: intro + itemBox + money,
+      intro: intro + itemBox + money + attachNote,
       meta: 'INVOICE# ' + job.id,
-      buttons: owed && job.payment_link ? button_(job.payment_link, 'Pay ' + money_(due), '#C08A22') : ''
+      buttons: !cancelled && owed && job.payment_link ? button_(job.payment_link, 'Pay ' + money_(due), '#C08A22') : ''
     }),
-    text: (owed ? 'Thank you for your order.' : 'Thank you - your order is paid in full.') +
-      ' It ' + stage + '.' + (onOrder ? ' We will let you know as soon as it arrives.' : '') +
-      (items.length ? '\n\n' + items.join('\n') : '') +
-      (paid ? '\n\nPaid: ' + money_(paid) : '') +
-      (owed ? '\nLeft to pay: ' + money_(due) : '\nPaid in full.') +
-      (owed && job.payment_link ? '\nPay online: ' + job.payment_link : '') +
+    text: (cancelled
+      ? 'Your order has been cancelled and your account is settled - nothing further is owed.' +
+        (items.length ? '\n\n' + items.join('\n') : '') +
+        (settlement.paid ? '\n\nPaid: ' + money_(settlement.paid) : '') +
+        (settlement.refunded ? '\nRefunded to you: -' + money_(settlement.refunded) : '') +
+        (settlement.kept ? '\nKept' + (settlement.keptFor ? ' for ' + settlement.keptFor : '') + ': ' + money_(settlement.kept) : '') +
+        '\nNothing owed.'
+      : (owed ? 'Thank you for your order.' : 'Thank you - your order is paid in full.') +
+        ' It ' + stage + '.' + (onOrder ? ' We will let you know as soon as it arrives.' : '') +
+        (items.length ? '\n\n' + items.join('\n') : '') +
+        (paid ? '\n\nPaid: ' + money_(paid) : '') +
+        (owed ? '\nLeft to pay: ' + money_(due) : '\nPaid in full.') +
+        (owed && job.payment_link ? '\nPay online: ' + job.payment_link : '')) +
+      (named.length ? '\n\nAttached: ' + named.join(', ') : '') +
+      (packed.linked.length ? '\n\nToo large to email, so here to download:\n' +
+        packed.linked.map(function (file) { return file.name + ': ' + driveViewUrl_(file.driveFile); }).join('\n') : '') +
       '\n\nInvoice ' + job.id + '\n' + SHOP_NAME + ' · ' + SHOP_PHONE,
     attachments: attachments
   };
@@ -5491,6 +5702,7 @@ function sendArrivalEmail(token, id) {
   const job = jobRow_(id);
   if (!job) throw new Error('No such order.');
   if (!isPartsOrder_(job)) throw new Error('That is a work order, not a parts order.');
+  if (isCancelledOrder_(job)) throw new Error('That order was cancelled.');
   if (!orderArrived_(job)) throw new Error('Mark the order arrived first.');
   if (!normalizeEmails_(job.customer_email)) {
     throw new Error('This order has no customer email address, so there is nobody to tell.');
@@ -5634,6 +5846,13 @@ function invoiceTextMessage_(job, code, purpose) {
   const owed = due === null || settled_(due) ? '' : money_(due);
   // A parts order's receipt, sent the day it is paid for: what it is for,
   // that it is paid, and that the parts are coming. One segment.
+  if (isCancelledOrder_(job)) {
+    const back = orderSettlement_(job).refunded;
+    return gsmSafe_(
+      SHOP_NAME + ': order ' + job.id + ' is cancelled and settled.' +
+      (back ? ' ' + money_(back) + ' refunded, nothing owed.' : ' Nothing owed.') +
+      ' Receipts: ' + invoiceUrl_(code));
+  }
   if (isPartsOrder_(job) && purpose === 'receipt') {
     const onOrder = !orderArrived_(job);
     return gsmSafe_(
@@ -5674,6 +5893,8 @@ function invoiceText(token, id, purpose) {
   // A parts order has two texts: its receipt, any time, and its arrival
   // notice, once it is in. A work order has the one.
   purpose = isPartsOrder_(job) && purpose === 'receipt' ? 'receipt' : 'invoice';
+  // A cancelled order has one text left to send: that it is settled.
+  if (isCancelledOrder_(job) && purpose !== 'receipt') throw new Error('That order was cancelled.');
   if (isPartsOrder_(job)) {
     if (purpose !== 'receipt' && !orderArrived_(job)) {
       throw new Error('Mark the order arrived first — the text tells them it is ready.');
@@ -5713,7 +5934,8 @@ function markInvoiceTexted(token, id, purpose) {
   const receipt = order && purpose === 'receipt';
   logEmail_(job.id, receipt ? 'customer_receipt_text' : order ? 'customer_arrived_text' : 'customer_text',
     job.customer_phone || '(no number on file)',
-    receipt ? 'Receipt text sent from BiT' : order ? 'Arrival text sent from BiT' : 'Invoice text sent from BiT',
+    receipt ? (isCancelledOrder_(job) ? 'Settlement text sent from BiT' : 'Receipt text sent from BiT')
+      : order ? 'Arrival text sent from BiT' : 'Invoice text sent from BiT',
     'sent', '');
   return { code: code, url: invoiceUrl_(code) };
 }
@@ -5740,7 +5962,7 @@ function markInvoiceTexted(token, id, purpose) {
 function invoicePage(code) {
   // The one page a texted customer waits on. Both tabs it reads in one trip;
   // like every prefetch_, it fails safe to the per-tab reads.
-  prefetch_(['Jobs', 'JobFiles']);
+  prefetch_(['Jobs', 'JobFiles', 'Payments']);
   const job = jobByInvoiceCode_(code);
   const shop = { name: SHOP_NAME, phone: SHOP_PHONE, email: SERVICE_EMAIL, address: SHOP_ADDRESS };
   // The same answer for a code that never existed and a code on a job that is
@@ -5771,6 +5993,11 @@ function invoicePage(code) {
       order: order,
       pickedUp: order && job.status === 'done',
       arrived: order && orderArrived_(job),
+      // A link already in a customer's phone keeps answering: it says the
+      // order was cancelled, and shows nothing to pay.
+      cancelled: isCancelledOrder_(job),
+      // How a cancelled order came out: paid, refunded, kept and what for.
+      settlement: isCancelledOrder_(job) ? orderSettlement_(job) : null,
       // What has gone in so far, so a receipt can say "paid" with a figure.
       paidSoFar: order ? orderPaid_(job) : null
     },

@@ -56,6 +56,7 @@ describe('reading the totals off a finished invoice', () => {
     expect(formatMoney(16917.79)).toBe('$16,917.79');
     expect(formatMoney(0)).toBe('$0.00');
     expect(formatMoney(null)).toBeNull();
+    expect(formatMoney(-2373.76)).toBe('-$2,373.76');
   });
 });
 

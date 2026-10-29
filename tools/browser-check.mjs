@@ -3027,6 +3027,97 @@ const floorView = await admin.evaluate(async ({ base, invoice }) => {
 check('and never reaches a mechanic, listed or typed',
   !floorView.listed && /parts order/.test(floorView.typed), JSON.stringify(floorView));
 
+/* ------------------------------------------------ a cancelled parts order */
+console.log('\n== a cancelled parts order ==');
+// The shop's own case: paid in full up front, then called off. Everything
+// refunded but the return shipping, and the customer emailed and texted that
+// it is all settled, with the refund receipts.
+const CANCEL_INVOICE = `01-${String(Math.floor(1000 + Math.random() * 8999))}`;
+const cancelSeed = await admin.evaluate(async ({ base, invoice }) => {
+  const token = localStorage.getItem('qst_token') || sessionStorage.getItem('qst_token');
+  const res = await fetch(`${base}/exec`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn: 'createPartsOrder', token, args: [{
+      invoiceNumber: invoice, customerName: 'Rory Cancel', customerPhone: '(815) 555-0177',
+      customerEmail: 'rory@example.com', items: '48000-96J16 TRIM ASSY,POWER', invoicePdf: 'JVBERi0=',
+      grandTotal: 2408.8, deposits: 2408.8, amountDue: 0,
+      parts: [{ partIdentifier: '48000-96J16', description: 'TRIM ASSY,POWER', quantity: 1 }],
+    }] }),
+  });
+  return res.json();
+}, { base: BASE, invoice: CANCEL_INVOICE });
+check('a paid-up order to cancel', !cancelSeed.error, cancelSeed.error);
+await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(CANCEL_INVOICE)}`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('#cancelorder', { state: 'attached', timeout: 30000 });
+
+// What the shop tried first: a negative payment. It is still refused, and
+// now says where a refund goes. Refused before any confirm box comes up.
+await admin.fill('[data-payfield="amount"]', '-2373.76');
+await admin.click('#payrecord');
+await admin.waitForFunction(() => /Cancel this order/.test(document.getElementById('paymsg').innerText), null, { timeout: 10000 });
+check('a negative payment points the writer at Cancel this order', true);
+
+await admin.click('#cancelbox summary');
+check('the refund starts at everything that was paid', (await admin.inputValue('#refundamount')) === '2408.80',
+  await admin.inputValue('#refundamount'));
+await admin.fill('#refundamount', '2373.76');
+await admin.selectOption('#refundmethod', 'card');
+await admin.fill('#refundkept', 'return shipping');
+await admin.fill('#refundnote', 'Changed his mind');
+const REFUND_PDF = 'scratch/browser-check-refund.pdf';
+fs.writeFileSync(REFUND_PDF, await makeInvoicePdf({ invoice: CANCEL_INVOICE }));
+await admin.setInputFiles('#refundfiles', REFUND_PDF);
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#cancelorder');
+await admin.waitForFunction(() => /Cancelled \w{3} \d/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+const cancelledPage = await admin.evaluate(() => document.getElementById('view').innerText);
+check('the order reads as cancelled, refunded, with nothing owed',
+  /2,373\.76 refunded/.test(cancelledPage) && /Nothing is owed/.test(cancelledPage), cancelledPage.slice(0, 600));
+check('and says what was kept, and what for',
+  /Kept for return shipping/i.test(cancelledPage) && /35\.04/.test(cancelledPage), cancelledPage.slice(0, 900));
+check('the refund is on the payments list as money going back',
+  /Refund · Card/.test(cancelledPage) && /-\$2,373\.76/.test(cancelledPage), cancelledPage.slice(0, 1400));
+check('the refund receipt is kept on the order for the customer', /browser-check-refund\.pdf/.test(cancelledPage));
+check('no more money is taken and no arrival goes out',
+  (await admin.locator('#payrecord, #markarrived, #sendarrival').count()) === 0);
+check('and nothing is still waiting on the parts list for it', !/To order/.test(cancelledPage));
+
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#sendorderreceipt');
+await admin.waitForFunction(() => /Receipt emailed/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+check('the settlement receipt is emailed from the same Send a receipt buttons', true);
+
+await admin.click('#writereceipttext');
+await admin.waitForSelector('#textbox:not([hidden])', { timeout: 30000 });
+const settledText = await admin.inputValue('#invoicetext');
+check('the settlement text says it is cancelled, settled and refunded, in one text',
+  /cancelled and settled/.test(settledText) && /\$2,373\.76 refunded, nothing owed/.test(settledText)
+    && /one text/.test(await admin.textContent('#invoicetextmeta')), settledText);
+const settledCode = settledText.match(/\/i\/\?c=([0-9A-HJ-NP-TV-Z]{8})/)[1];
+const settledPhone = await shopContext({ viewport: { width: 390, height: 844 } });
+const settledLink = await settledPhone.newPage();
+await settledLink.goto(`${BASE}/i/?c=${settledCode}`, { waitUntil: 'networkidle' });
+await settledLink.waitForSelector('.card h2', { timeout: 20000 });
+const settledLinkText = await settledLink.evaluate(() => document.body.innerText);
+check('its link opens the settlement: paid, refunded, kept for return shipping, nothing owed',
+  /cancelled/i.test(settledLinkText) && /2,408\.80/.test(settledLinkText) && /2,373\.76/.test(settledLinkText)
+    && /return shipping/i.test(settledLinkText) && /35\.04/.test(settledLinkText) && /Nothing owed/i.test(settledLinkText),
+  settledLinkText.slice(0, 500));
+check('with his receipts to download', /Your receipts/i.test(settledLinkText) && /browser-check-refund\.pdf/.test(settledLinkText),
+  settledLinkText.slice(0, 700));
+check('and nothing to pay', (await settledLink.locator('a.btn.gold').count()) === 0);
+await settledPhone.close();
+admin.once('dialog', (dialog) => dialog.accept());
+await admin.click('#marktexted');
+await admin.waitForFunction(() => /Receipt texted/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+check('and the text is logged once the writer says BiT sent it', true);
+
+await admin.goto(`${BASE}/admin/?view=orders`, { waitUntil: 'networkidle' });
+await admin.waitForSelector('.joblist, .empty', { timeout: 30000 });
+check('it is off the open orders list',
+  !(await admin.evaluate(() => document.getElementById('view').innerText)).includes(CANCEL_INVOICE));
+
 /* --------------------------------------------------------------------- done */
 console.log('\n== page errors ==');
 check('service writer console clean', adminErrors.length === 0, adminErrors.join(' | '));

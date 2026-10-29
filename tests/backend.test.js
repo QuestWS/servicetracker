@@ -4869,6 +4869,169 @@ describe('customer parts orders', () => {
     expect(() => backend.fn('invoiceText', adminToken, id, 'receipt')).toThrow(/not marked done/);
   });
 
+  it('is cancelled with its refund recorded, and then owes nothing', () => {
+    // Paid at the counter in BiT, so the money is on the invoice as a deposit.
+    takeOrder('01-9131', { deposits: 2373.76, amountDue: 0, grandTotal: 2373.76 });
+    const result = backend.fn('cancelPartsOrder', adminToken, '01-9131', {
+      amount: 2373.76, method: 'card', reference: 'Visa 4412', receivedAt: '2026-10-29', note: 'Found it elsewhere',
+    });
+    expect(result.refunded).toBe(2373.76);
+    expect(result.job.statusLabel).toBe('Cancelled');
+    expect(result.job.cancelledAt).toBeTruthy();
+    expect(result.job.balance).toBe(0);
+    expect(result.job.paidAt).toBeTruthy();
+    const [refund] = result.payments;
+    expect(refund.amount).toBe(-2373.76);
+    expect(refund.refund).toBe(true);
+    expect(refund.method).toBe('card');
+    expect(refund.receivedAt).toBe('2026-10-29');
+    expect(refund.note).toContain('Found it elsewhere');
+    // Off the open list, and never on a statement.
+    const open = backend.fn('listJobs', adminToken, { status: 'open', fresh: true });
+    expect(open.jobs.map((job) => job.id)).not.toContain('01-9131');
+    expect(JSON.stringify(backend.fn('listOpenStatements', adminToken))).not.toContain('01-9131');
+    expect(backend.sentMail).toHaveLength(0);
+  });
+
+  it('refunds what was taken here as well as the deposits, and no more', () => {
+    takeOrder();
+    backend.fn('recordPayment', adminToken, '01-9131', { payments: [{ amount: 400, method: 'cash' }] });
+    // $1,000 in deposits on the invoice plus $400 taken here.
+    expect(() => backend.fn('cancelPartsOrder', adminToken, '01-9131', { amount: 1400.01 }))
+      .toThrow(/more than was paid/);
+    expect(() => backend.fn('cancelPartsOrder', adminToken, '01-9131', { amount: -5 })).toThrow(/how much/);
+    const { job } = backend.fn('cancelPartsOrder', adminToken, '01-9131', { amount: 1400, method: 'card' });
+    expect(job.balance).toBe(0);
+    expect(job.paidTotal).toBe(-1000);
+  });
+
+  it('cancels an unpaid order with nothing refunded, writing no payment', () => {
+    takeOrder('01-9131', { deposits: 0, amountDue: 2408.80 });
+    const result = backend.fn('cancelPartsOrder', adminToken, '01-9131', { amount: 0 });
+    expect(result.payments).toEqual([]);
+    expect(result.job.balance).toBe(0);
+  });
+
+  it('takes unbought lines off the parts list and leaves ones already ordered', () => {
+    takeOrder('01-9131', { parts: [
+      { partIdentifier: '48000-96J16', description: 'TRIM ASSY,POWER', quantity: 1 },
+      { partIdentifier: '18-3250', description: 'IMPELLER KIT', quantity: 1 },
+    ] });
+    const lines = backend.fn('getJob', adminToken, '01-9131').parts;
+    backend.fn('markPartsOrdered', adminToken, [lines[0].id], 'Yamaha', 'Y-100');
+    const result = backend.fn('cancelPartsOrder', adminToken, '01-9131', { amount: 0 });
+    expect(result.partsRemoved).toBe(1);
+    expect(result.partsStillOnOrder).toBe(1);
+    expect(backend.fn('getJob', adminToken, '01-9131').parts.map((part) => part.partIdentifier)).toEqual(['48000-96J16']);
+  });
+
+  it('takes no more money and sends no arrival once cancelled', () => {
+    takeOrder();
+    backend.fn('cancelPartsOrder', adminToken, '01-9131', { amount: 0 });
+    expect(() => backend.fn('cancelPartsOrder', adminToken, '01-9131', { amount: 0 })).toThrow(/already cancelled/);
+    expect(() => backend.fn('markOrderArrived', adminToken, '01-9131')).toThrow(/cancelled/);
+    expect(() => backend.fn('sendArrivalEmail', adminToken, '01-9131')).toThrow(/cancelled/);
+    expect(() => backend.fn('invoiceText', adminToken, '01-9131', 'arrival')).toThrow(/cancelled/);
+    expect(() => backend.fn('recordPayment', adminToken, '01-9131', { payments: [{ amount: 10 }] })).toThrow(/cancelled/);
+    expect(backend.sentMail).toHaveLength(0);
+  });
+
+  /** 01-9131 as it happened: paid up front, cancelled, refunded less return shipping. */
+  const settleLikeTheShop = () => {
+    takeOrder('01-9131', { deposits: 2408.80, amountDue: 0, grandTotal: 2408.80 });
+    return backend.fn('cancelPartsOrder', adminToken, '01-9131', {
+      amount: 2373.76,
+      method: 'card',
+      reference: 'Visa 4412',
+      receivedAt: '2026-10-29',
+      keptFor: 'return shipping',
+      note: 'Customer changed his mind',
+      files: [{ name: 'Refund-receipt.pdf', mime: 'application/pdf', base64: 'JVBERi0=' }],
+    });
+  };
+
+  it('keeps what was not refunded, says what for, and files the refund receipts for the customer', () => {
+    const result = settleLikeTheShop();
+    expect(result.refunded).toBe(2373.76);
+    expect(result.kept).toBe(35.04);
+    expect(result.job.cancelNote).toBe('return shipping');
+    expect(result.job.balance).toBe(0);
+    expect(result.files.map((file) => [file.name, file.visibility])).toEqual([['Refund-receipt.pdf', 'customer']]);
+    // The shop's reason is for the timeline, not the customer.
+    const timeline = backend.fn('jobHistory', adminToken, '01-9131').timeline;
+    expect(timeline[timeline.length - 1].note).toContain('Customer changed his mind');
+    expect(backend.sentMail).toHaveLength(0);
+  });
+
+  it('emails a settlement receipt: paid, refunded, kept and why, nothing owed, receipts attached', () => {
+    goLive();
+    settleLikeTheShop();
+    backend.fn('sendOrderReceipt', adminToken, '01-9131');
+    const mail = backend.sentMail[0];
+    expect(mail.to).toBe('pat@example.com');
+    expect(mail.subject).toContain('Order cancelled, all settled');
+    const html = mail.opts.htmlBody;
+    expect(html).toContain('cancelled and your account is settled');
+    expect(html).toContain('$2,408.80');
+    expect(html).toContain('$2,373.76');
+    expect(html).toContain('Kept for return shipping');
+    expect(html).toContain('$35.04');
+    expect(html).toContain('Nothing owed');
+    expect(html).not.toContain('Customer changed his mind');
+    expect(html).not.toContain('pos.example.com');
+    expect(mail.opts.attachments.map((blob) => blob.getName()))
+      .toEqual(['Invoice-01-9131.pdf', 'Refund-receipt.pdf']);
+    expect(mail.body).toContain('Kept for return shipping: $35.04');
+    expect(backend.fn('getJob', adminToken, '01-9131').emails[0].kind).toBe('customer_order_receipt');
+  });
+
+  it('writes a settlement text in one segment, logged once the writer says BiT sent it', () => {
+    settleLikeTheShop();
+    const text = backend.fn('invoiceText', adminToken, '01-9131', 'receipt');
+    expect(text.message).toContain('cancelled and settled');
+    expect(text.message).toContain('$2,373.76 refunded, nothing owed');
+    expect(text.segments).toBe(1);
+    backend.fn('markInvoiceTexted', adminToken, '01-9131', 'receipt');
+    const logged = backend.fn('getJob', adminToken, '01-9131').emails[0];
+    expect(logged.kind).toBe('customer_receipt_text');
+    expect(logged.subject).toContain('Settlement');
+  });
+
+  it('opens the settlement on the texted page, with the refund receipts to download', () => {
+    settleLikeTheShop();
+    const { code } = backend.fn('invoiceText', adminToken, '01-9131', 'receipt');
+    const page = backend.fn('invoicePage', code);
+    expect(page.invoice.cancelled).toBe(true);
+    expect(page.invoice.settlement).toEqual({ paid: 2408.8, refunded: 2373.76, kept: 35.04, keptFor: 'return shipping' });
+    expect(page.files.map((file) => file.name)).toEqual(['Refund-receipt.pdf']);
+    expect(JSON.stringify(page)).not.toContain('Customer changed his mind');
+  });
+
+  it('keeps a texted link answering, saying it was cancelled with nothing to pay', () => {
+    takeOrder('01-9131', { deposits: 2408.80, amountDue: 0 });
+    const { code } = backend.fn('invoiceText', adminToken, '01-9131', 'receipt');
+    backend.fn('cancelPartsOrder', adminToken, '01-9131', { amount: 2408.80 });
+    const page = backend.fn('invoicePage', code);
+    expect(page.invoice.cancelled).toBe(true);
+    expect(page.invoice.amountDue).toBe(0);
+    expect(page.invoice.settled).toBe(true);
+  });
+
+  it('cannot cancel a work order, and says to run setup() before the column exists', () => {
+    seedJob('01-8886');
+    expect(() => backend.fn('cancelPartsOrder', adminToken, '01-8886', { amount: 0 })).toThrow(/work order/);
+    takeOrder();
+    const jobs = backend.sheet('Jobs');
+    jobs.rows[0] = jobs.rows[0].filter((column) => column !== 'cancelled_at');
+    expect(() => backend.fn('cancelPartsOrder', adminToken, '01-9131', { amount: 0 })).toThrow(/run setup\(\)/);
+  });
+
+  it('still refuses a negative payment on the payment form', () => {
+    takeOrder();
+    expect(() => backend.fn('recordPayment', adminToken, '01-9131', { payments: [{ amount: -100 }] }))
+      .toThrow(/cannot be negative/);
+  });
+
   it('saving its details does not ask for a boat', () => {
     takeOrder();
     const { job } = backend.fn('saveJobDetails', adminToken, '01-9131', {
