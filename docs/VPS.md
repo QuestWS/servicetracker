@@ -30,9 +30,11 @@ that is the entire reason this document exists.
 Four things a planner needs to know up front, because they constrain
 everything:
 
-1. **BiT is never integrated with.** No scraping, no API, no automation. Every
-   exchange is a person moving a PDF by hand. This is a hard rule, not a
-   current limitation.
+1. **BiT has no API or connector.** Every exchange today is a person moving a
+   PDF by hand. That is a limitation of BiT, not a policy: the shop wants its
+   systems connected, and BiT is being retired for a DMS with an API, or one
+   Quest builds into the new platform. Until it goes, nothing scrapes or
+   scripts BiT's screens.
 2. **A QR code on paper cannot be recalled.** Printed work orders encode
    `SITE_URL` — the address of the static pages. Change it and every sheet
    already in the job folder stops working. See §8.

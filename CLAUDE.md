@@ -12,9 +12,13 @@ touching.** Load the one that matches the work before you start — see
 
 These apply everywhere and are not negotiable by any skill.
 
-1. **BiT is never integrated with.** No scraping, no automation, no API calls,
-   no matter how convenient. Every exchange is a person downloading a PDF from
-   BiT and uploading it here, or re-keying data from here into BiT.
+1. **BiT has no API or connector, so nothing here talks to it.** Every
+   exchange is a person downloading a PDF from BiT and uploading it here, or
+   re-keying data from here into BiT. That is BiT's limitation, not the shop's
+   wish: Quest wants its systems talking to each other, and BiT is being
+   replaced by a DMS with an API, or one Quest builds (see `docs/VPS.md`).
+   Until then, do not scrape or script BiT's screens to get around it; that
+   breaks silently the day BiT changes a page.
 2. **Never "New deployment."** It mints a new `/exec` URL, orphaning all four
    pages and every QR code already printed on paper. Update the existing
    deployment — the Actions workflow is built so you cannot do otherwise.
