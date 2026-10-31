@@ -99,6 +99,16 @@ The split is deliberate and worth keeping:
 - **Apps Script** stores, decides who may see what, and sends mail. It never
   parses a document.
 
+**Another repo imports two of these modules.** The Service Desk
+(`QuestWS/questws.github.io` → `desk/index.html`, one customer search over this
+portal and the winter console) loads `assets/lib/api.js` (`api`, `storedToken`,
+`storeSession`, `tokenExpiry`, `clearSession`) and `assets/lib/search.js`
+(`matchesSearch`, `phoneKey`) straight off `/servicetracker/`, so it never
+holds a copy of the `/exec` URL. Renaming either export breaks that page; it
+reads `listJobs` with `status: 'every'` and opens a job at `admin/?job=<id>`.
+Search rules live in `search.js` and, for the server, `matchesSearch_` — keep
+them saying the same thing.
+
 `assets/lib/lines.js`, `parse-work-order.js`, `tracking.js` and
 `entry-types.js` import nothing — they run in the browser and under node, which
 is how the parser stays under test.

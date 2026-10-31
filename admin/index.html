@@ -51,6 +51,7 @@ import { parseWorkOrder, FIELD_LABELS } from '../assets/lib/parse-work-order.js'
 import { parseInvoiceTotals, parseInvoiceItems, describeItems, formatMoney } from '../assets/lib/parse-invoice.js';
 import { stampWorkOrder, qrSvg } from '../assets/lib/stamp.js';
 import { trackingUrl } from '../assets/lib/tracking.js';
+import { matchesSearch } from '../assets/lib/search.js';
 import { emailList, joinEmails } from '../assets/lib/emails.js';
 import { $, esc, toast, formatDate, formatDateTime, relativeDays, driveImageUrl, driveFileUrl, bytesToBase64, formatBytes, openBytes } from '../assets/lib/ui.js';
 
@@ -527,8 +528,8 @@ function filterJobs(all, status, search, kind = 'job') {
     }
     if (!wanted) return true;
     // An order is looked for by what was ordered as often as by who.
-    return [job.id, job.customerName, job.boatInfo, job.customerPhone, kind === 'parts' ? job.workRequested : '']
-      .join(' ').toLowerCase().indexOf(wanted) !== -1;
+    return matchesSearch([job.id, job.customerName, job.customerEmail, job.boatInfo, job.customerPhone,
+      kind === 'parts' ? job.workRequested : ''], wanted, job.customerPhone);
   });
 }
 

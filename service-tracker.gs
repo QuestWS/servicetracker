@@ -2131,6 +2131,29 @@ function listJobs(token, filter) {
 const JOBS_LIST_V_ = 4;
 const JOBS_LIST_KEY_ = 'JOBSLIST_v' + JOBS_LIST_V_ + '_';
 
+/**
+ * Whatever the customer says first on the phone. Every word typed must turn
+ * up somewhere in the invoice number, name, email or unit, in any order, so
+ * "john white" and "white john" find the same job. A query of digits and
+ * phone punctuation only is a phone number and is matched on its digits, so
+ * "815-433-2200" finds "(815) 433 2200" however it was keyed. The Service
+ * Desk (questws.github.io/desk/) sends the same text here and to the winter
+ * console's search, which matches the same way (searchMatcher_ there).
+ */
+function matchesSearch_(job, search) {
+  if (!search) return true;
+  const digits = search.replace(/\D/g, '');
+  if (/^[\d\s()+.\-]+$/.test(search) && digits.length >= 3) {
+    if (String(job.id || '').indexOf(search) !== -1) return true;
+    return String(job.customer_phone || '').replace(/\D/g, '').indexOf(digits) !== -1;
+  }
+  const hay = [job.id, job.customer_name, job.customer_email, job.boat_info, job.customer_phone]
+    .join(' ').toLowerCase();
+  return search.split(/[\s,]+/).filter(String).every(function (word) {
+    return hay.indexOf(word) !== -1;
+  });
+}
+
 /** The writer's list, read from the sheet. Writes nothing, caches nothing. */
 function jobsListFromSheet_(filter) {
   const search = String(filter.search || '').trim().toLowerCase();
@@ -2150,9 +2173,7 @@ function jobsListFromSheet_(filter) {
       } else if (filter.status && filter.status !== 'all' && job.status !== filter.status) {
         return false;
       }
-      if (!search) return true;
-      return [job.id, job.customer_name, job.boat_info, job.customer_phone]
-        .join(' ').toLowerCase().indexOf(search) !== -1;
+      return matchesSearch_(job, search);
     })
     .map(function (job) {
       const summary = jobSummary_(job);

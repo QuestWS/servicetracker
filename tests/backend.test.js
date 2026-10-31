@@ -478,6 +478,19 @@ describe('the writer\'s working list', () => {
     const found = backend.fn('listJobs', adminToken, { status: 'open', search: 'Jane' }).jobs;
     expect(found.map((j) => j.id)).toEqual(['01-8887']);
   });
+
+  it('finds a customer by whatever they say first on the phone', () => {
+    seedJob('01-8886');
+    const ids = (search) => backend.fn('listJobs', adminToken, { status: 'every', search }).jobs.map((j) => j.id);
+    // Full name either way round, a phone however it is punctuated, the
+    // email, the boat, and the invoice number with its dash.
+    ['jane rivers', 'rivers jane', '815-555-0142', '8155550142', '(815) 555 0142',
+      'jane@example', 'yamaha rivers', '01-8886'].forEach((q) => {
+      expect(ids(q), q).toEqual(['01-8886']);
+    });
+    expect(ids('jane smith')).toEqual([]);
+    expect(ids('555-9999')).toEqual([]);
+  });
 });
 
 describe('what a job page costs to open', () => {
