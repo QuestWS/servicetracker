@@ -530,6 +530,8 @@ function drawOpenJobs(jobs, strip, tone) {
           ${job.alert ? `<div style="margin-top:7px"><span class="alertflag">${ALERT_MARK} Read first</span></div>
             <div style="font-size:14px;line-height:1.4;color:var(--alert);font-weight:600;margin-top:5px">${esc(job.alert)}</div>`
           : `<div style="font-size:12px;opacity:.7;margin-top:4px">${esc(job.statusLabel)}</div>`}
+          ${job.winterLeft > 0 ? `<div class="winterpill" style="margin-top:7px">❄ Winterize: ${job.winterLeft} left</div>`
+            : job.winterLeft === 0 ? `<div class="winterpill" style="margin-top:7px">❄ Winterize done</div>` : ''}
         </button>`).join('')}
     </div>` : `<p style="color:#9fc3dc">Nothing open right now.</p>`}`;
 
@@ -1302,6 +1304,109 @@ function loggingAs() {
 function drawJobHead() {
   const head = $('jobhead');
   if (head && state.job && state.who) head.innerHTML = jobHeadHtml(state.job, loggingAs());
+  drawJobWinter();
+}
+
+/* ------------------------------------------------- walk-in winterize --- */
+/*
+ * A work order the office marked as a winterize job carries the same kind of
+ * checklist as a stored boat (Winter work). It sits above the log, which still
+ * takes hours, parts and notes for anything beyond it. Full or Basic is always
+ * said, with its steps; when the customer did not know the engine type, the
+ * mechanic is asked to pick it here, and the engine line cannot be ticked
+ * until they do. Ticks are optimistic like every save here: shown on the tap,
+ * put back with a toast if the server says no.
+ */
+function jobWinterHtml(w) {
+  if (!w) return '';
+  return `<section class="card" style="margin-bottom:14px" id="jobwintercard">
+    <h2 style="margin-top:0">❄ Winterize — ${esc(w.levelLabel)}</h2>
+    <div class="wsteps"><b>${esc(w.levelLabel)}:</b> ${esc(w.steps || '')}</div>
+    ${w.needsEngine ? `<div class="enginepick" id="enginepick">
+      <div style="font-weight:700">Engine type not given — check the boat and pick one</div>
+      <div class="chips">${(w.engines || []).map((e) => `<button type="button" class="btn ghost sm" data-engine="${esc(e.id)}">${esc(e.name)}</button>`).join('')}</div>
+    </div>` : `<p class="hint" style="margin:8px 0 0">Engine: <b>${esc(w.engine.name)}</b>${w.engineCount > 1 ? ` × ${w.engineCount}` : ''}${
+      w.engineBy && w.engineBy !== 'Office' ? ` · picked by ${esc(w.engineBy)}` : ''}</p>`}
+    <div class="stack" style="margin-top:12px" id="jobwinteritems">
+      ${w.items.map((item, index) => jobWinterItemHtml(item, index, w)).join('')}
+    </div>
+    <p class="hint" style="margin-top:10px">Tap an item when it is done. Anything extra goes in the log below as hours or parts.</p>
+  </section>`;
+}
+
+function jobWinterItemHtml(item, index, w) {
+  const blocked = item.kind === 'engine' && w.needsEngine && !item.done;
+  return `<button class="btn ${item.done ? 'green' : 'ghost'} block" type="button" data-jw="${index}"
+      aria-pressed="${item.done ? 'true' : 'false'}" style="display:block;text-align:left;padding:14px;font-size:16px${blocked ? ';opacity:.6' : ''}">
+    <div style="font-weight:700">${item.done ? '✓ ' : '☐ '}${esc(item.label)}${item.winterize ? ' <span aria-label="winterization">❄</span>' : ''}</div>
+    ${item.saving ? `<div style="font-size:12.5px;margin-top:3px">Saving…</div>`
+      : item.done ? `<div style="font-size:12.5px;opacity:.9;margin-top:3px">Done by ${esc(item.doneBy || '')}${item.doneAt ? ` · ${esc(formatDateTime(item.doneAt))}` : ''}</div>`
+      : blocked ? `<div style="font-size:12.5px;margin-top:3px">Pick the engine type above first.</div>` : ''}
+  </button>`;
+}
+
+function drawJobWinter() {
+  const box = $('jobwinter');
+  if (!box || !state.job) return;
+  box.innerHTML = jobWinterHtml(state.job.winter);
+  bindJobWinter();
+}
+
+function bindJobWinter() {
+  const w = state.job && state.job.winter;
+  if (!w) return;
+  view.querySelectorAll('[data-jw]').forEach((button) => {
+    button.onclick = () => toggleJobWinterItem(Number(button.dataset.jw));
+  });
+  view.querySelectorAll('[data-engine]').forEach((button) => {
+    button.onclick = () => pickJobWinterEngine(button.dataset.engine);
+  });
+}
+
+async function sendJobWinter(itemId, done, engineId) {
+  const job = state.job;
+  const out = await api('setJobWinterItem', [job.token, itemId, done, engineId]);
+  // Only if the mechanic is still on this job: the answer belongs to it.
+  if (state.job && state.job.token === job.token) {
+    state.job.winter = out.winter;
+    saveJob(state.job, state.hours);
+  }
+}
+
+async function toggleJobWinterItem(index) {
+  const w = state.job.winter;
+  const item = w.items[index];
+  if (!item || item.saving) return;
+  if (item.kind === 'engine' && w.needsEngine && !item.done) {
+    const pick = $('enginepick');
+    if (pick) { pick.classList.add('nudge'); pick.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+    return;
+  }
+  const want = !item.done;
+  const was = { done: item.done, doneBy: item.doneBy, doneAt: item.doneAt };
+  Object.assign(item, { done: want, doneBy: want ? state.who.name : '', doneAt: '', saving: true });
+  drawJobWinter();
+  try {
+    await sendJobWinter(item.id, want, '');
+  } catch (error) {
+    Object.assign(item, was, { saving: false });
+    toast(`Not saved — ${error.message}`);
+  }
+  drawJobWinter();
+}
+
+async function pickJobWinterEngine(engineId) {
+  const w = state.job.winter;
+  const engine = (w.engines || []).find((e) => e.id === engineId);
+  if (!engine) return;
+  view.querySelectorAll('[data-engine]').forEach((b) => { b.disabled = true; });
+  try {
+    await sendJobWinter('', false, engineId);
+    toast(`Engine type: ${engine.name}.`);
+  } catch (error) {
+    toast(`Not saved — ${error.message}`);
+  }
+  drawJobWinter();
 }
 
 function renderJob() {
@@ -1313,6 +1418,8 @@ function renderJob() {
     <div id="jobhead">${jobHeadHtml(job, loggingAs())}</div>
 
     <div id="notice"></div>
+
+    <div id="jobwinter">${jobWinterHtml(job.winter)}</div>
 
     <section class="card" style="margin-bottom:14px">
       <h2>Add to the log</h2>
@@ -1376,6 +1483,7 @@ function renderJob() {
   $('another').onclick = (event) => { event.preventDefault(); state.job = null; renderHome(); };
 
   bindFeed();
+  bindJobWinter();
   const finish = $('finish');
   if (finish) finish.onclick = finishWork;
   // A prop is not a log entry, so the one button at the bottom of the card

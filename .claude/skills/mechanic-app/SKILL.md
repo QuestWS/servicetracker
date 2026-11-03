@@ -307,6 +307,19 @@ and do not come across.
 `scripts/serve.mjs` plays the winter system with two fixed units, so the
 preview and `browser-check.mjs` never reach the real one.
 
+## A walk-in winterize, on an ordinary job
+
+A work order the office ticked **Winterize job** at intake (`winter_work` on
+the Jobs row) carries a checklist card above the log: **Full service** or
+**Basic**, always, with that level's steps; the services chosen at intake; and
+— when the customer did not know — a gold **pick the engine type** prompt. The
+engine line cannot be ticked until one is picked (`setJobWinterItem` refuses
+too), and tapping it early nudges the prompt rather than raising a dialog,
+which is the no-confirm rule. It is still a job: Hours, Parts and Notes take
+anything beyond the checklist, and a first tick starts the job like a first
+entry. Ticks are written under the lock and re-read inside it. The open-jobs
+list says **❄ Winterize: N left**.
+
 ## The service worker
 
 There is a watchdog behind the boot and an always-present way to throw the

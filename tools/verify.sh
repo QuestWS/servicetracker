@@ -90,6 +90,15 @@ awk '/^function invoicePage/,/^}/' service-tracker.gs | grep -q "invoice: {" \
   && note "invoicePage names the customer's fields one at a time, and none of them is a log entry or the grand total" \
   || bad "invoicePage no longer builds the customer payload field by field"
 
+# The walk-in winterize checklist is the shop's — who ticked what, which
+# engine, what was found. Neither customer page may so much as name it.
+for fn in publicJob invoicePage; do
+  if awk "/^function $fn/,/^}/" service-tracker.gs | grep -qE "winter_work|winterView_|winterSpecOf_"; then
+    bad "$fn reads the winterize checklist — it is shop-side only"
+  fi
+done
+note "neither customer page reads the winterize checklist"
+
 echo "== the one shared URL =="
 # API_URL lives in exactly one file so the four pages cannot drift apart.
 hits=$(grep -rl "script.google.com/macros" --include=*.js --include=*.html . 2>/dev/null | grep -v node_modules | grep -v '^./assets/lib/config.js' | wc -l)

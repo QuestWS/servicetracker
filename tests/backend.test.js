@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { loadBackend } from './helpers/apps-script-stubs.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 let backend;
 let adminToken;
@@ -5064,5 +5066,176 @@ describe('customer parts orders', () => {
       customerName: 'Pat Example', customerPhone: '', customerEmail: 'pat@example.com', boatInfo: '',
     });
     expect(job.needsReview).toEqual(['customerPhone']);
+  });
+});
+
+describe('a walk-in winterize, on an ordinary work order', () => {
+  const KEY = 'k'.repeat(40);
+  const MENU = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'tests/helpers/winter-menu.json'), 'utf8'));
+  let calls;
+
+  function shop(menuAnswer = { code: 200, body: { ...MENU, _api: 'tracker' } }) {
+    calls = [];
+    backend = loadBackend({
+      properties: { ADMIN_PASSWORD: 'shop-password', WINTER_KEY: KEY },
+      fetch: (url, opts) => { calls.push(JSON.parse(opts.payload)); return typeof menuAnswer === 'function' ? menuAnswer() : menuAnswer; },
+    });
+    adminToken = backend.fn('adminSignIn', 'shop-password').token;
+    return backend.fn('mechanicSignIn', 'Dale', true).token;
+  }
+
+  /** What the intake form sends: full, engine type left blank, two services. */
+  function chosen(extra = {}) {
+    return {
+      level: 'full', engineId: '', engineCount: 1,
+      steps: MENU.levels[1].steps, stepsPwc: MENU.levels[1].stepsPwc, engines: MENU.engines,
+      items: [
+        { id: 'ballast', label: 'Ballast drain (tanks)', group: 'Water systems', winterize: true, count: true, qty: 3 },
+        { id: 'wrap', label: 'Shrinkwrap', group: 'Shrinkwrap', winterize: false },
+      ],
+      ...extra,
+    };
+  }
+
+  function walkIn(id = '01-7001', winter = chosen()) {
+    backend.fn('createJob', adminToken, { invoiceNumber: id, customerName: 'Walk In', boatInfo: '2015 Tige', winter });
+    return backend.fn('jobRow_', id).token;
+  }
+
+  it('offers the winter system\'s whole menu at intake', () => {
+    shop();
+    const { menu } = backend.fn('winterMenu', adminToken);
+    expect(menu.levels.map((l) => l.id)).toEqual(['basic', 'full']);
+    expect(menu.engines.map((e) => e.id)).toContain('pwc');
+    expect(menu.services.length).toBe(MENU.services.length);
+    expect(calls[0]).toMatchObject({ api: 'tracker', fn: 'menu', key: KEY });
+    // Six hours of cache: a second intake does not ask again.
+    backend.call('forget_(); _props = null;');
+    backend.fn('winterMenu', adminToken);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('keeps intake working on the last good menu when the winter system is down', () => {
+    let up = true;
+    shop(() => (up ? { code: 200, body: { ...MENU, _api: 'tracker' } } : { code: 500, body: 'down' }));
+    backend.fn('winterMenu', adminToken);
+    up = false;
+    backend.cache.clear();
+    backend.call('forget_(); _props = null;');
+    const out = backend.fn('winterMenu', adminToken);
+    expect(out.stale).toBe(true);
+    expect(out.menu.levels).toHaveLength(2);
+  });
+
+  it('is a writer\'s menu, not something anybody can ask for', () => {
+    const mech = shop();
+    expect(() => backend.fn('winterMenu', mech)).toThrow();
+  });
+
+  it('puts the checklist on the job at intake: full, engine type to check, the services chosen', () => {
+    shop();
+    walkIn();
+    const w = backend.fn('getJob', adminToken, '01-7001').job.winter;
+    expect(w.level).toBe('full');
+    expect(w.needsEngine).toBe(true);
+    expect(w.steps).toMatch(/oil/);
+    expect(w.items.map((x) => x.label)).toEqual([
+      'Full service winterize — engine type to check', 'Ballast drain (tanks) × 3', 'Shrinkwrap']);
+    expect(w.items.map((x) => x.winterize)).toEqual([true, true, false]);
+    expect(w.winterizeLeft).toBe(2);
+  });
+
+  it('refuses a checklist with no level — full or basic is the one thing the writer must say', () => {
+    shop();
+    expect(() => backend.fn('createJob', adminToken, { invoiceNumber: '01-7002', winter: chosen({ level: '' }) }))
+      .toThrow(/Full service or Basic/);
+  });
+
+  it('will not let the engine item be ticked until the mechanic picks the engine type', () => {
+    const mech = shop();
+    const token = walkIn();
+    expect(() => backend.fn('setJobWinterItem', mech, token, 'engine', true, ''))
+      .toThrow(/Pick the engine type first/);
+    let w = backend.fn('setJobWinterItem', mech, token, '', false, 'inboard').winter;
+    expect(w.needsEngine).toBe(false);
+    expect(w.engineBy).toBe('Dale');
+    expect(w.items[0].label).toBe('Full service winterize — Inboard');
+    w = backend.fn('setJobWinterItem', mech, token, 'engine', true, '').winter;
+    expect(w.items[0]).toMatchObject({ done: true, doneBy: 'Dale' });
+  });
+
+  it('gives a PWC the PWC steps — no fuel filter', () => {
+    const mech = shop();
+    const token = walkIn();
+    const w = backend.fn('setJobWinterItem', mech, token, '', false, 'pwc').winter;
+    expect(w.steps).toBe(MENU.levels[1].stepsPwc);
+  });
+
+  it('a writer-picked engine type needs nothing from the mechanic', () => {
+    shop();
+    walkIn('01-7003', chosen({ level: 'basic', engineId: 'outboard', engineCount: 2 }));
+    const w = backend.fn('getJob', adminToken, '01-7003').job.winter;
+    expect(w.needsEngine).toBe(false);
+    expect(w.items[0].label).toBe('Basic winterize — Outboard × 2');
+  });
+
+  it('is still a job: a tick starts it, and hours and parts log as normal', () => {
+    const mech = shop();
+    const token = walkIn();
+    backend.fn('setJobWinterItem', mech, token, 'wrap', true, '');
+    expect(backend.fn('jobRow_', '01-7001').status).toBe('work_underway');
+    backend.fn('addEntry', mech, token, { entryType: 'labor', hours: 1.5, text: 'Replaced the raw water impeller too.' });
+    backend.fn('addEntry', mech, token, { entryType: 'part', partIdentifier: '6BH-44352-00-00', quantity: 1 });
+    const job = backend.fn('getJob', adminToken, '01-7001');
+    expect(job.entries.map((e) => e.entryType)).toEqual(expect.arrayContaining(['labor', 'part']));
+    expect(job.job.winter.items.find((x) => x.id === 'wrap').done).toBe(true);
+  });
+
+  it('keeps the ticks and the engine the mechanic picked when the writer edits the list', () => {
+    const mech = shop();
+    const token = walkIn();
+    backend.fn('setJobWinterItem', mech, token, '', false, 'io');
+    backend.fn('setJobWinterItem', mech, token, 'ballast', true, '');
+    backend.fn('setJobWinter', adminToken, '01-7001', chosen({
+      items: [{ id: 'ballast', label: 'Ballast drain (tanks)', group: 'Water systems', winterize: true, count: true, qty: 3 }] }));
+    const w = backend.fn('getJob', adminToken, '01-7001').job.winter;
+    expect(w.engine.id).toBe('io');
+    expect(w.items.map((x) => x.id)).toEqual(['engine', 'ballast']);
+    expect(w.items[1].done).toBe(true);
+  });
+
+  it('can be taken off a job', () => {
+    shop();
+    walkIn();
+    backend.fn('setJobWinter', adminToken, '01-7001', null);
+    expect(backend.fn('getJob', adminToken, '01-7001').job.winter).toBe(null);
+  });
+
+  it('marks the job on the mechanic\'s open-jobs list', () => {
+    const mech = shop();
+    walkIn();
+    backend.fn('createJob', adminToken, { invoiceNumber: '01-7009', customerName: 'Not winter' });
+    const jobs = backend.fn('openJobs', mech, true).jobs;
+    expect(jobs.find((j) => j.id === '01-7001').winterLeft).toBe(2);
+    expect(jobs.find((j) => j.id === '01-7009').winterLeft).toBe(-1);
+  });
+
+  it('never reaches the customer page or the texted invoice', () => {
+    const mech = shop();
+    const token = walkIn();
+    backend.fn('setJobWinterItem', mech, token, '', false, 'inboard');
+    backend.fn('setTestMode', adminToken, false);
+    backend.fn('setCustomerTracking', adminToken, true);
+    const text = JSON.stringify(backend.fn('publicJob', token));
+    expect(text).not.toMatch(/winter|Inboard|Ballast|Dale/i);
+  });
+
+  it('works on a sheet whose header has not got the column yet', () => {
+    shop();
+    const sheet = backend.sheet('Jobs');
+    sheet.rows[0] = sheet.rows[0].slice(0, sheet.rows[0].indexOf('winter_work'));
+    backend.call('forget_(); _headers = {};');
+    walkIn();
+    expect(backend.fn('getJob', adminToken, '01-7001').job.winter.level).toBe('full');
   });
 });

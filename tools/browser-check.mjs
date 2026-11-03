@@ -1305,6 +1305,80 @@ console.log('\n== winter work ==');
   await mech.goto(`${BASE}/m/`, { waitUntil: 'networkidle' });
 }
 
+console.log('\n== a walk-in winterize ==');
+{
+  // A second work order off the same PDF, renumbered, ticked as a winterize
+  // job: full service, engine type left blank, two services.
+  const WALKIN = `01-${String(Math.floor(1000 + Math.random() * 8999))}`;
+  await admin.goto(`${BASE}/admin/?view=intake`, { waitUntil: 'networkidle' });
+  await admin.setInputFiles('#pdf', WORK_ORDER);
+  await admin.waitForSelector('#stage-review.on', { timeout: 20000 });
+  await admin.fill('#invoiceNumber', WALKIN);
+  await admin.check('#winterjob');
+  await admin.waitForSelector('.winterform', { timeout: 20000 });
+  check('ticking Winterize job brings up the winter services menu',
+    await admin.locator('input[name="wf-level"]').count() === 2 && await admin.locator('[data-wf]').count() >= 15);
+  check('engine type can be left for the mechanic',
+    /mechanic will check/.test(await admin.textContent('#wf-engine option[value=""]')));
+  await admin.click('#create');
+  await admin.waitForFunction(() => /Full service or Basic/.test(document.getElementById('createmsg').textContent), null, { timeout: 10000 });
+  check('full or basic has to be chosen', true);
+  await admin.check('input[name="wf-level"][value="full"]');
+  await admin.check('[data-wf="ballast"]');
+  await admin.fill('[data-wfqty="ballast"]', '3');
+  await admin.check('[data-wf="wrap"]');
+  await admin.screenshot({ path: `${SHOTS}/62-walkin-intake.png`, fullPage: true });
+  await admin.click('#create');
+  await admin.waitForSelector('#stage-done.on', { timeout: 30000 });
+
+  await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(WALKIN)}`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('#wintercard .wf-list', { timeout: 20000 });
+  const card = await admin.textContent('#wintercard');
+  check('the job page carries the checklist', /Full service winterize — engine type to check/.test(card) &&
+    /Ballast drain \(tanks\) × 3/.test(card) && /Shrinkwrap/.test(card), card.slice(0, 200));
+  check('and says the mechanic will pick the engine', /mechanic will pick it/.test(card));
+
+  await mech.click('#navhome');
+  await mech.waitForSelector('#manual', { timeout: 20000 });
+  await mech.click('#manual');
+  await mech.fill('#code', WALKIN);
+  await mech.click('button[type=submit]');
+  await mech.waitForSelector('#jobwintercard', { timeout: 20000 });
+  const wtext = await mech.textContent('#jobwintercard');
+  check('the mechanic is told full service, and what that means', /Winterize — Full service/.test(wtext) && /oil/.test(wtext));
+  check('and asked to pick the engine type', await mech.locator('#enginepick [data-engine]').count() >= 5);
+  check('the hours, parts and notes tabs are all still there', await mech.locator('.segmented button').count() >= 3);
+  await mech.screenshot({ path: `${SHOTS}/63-walkin-mechanic.png`, fullPage: true });
+
+  await mech.click('[data-jw="0"]');
+  check('the engine line will not tick before the engine type is picked',
+    (await mech.getAttribute('[data-jw="0"]', 'aria-pressed')) === 'false' &&
+    (await mech.getAttribute('#enginepick', 'class')).includes('nudge'));
+  await mech.click('#enginepick [data-engine="inboard"]');
+  await mech.waitForFunction(() => /Full service winterize — Inboard/.test(document.getElementById('jobwintercard').textContent) &&
+    !document.getElementById('enginepick'), null, { timeout: 20000 });
+  check('picking the engine type fills it in', true);
+  await mech.click('[data-jw="0"]');
+  await mech.waitForFunction(() => {
+    const b = document.querySelector('[data-jw="0"]');
+    return b && b.getAttribute('aria-pressed') === 'true' && /Done by Dale/.test(b.textContent);
+  }, null, { timeout: 20000 });
+  check('and then it ticks off, as whoever is signed in', true);
+  await mech.screenshot({ path: `${SHOTS}/64-walkin-ticked.png`, fullPage: true });
+
+  await mech.click('#navhome');
+  await mech.click('#openjobs');
+  await mech.waitForSelector('.joblist', { timeout: 20000 });
+  const row = mech.locator('.joblist', { hasText: WALKIN });
+  check('the open-jobs list marks it, with what is left to winterize',
+    /Winterize: 1 left/.test(await row.textContent()));
+
+  await admin.reload({ waitUntil: 'networkidle' });
+  await admin.waitForSelector('#wintercard .wf-list', { timeout: 20000 });
+  const after = await admin.textContent('#wintercard');
+  check('the office sees the tick and who made it', /Full service winterize — Inboard/.test(after) && /Dale/.test(after));
+}
+
 console.log('\n== getting around the portal ==');
 {
   const fnOf = (request) => { try { return JSON.parse(request.postData() || '{}').fn; } catch { return '?'; } };
@@ -1767,7 +1841,9 @@ check("a done job's two columns stay roughly level too",
 
 // Off the working list, which is the whole point of closing it.
 await admin.goto(`${BASE}/admin/?`, { waitUntil: 'networkidle' });
-await admin.waitForSelector('.card, .empty', { timeout: 20000 });
+// A list with jobs still open on it (the walk-in winterize, say) has rows,
+// not the empty card.
+await admin.waitForSelector('.card, .empty, .joblist', { timeout: 20000 });
 check('a paid, done job leaves the open jobs list',
   !(await admin.evaluate((id) => document.body.innerText.includes(id), PAY_JOB)));
 

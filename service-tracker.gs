@@ -414,7 +414,11 @@ const SHEETS = {
          'cancelled_at',
          // What the shop kept on a cancelled order is for, in words the
          // customer is shown: "return shipping", "restocking fee".
-         'cancel_note'],
+         'cancel_note',
+         // A walk-in winterize: the checklist the writer chose at intake and
+         // what the mechanic has ticked, as one JSON object. Empty on every
+         // other job. See setJobWinter. Shop-side only.
+         'winter_work'],
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
                'transcript_id', 'transcript_error', 'notified_at', 'created_at',
@@ -1041,6 +1045,9 @@ function apiFns_(data) {
     addEntry:         function (a) { return addEntry(data.token, a[0], a[1]); },
     addPropRepair:    function (a) { return addPropRepair(data.token, a[0], a[1]); },
     finishWork:       function (a) { return finishWork(data.token, a[0]); },
+    setJobWinterItem: function (a) { return setJobWinterItem(data.token, a[0], a[1], a[2] === true, a[3]); },
+    winterMenu:       function (a) { return winterMenu(data.token); },
+    setJobWinter:     function (a) { return setJobWinter(data.token, a[0], a[1] || null); },
     winterWork:       function (a) { return winterWork(data.token, a[0] === true); },
     setWinterItem:    function (a) { return setWinterItem(data.token, a[0], a[1], a[2] === true); },
 
@@ -1117,6 +1124,7 @@ const API_GET_FNS_ = {
   openJobs: true,
   transcriptsFor: true,
   winterWork: true,
+  winterMenu: true,
 
   /* the writer's portal */
   listJobs: true,
@@ -1573,7 +1581,10 @@ function jobSummary_(job) {
     // reason as the totals above — the jobs list shows a balance and must not
     // read the Payments tab to do it.
     paidTotal: money2_(numberOrNull_(job.paid_total) || 0),
-    balance: jobBalance_(job)
+    balance: jobBalance_(job),
+    // The winterize checklist, or null. Shop-side: the customer's pages
+    // never call this function.
+    winter: winterView_(winterSpecOf_(job))
   };
 }
 
@@ -1648,6 +1659,7 @@ function createJob(token, payload) {
   requireAdmin_(token);
   const id = String(payload.invoiceNumber || '').trim().toUpperCase();
   if (!id) throw new Error('An invoice number is required — it identifies the job.');
+  if (payload.winter) ensureWinterColumn_();
 
   return withLock_(function () {
     if (jobRow_(id)) {
@@ -1676,6 +1688,9 @@ function createJob(token, payload) {
       work_finished_at: '',
       done_at: ''
     };
+
+    // Marked a winterize job at intake: the checklist goes on with the row.
+    if (payload.winter) job.winter_work = JSON.stringify(sanitizeWinterSpec_(payload.winter, null, 'Office'));
 
     appendRow_('Jobs', job);
     recordStatus_(id, '', 'received', 'service_writer', '', 'Work order intake');
@@ -2128,7 +2143,7 @@ function listJobs(token, filter) {
 }
 
 // Bump whenever a job summary gains a field, for the reason OPEN_JOBS_V_ says.
-const JOBS_LIST_V_ = 4;
+const JOBS_LIST_V_ = 5;
 const JOBS_LIST_KEY_ = 'JOBSLIST_v' + JOBS_LIST_V_ + '_';
 
 /**
@@ -3761,6 +3776,231 @@ function pushWinterTicks_(only) {
   }
 }
 
+/* ======================== winterize, on a work order ===================== */
+/*
+ * A walk-in winterize: an ordinary BiT work order whose writer ticked
+ * "Winterize job" at intake. Chris, Nov 2026: the mechanic should get "the
+ * same checklist winterizing process he does on stored boats but for
+ * walk-ins", still log hours and parts for anything beyond it, and "all of
+ * the options from winter services should populate" at intake — full or basic,
+ * with the engine type left blank when the customer does not know, so the
+ * mechanic is asked to pick it at the boat while still being told which level
+ * to do.
+ *
+ * What decides each piece:
+ *
+ *  - IT IS STILL A JOB. Same QR, same Hours / Parts / Notes, same close-out.
+ *    The checklist is one more thing on it, in `winter_work`, never a second
+ *    kind of ticket — the extra work beyond winterizing is logged exactly as
+ *    on any other job.
+ *  - THE MENU IS THE WINTER SYSTEM'S. winterMenu asks it (fn 'menu'), built
+ *    from its pricing engine, so a service added there for the season is
+ *    offered here too. Cached six hours, and the last good copy kept in a
+ *    script property, so intake does not depend on that system being up.
+ *  - WHAT WAS CHOSEN IS FROZEN ON THE JOB. The labels, the level's steps and
+ *    the engine types go into the cell at intake. The mechanic's screen needs
+ *    nothing from the winter system, and a menu changed mid-season does not
+ *    rewrite a job already on the floor.
+ *  - THE ENGINE TYPE MAY BE BLANK, AND THEN IT IS THE MECHANIC'S. The engine
+ *    item cannot be ticked until somebody picks one, and the screen says why
+ *    — but Full or Basic, and its steps, are on it from the start.
+ *  - A TICK IS WRITTEN UNDER THE LOCK, re-read inside it, so two mechanics on
+ *    one boat cannot undo each other's ticks, and a writer's edit keeps every
+ *    tick on an item that is still on the list.
+ *  - SHOP-SIDE ONLY. publicJob and invoicePage name their fields one at a
+ *    time and neither reads this column; a test holds both to that.
+ */
+const WINTER_MENU_KEY_ = 'WINTER_MENU_v1';
+const WINTER_MENU_PROP_ = 'WINTER_MENU_LASTGOOD';
+const WINTER_MENU_TTL_ = 21600;
+const WINTER_LEVELS_ = { basic: 'Basic', full: 'Full service' };
+
+function cleanWinterMenu_(m) {
+  const str = function (v, n) { return String(v === undefined || v === null ? '' : v).slice(0, n || 200); };
+  return {
+    levels: (m.levels || []).filter(function (l) { return WINTER_LEVELS_[l.id]; }).map(function (l) {
+      return { id: l.id, label: str(l.label, 40), steps: str(l.steps, 600), stepsPwc: str(l.stepsPwc || l.steps, 600) };
+    }),
+    engines: (m.engines || []).map(function (e) {
+      return { id: str(e.id, 30), name: str(e.name, 80), pwc: !!e.pwc };
+    }).filter(function (e) { return e.id && e.name; }),
+    services: (m.services || []).map(function (x) {
+      return { key: str(x.key, 40), label: str(x.label), kind: x.kind === 'count' ? 'count' : 'flag',
+               group: str(x.group, 60), needs: str(x.needs, 40), request: !!x.request, winterize: !!x.winterize,
+               units: (x.units || []).map(function (u) { return str(u, 20); }) };
+    }).filter(function (x) { return x.key && x.label; })
+  };
+}
+
+/** The winter services menu, for the intake form. */
+function winterMenu(token) {
+  requireAdmin_(token);
+  if (!winterKey_()) throw new Error('Not connected to the winter system yet. The office needs to add WINTER_KEY.');
+  const cached = cacheGetBig_(WINTER_MENU_KEY_);
+  if (cached && cached.levels) return { menu: cached };
+  try {
+    const menu = cleanWinterMenu_(winterCall_({ fn: 'menu' }));
+    if (!menu.levels.length) throw new Error('The winter system sent an empty menu.');
+    cachePutBig_(WINTER_MENU_KEY_, menu, WINTER_MENU_TTL_);
+    try { props_().setProperty(WINTER_MENU_PROP_, JSON.stringify(menu)); } catch (err) { /* too big: cache only */ }
+    return { menu: menu };
+  } catch (err) {
+    let kept = null;
+    try { kept = JSON.parse(props_().getProperty(WINTER_MENU_PROP_) || 'null'); } catch (e) { kept = null; }
+    if (kept && kept.levels) return { menu: kept, stale: true, error: String(err.message || err) };
+    throw err;
+  }
+}
+
+function winterSpecOf_(job) {
+  if (!job || !job.winter_work) return null;
+  try {
+    const spec = JSON.parse(job.winter_work);
+    return spec && WINTER_LEVELS_[spec.level] ? spec : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * What the writer chose, made safe to store. `input` comes from the intake
+ * form: { level, engineId, engineCount, steps, stepsPwc, engines, items }.
+ * `prev` is what is on the job now, whose ticks and mechanic-picked engine
+ * survive an edit.
+ */
+function sanitizeWinterSpec_(input, prev, by) {
+  const str = function (v, n) { return String(v === undefined || v === null ? '' : v).trim().slice(0, n || 200); };
+  const level = str(input && input.level, 10);
+  if (!WINTER_LEVELS_[level]) throw new Error('Choose Full service or Basic for the winterize.');
+  const engines = ((input.engines && input.engines.length) ? input.engines : (prev && prev.engines) || [])
+    .map(function (e) { return { id: str(e.id, 30), name: str(e.name, 80), pwc: !!e.pwc }; })
+    .filter(function (e) { return e.id && e.name; }).slice(0, 12);
+  const pick = str(input.engineId, 30);
+  let engine = pick ? engines.filter(function (e) { return e.id === pick; })[0] || null : null;
+  if (pick && !engine) throw new Error('That engine type is not on the winter menu.');
+  let engineBy = engine ? by : '';
+  let engineAt = engine ? nowIso_() : '';
+  // Left blank by the writer but already picked at the boat: keep it.
+  if (!engine && prev && prev.engine) { engine = prev.engine; engineBy = prev.engineBy || ''; engineAt = prev.engineAt || ''; }
+  if (engine && prev && prev.engine && prev.engine.id === engine.id) { engineBy = prev.engineBy || engineBy; engineAt = prev.engineAt || engineAt; }
+  const count = Math.max(1, Math.min(6, Math.floor(Number(input.engineCount) || 1)));
+  const seen = { engine: true };
+  const items = (input.items || []).map(function (x) {
+    const qty = Math.max(1, Math.min(99, Math.floor(Number(x.qty) || 1)));
+    return { id: str(x.id, 40), label: str(x.label), group: str(x.group, 60), winterize: !!x.winterize,
+             count: x.count === true, qty: qty };
+  }).filter(function (x) {
+    if (!x.id || !x.label || seen[x.id]) return false;
+    seen[x.id] = true;
+    return true;
+  }).slice(0, 40);
+  const done = {};
+  const prevDone = (prev && prev.done) || {};
+  Object.keys(prevDone).forEach(function (id) { if (seen[id]) done[id] = prevDone[id]; });
+  return {
+    v: 1, level: level, steps: str(input.steps, 600) || (prev && prev.steps) || '',
+    stepsPwc: str(input.stepsPwc, 600) || (prev && prev.stepsPwc) || '',
+    engines: engines, engine: engine, engineCount: count, engineBy: engineBy, engineAt: engineAt,
+    items: items, done: done, setBy: by, setAt: nowIso_()
+  };
+}
+
+/** What a page shows: every item with its tick, the engine item first. */
+function winterView_(spec) {
+  if (!spec) return null;
+  const done = spec.done || {};
+  const levelLabel = WINTER_LEVELS_[spec.level];
+  const engineName = spec.engine ? spec.engine.name : '';
+  const engineItem = {
+    id: 'engine', kind: 'engine', group: 'Engine winterization', winterize: true,
+    label: levelLabel + ' winterize — ' + (engineName || 'engine type to check') +
+      (spec.engineCount > 1 ? ' × ' + spec.engineCount : '')
+  };
+  const items = [engineItem].concat((spec.items || []).map(function (x) {
+    return { id: x.id, kind: 'service', group: x.group, winterize: !!x.winterize,
+             label: x.label + (x.count && x.qty > 1 ? ' × ' + x.qty : '') };
+  })).map(function (x) {
+    const d = done[x.id];
+    x.done = !!d;
+    x.doneBy = d ? String(d.by || '') : '';
+    x.doneAt = d ? String(d.at || '') : '';
+    return x;
+  });
+  return {
+    level: spec.level, levelLabel: levelLabel,
+    // The PWC wording leaves out the fuel filter; anything else gets the boat's.
+    steps: spec.engine && spec.engine.pwc ? (spec.stepsPwc || spec.steps) : spec.steps,
+    engine: spec.engine || null, engineCount: spec.engineCount || 1,
+    engineBy: spec.engineBy || '', engineAt: spec.engineAt || '',
+    needsEngine: !spec.engine, engines: spec.engines || [],
+    items: items,
+    left: items.filter(function (x) { return !x.done; }).length,
+    winterizeLeft: items.filter(function (x) { return x.winterize && !x.done; }).length
+  };
+}
+
+/** The column, written into the header the first time anybody needs it. */
+function ensureWinterColumn_() {
+  if (headerHas_('Jobs', 'winter_work')) return;
+  // Only ever adds what is missing — the same thing setup() does for the
+  // header, without making the office find the button for one column.
+  ensureSheets_(ss_());
+  _headers = {};
+}
+
+/** Set, change or take off a job's winterize checklist. `input` null takes it off. */
+function setJobWinter(token, id, input) {
+  requireAdmin_(token);
+  ensureWinterColumn_();
+  return withLock_(function () {
+    forget_('Jobs');
+    const job = jobRow_(id);
+    if (!job) throw new Error('No such job.');
+    if (isPartsOrder_(job)) throw new Error('A parts order has no boat to winterize.');
+    const value = input ? JSON.stringify(sanitizeWinterSpec_(input, winterSpecOf_(job), 'Office')) : '';
+    updateRow_('Jobs', job._row, { winter_work: value, updated_at: nowIso_() });
+    return { job: jobSummary_(jobRow_(id)) };
+  });
+}
+
+/**
+ * The mechanic ticking an item, or picking the engine type, or both. The
+ * engine item cannot be ticked without an engine type — that is the prompt.
+ */
+function setJobWinterItem(token, jobToken, itemId, done, engineId) {
+  const who = requireMechanic_(token);
+  return withLock_(function () {
+    forget_('Jobs');
+    const job = jobByToken_(jobToken);
+    if (!job) throw new Error('No such job.');
+    const spec = winterSpecOf_(job);
+    if (!spec) throw new Error('This job has no winterize checklist.');
+    const pick = String(engineId || '');
+    if (pick) {
+      const engine = (spec.engines || []).filter(function (e) { return e.id === pick; })[0];
+      if (!engine) throw new Error('That engine type is not on the list.');
+      spec.engine = engine;
+      spec.engineBy = who.name;
+      spec.engineAt = nowIso_();
+    }
+    const id = String(itemId || '');
+    if (id) {
+      const known = id === 'engine' || (spec.items || []).some(function (x) { return x.id === id; });
+      if (!known) throw new Error('That item is not on this checklist any more. Pull the job up again.');
+      if (id === 'engine' && done && !spec.engine) {
+        throw new Error('Pick the engine type first — the customer did not say, so the checklist needs it.');
+      }
+      spec.done = spec.done || {};
+      if (done) spec.done[id] = { by: who.name, at: nowIso_() };
+      else delete spec.done[id];
+    }
+    updateRow_('Jobs', job._row, { winter_work: JSON.stringify(spec), updated_at: nowIso_() });
+    // A tick is work on the boat, the same as a first log entry.
+    if (job.status === 'received') setStatus_(job, 'work_underway', 'mechanic', who.name, 'First winterize tick');
+    return { winter: winterView_(spec) };
+  });
+}
+
 /* ============================= mechanics =============================== */
 
 function normalizeName_(raw) {
@@ -4126,7 +4366,7 @@ function openJobs(token, fresh) {
  *  - SPLIT ACROSS ENTRIES. CacheService caps a value at 100 KB, and a missing
  *    piece reads as a miss, never as half a list.
  */
-const OPEN_JOBS_V_ = 1;
+const OPEN_JOBS_V_ = 2;
 const OPEN_JOBS_KEY_ = 'OPENJOBS_v' + OPEN_JOBS_V_ + '_';
 // Shared by every cached list: one write drops them all.
 const LISTS_GEN_KEY_ = 'LISTS_GEN';
@@ -4254,6 +4494,8 @@ function openJobsFromSheet_() {
         // Carried so the list can flag the job before it is opened — an alert
         // nobody sees until they have picked the job is half an alert.
         alert: job.alert || '',
+        // A walk-in winterize, and how much of its checklist is left.
+        winterLeft: (function () { const w = winterView_(winterSpecOf_(job)); return w ? w.winterizeLeft : -1; })(),
         status: job.status,
         statusLabel: STATUS_LABEL[job.status]
       };

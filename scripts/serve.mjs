@@ -26,6 +26,7 @@ const PASSWORD = process.env.ADMIN_PASSWORD || 'shop';
  * answer is a fixed pair of units, so the Winter work screen has something to
  * show and browser-check.mjs can tick items off. Never reaches the real one.
  */
+const WINTER_MENU = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests/helpers/winter-menu.json'), 'utf8'));
 const WINTER_UNITS = [
   { qn: 'QW-26-9001', name: 'Harbor, Pat', unit: 'Boat', ymm: '2019 Malibu 22 VLX', dims: "22' x 8'6\"",
     tab: 'Inside', storing: true, storageLabel: 'Inside (non-heated)', storageHow: 'On its trailer',
@@ -47,6 +48,9 @@ const backend = loadBackend({
   fetch: (url, opts) => (/script\.google\.com/.test(url)
     ? (JSON.parse(opts.payload).fn === 'winterTicks'
       ? { code: 200, body: { ok: 1, _api: 'tracker', changed: 1 } }
+      // The real menu, as the winter backend built it from its pricing engine.
+      : JSON.parse(opts.payload).fn === 'menu'
+      ? { code: 200, body: { ...WINTER_MENU, _api: 'tracker' } }
       : { code: 200, body: { ok: 1, _api: 'tracker', at: new Date().toISOString(), units: WINTER_UNITS } })
     : null),
 });

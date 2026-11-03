@@ -1337,3 +1337,30 @@ table.grid .sub { font-size: 12.5px; color: var(--muted); }
 .pickbar input, .pickrow > input { width: 20px; height: 20px; accent-color: var(--navy); cursor: pointer; }
 .pickrow { display: flex; align-items: center; gap: 10px; }
 .pickrow > .jobrow { flex: 1 1 auto; min-width: 0; }
+
+/* ------------------------------------------------ walk-in winterize --- */
+/* The winterize checklist form (intake and job page) and its summary. */
+.winterform { margin-top: 8px; }
+.wf-level { flex: 1; min-width: 220px; display: flex; gap: 8px; align-items: flex-start;
+  border: 1.5px solid var(--line); border-radius: 10px; padding: 10px; cursor: pointer; }
+.wf-level input { width: 20px; height: 20px; accent-color: var(--navy); flex: none; }
+.wf-level small { display: block; color: var(--muted); font-size: 12.5px; line-height: 1.4; font-weight: 400; }
+.wf-level:has(input:checked) { border-color: var(--navy); background: var(--ice); }
+.wf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 14px; }
+.wf-item { display: flex; gap: 8px; align-items: center; font-size: 14px; cursor: pointer; }
+.wf-item input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--navy); flex: none; }
+.wf-item .wf-qty { width: 64px; padding: 4px 6px; margin-left: auto; }
+.wf-list { list-style: none; padding: 0; margin: 0; }
+.wf-list li { padding: 5px 0; border-bottom: 1px solid var(--ice); font-size: 14px; }
+.wf-list li.done { color: var(--green); }
+.wf-list li small { display: block; color: var(--muted); font-size: 12px; }
+
+/* The walk-in winterize card on a job: the level's steps, and the engine
+   prompt when the customer did not know. The prompt is gold and boxed — it is
+   a question waiting on the mechanic, not a warning. */
+.wsteps { background: var(--ice); border-left: 4px solid var(--navy); border-radius: 6px;
+  padding: 8px 10px; font-size: 14px; line-height: 1.45; color: var(--ink); }
+.enginepick { margin-top: 10px; background: var(--gold-soft); border: 2px solid var(--gold);
+  border-radius: 10px; padding: 10px 12px; color: var(--ink); }
+.enginepick .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.enginepick.nudge { outline: 3px solid var(--gold); outline-offset: 2px; }

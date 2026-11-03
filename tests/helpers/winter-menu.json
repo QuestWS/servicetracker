@@ -1,0 +1,299 @@
+{
+ "ok": 1,
+ "v": 1,
+ "levels": [
+  {
+   "id": "basic",
+   "label": "Basic",
+   "steps": "Drain water, run on anti-freeze, drain & fog, disconnect batteries.",
+   "stepsPwc": "Drain water, run on anti-freeze, drain & fog, disconnect batteries."
+  },
+  {
+   "id": "full",
+   "label": "Full service",
+   "steps": "Drain water, run on anti-freeze, drain & fog, disconnect batteries, plus (as applicable): engine oil & filter change, drive oil change, gimbal ring torque check, fuel conditioner, and 1 fuel filter.",
+   "stepsPwc": "Drain water, run on anti-freeze, drain & fog, disconnect batteries, plus (as applicable): engine oil & filter change and fuel conditioner. Fuel filter not included for PWC."
+  }
+ ],
+ "engines": [
+  {
+   "id": "inboard",
+   "name": "Inboard",
+   "pwc": false
+  },
+  {
+   "id": "io",
+   "name": "Inboard/Outboard (sterndrive)",
+   "pwc": false
+  },
+  {
+   "id": "outboard",
+   "name": "Outboard",
+   "pwc": false
+  },
+  {
+   "id": "jet",
+   "name": "Jet Drive",
+   "pwc": true
+  },
+  {
+   "id": "pwc",
+   "name": "PWC / Jetski",
+   "pwc": true
+  }
+ ],
+ "services": [
+  {
+   "key": "dtTrans",
+   "label": "Transmission or V-drive",
+   "kind": "count",
+   "group": "Drive train",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": false,
+   "winterize": true
+  },
+  {
+   "key": "dtTransom",
+   "label": "I/O transom service",
+   "kind": "count",
+   "group": "Drive train",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": false,
+   "winterize": true
+  },
+  {
+   "key": "ballast",
+   "label": "Ballast drain (tanks)",
+   "kind": "count",
+   "group": "Water systems",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": false,
+   "winterize": true
+  },
+  {
+   "key": "waterCold",
+   "label": "Water system — cold only",
+   "kind": "flag",
+   "group": "Water systems",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": false,
+   "winterize": true
+  },
+  {
+   "key": "waterHead",
+   "label": "Water system incl. 1 head",
+   "kind": "flag",
+   "group": "Water systems",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": false,
+   "winterize": true
+  },
+  {
+   "key": "addlHeads",
+   "label": "Additional heads",
+   "kind": "count",
+   "group": "Water systems",
+   "units": [
+    "boat"
+   ],
+   "needs": "waterHead",
+   "request": false,
+   "winterize": true
+  },
+  {
+   "key": "ac",
+   "label": "Air conditioning (up to 2 units)",
+   "kind": "flag",
+   "group": "Water systems",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": false,
+   "winterize": true
+  },
+  {
+   "key": "genBasic",
+   "label": "Generator — basic",
+   "kind": "flag",
+   "group": "Water systems",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": false,
+   "winterize": true
+  },
+  {
+   "key": "genFull",
+   "label": "Generator — oil & filter",
+   "kind": "flag",
+   "group": "Water systems",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": false,
+   "winterize": true
+  },
+  {
+   "key": "wrap",
+   "label": "Shrinkwrap",
+   "kind": "flag",
+   "group": "Shrinkwrap",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": false,
+   "winterize": false
+  },
+  {
+   "key": "powerwash",
+   "label": "Powerwash hull",
+   "kind": "flag",
+   "group": "Washing",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": false,
+   "winterize": false
+  },
+  {
+   "key": "acidWash",
+   "label": "Acid wash hull",
+   "kind": "flag",
+   "group": "Washing",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": false,
+   "winterize": false
+  },
+  {
+   "key": "skiDetail",
+   "label": "Jetski detail (per ski)",
+   "kind": "count",
+   "group": "Detailing",
+   "units": [
+    "jetski"
+   ],
+   "needs": "",
+   "request": false,
+   "winterize": false
+  },
+  {
+   "key": "bottomTouch",
+   "label": "Bottom paint touch-up",
+   "kind": "flag",
+   "group": "Quoted on request",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": true,
+   "winterize": false
+  },
+  {
+   "key": "bottomStrip",
+   "label": "Strip bottom paint & reapply",
+   "kind": "flag",
+   "group": "Quoted on request",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": true,
+   "winterize": false
+  },
+  {
+   "key": "propRefurb",
+   "label": "Propeller refurbishment",
+   "kind": "flag",
+   "group": "Quoted on request",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": true,
+   "winterize": false
+  },
+  {
+   "key": "extDetail",
+   "label": "Exterior detail",
+   "kind": "flag",
+   "group": "Quoted on request",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": true,
+   "winterize": false
+  },
+  {
+   "key": "washWax",
+   "label": "Wash & wax",
+   "kind": "flag",
+   "group": "Quoted on request",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": true,
+   "winterize": false
+  },
+  {
+   "key": "intDetail",
+   "label": "Interior detail",
+   "kind": "flag",
+   "group": "Quoted on request",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": true,
+   "winterize": false
+  },
+  {
+   "key": "intWipe",
+   "label": "Interior wipe-down",
+   "kind": "flag",
+   "group": "Quoted on request",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": true,
+   "winterize": false
+  },
+  {
+   "key": "impeller",
+   "label": "Impeller change",
+   "kind": "flag",
+   "group": "Quoted on request",
+   "units": [
+    "boat"
+   ],
+   "needs": "",
+   "request": true,
+   "winterize": false
+  }
+ ]
+}

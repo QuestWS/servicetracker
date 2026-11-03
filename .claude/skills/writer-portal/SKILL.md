@@ -141,6 +141,22 @@ timeline moved, behind `jobHistory`.
 work order — see the `bit-forms` skill. It is never in `missing`: plenty of
 jobs are written up with that band empty.
 
+## A walk-in winterize
+
+**Winterize job** at intake, or **Make this a winterize job** on the job page,
+brings up the winter services system's own menu (`winterMenu` → the winter
+backend's `fn:'menu'`, built from its pricing engine): Full or Basic (required,
+with the steps), engine type (may be left blank — the mechanic then picks it),
+number of engines, and every service by group, counts where the service has
+one. No prices: the walk-in is billed in BiT. What is chosen is frozen into
+`winter_work` on the row, so a menu changed mid-season does not rewrite a job
+on the floor; editing keeps the ticks and any engine the mechanic picked.
+The menu is cached six hours and its last good copy kept in a script
+property, so intake still works when the winter system is down. The column
+writes its own header the first time it is needed (`ensureWinterColumn_`) —
+no `setup()` for this one. Shop-side only: `verify.sh` fails if `publicJob`
+or `invoicePage` reads it.
+
 ## Re-stamping a work order
 
 A customer adds to the job after the sheet is printed, so the writer changes it

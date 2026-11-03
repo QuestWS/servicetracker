@@ -1536,6 +1536,16 @@ ${paymentCard}
           <button class="btn ghost block" type="button" id="addnote" style="margin-top:10px">Add the note</button>
         </section>
 
+        <section class="card" id="wintercard">
+          <h2>Winterize checklist</h2>
+          ${job.winter ? winterSummaryHtml(job.winter) : `<p class="hint" style="margin-top:0">A walk-in winterize gets
+            the same checklist as a stored boat. The mechanic ticks it off and logs anything extra as usual.</p>`}
+          <div id="winteredit"></div>
+          <div class="row" id="winterbtns" style="margin-top:10px">
+            <button class="btn ghost" type="button" id="winteropen">${job.winter ? 'Change the checklist' : 'Make this a winterize job'}</button>
+          </div>
+        </section>
+
         <section class="card">
           <h2>Paperwork</h2>
           <div class="stack">
@@ -2166,6 +2176,39 @@ ${emailLogCard}
     }
   };
 
+  const winteropen = $('winteropen');
+  if (winteropen) winteropen.onclick = async () => {
+    const menu = await mountWinterForm($('winteredit'), job.winter);
+    if (!menu) return;
+    $('winterbtns').innerHTML = `<button class="btn navy" type="button" id="wintersave">Save the checklist</button>
+      ${job.winter ? '<button class="btn ghost" type="button" id="winteroff">Take it off this job</button>' : ''}`;
+    $('wintersave').onclick = async () => {
+      let input;
+      try { input = readWinterForm($('winteredit'), menu); } catch (error) { return notice('warn', error.message); }
+      $('wintersave').disabled = true;
+      try {
+        const { jobPage } = await api('setJobWinter', [job.id, input], withPage(job.id));
+        renderJob(job.id, jobPage);
+        toast('Winterize checklist saved.');
+      } catch (error) {
+        $('wintersave').disabled = false;
+        notice('warn', error.message);
+      }
+    };
+    const off = $('winteroff');
+    if (off) off.onclick = async () => {
+      off.disabled = true;
+      try {
+        const { jobPage } = await api('setJobWinter', [job.id, null], withPage(job.id));
+        renderJob(job.id, jobPage);
+        toast('Winterize checklist taken off.');
+      } catch (error) {
+        off.disabled = false;
+        notice('warn', error.message);
+      }
+    };
+  };
+
   const setalert = $('setalert');
   if (setalert) setalert.onclick = async () => {
     const text = $('alerttext').value.trim();
@@ -2513,6 +2556,13 @@ function renderReview() {
     <textarea class="txt" id="workRequested" rows="3">${esc(parsed.workRequested || '')}</textarea>
     <p class="hint">Read off the work order. This is what the mechanic sees when they open the
       job, so it matters most when they are working from the boat rather than the paper.</p>
+    <label class="checkline">
+      <input type="checkbox" id="winterjob">
+      <span>Winterize job
+        <small>A walk-in winterize. The mechanic gets the same checklist as a stored boat, and still
+          logs hours and parts for anything beyond it.</small></span>
+    </label>
+    <div id="winterbox"></div>
     <div class="row" style="margin-top:16px">
       <button class="btn navy" type="button" id="create">Create job &amp; stamp the QR code</button>
       <button class="btn ghost" type="button" id="restart">Start over</button>
@@ -2524,6 +2574,11 @@ function renderReview() {
   wireEmailField('intakeemails');
   $('restart').onclick = () => { intake = null; renderIntake(); };
   $('create').onclick = createJob;
+  $('winterjob').onchange = async () => {
+    intake.winterMenu = null;
+    if (!$('winterjob').checked) { $('winterbox').innerHTML = ''; return; }
+    intake.winterMenu = await mountWinterForm($('winterbox'), null);
+  };
 }
 
 async function createJob() {
@@ -2534,6 +2589,19 @@ async function createJob() {
     message.className = 'msg err';
     message.textContent = 'An invoice number is required — it identifies the job.';
     return;
+  }
+  let winter = null;
+  if ($('winterjob') && $('winterjob').checked) {
+    if (!intake.winterMenu) {
+      message.className = 'msg err';
+      message.textContent = 'The winter services menu has not loaded. Untick Winterize job, or try ticking it again.';
+      return;
+    }
+    try { winter = readWinterForm($('winterbox'), intake.winterMenu); } catch (error) {
+      message.className = 'msg err';
+      message.textContent = error.message;
+      return;
+    }
   }
   button.disabled = true;
   message.className = 'msg';
@@ -2549,6 +2617,7 @@ async function createJob() {
       customerEmail: readEmailField('intakeemails'),
       boatInfo: $('boatInfo').value.trim(),
       workRequested: $('workRequested').value.trim(),
+      winter,
     }]);
     const job = created.job;
 
@@ -2602,6 +2671,123 @@ function renderCreated(job, stampedBytes, warning) {
     try { await navigator.clipboard.writeText($('newlink').value); toast('Work order link copied.'); }
     catch { $('newlink').select(); }
   };
+}
+
+/* ----------------------------------------------------- walk-in winterize --- */
+
+/**
+ * The winterize checklist form, used at intake and on the job page. The menu
+ * is the winter services system's own (winterMenu), so a walk-in is offered
+ * exactly what a stored boat is. Full or Basic is the one thing that must be
+ * chosen; the engine type may be left blank, and then the mechanic is asked
+ * to pick it at the boat.
+ */
+let winterMenuCache = null;
+async function loadWinterMenu() {
+  if (winterMenuCache) return winterMenuCache;
+  const out = await api('winterMenu', []);
+  winterMenuCache = out;
+  return out;
+}
+
+const WINTER_GROUP_LABEL = { 'Quoted on request': 'Other services' };
+
+function winterFormHtml(menu, current) {
+  const cur = current || {};
+  const chosen = {};
+  (cur.items || []).forEach((x) => { if (x.kind === 'service') chosen[x.id] = x; });
+  const qtyOf = (x) => {
+    const m = /× (\d+)$/.exec(x.label || '');
+    return m ? Number(m[1]) : 1;
+  };
+  const groups = [];
+  menu.services.forEach((s) => {
+    const g = WINTER_GROUP_LABEL[s.group] || s.group;
+    let bucket = groups.find((b) => b.name === g);
+    if (!bucket) { bucket = { name: g, items: [] }; groups.push(bucket); }
+    bucket.items.push(s);
+  });
+  return `
+    <div class="winterform">
+      <div class="subhead">Winterize</div>
+      <div class="row tight" id="wf-levels" style="align-items:stretch">
+        ${menu.levels.slice().reverse().map((l) => `
+          <label class="wf-level"><input type="radio" name="wf-level" value="${esc(l.id)}"${cur.level === l.id ? ' checked' : ''}>
+            <span><b>${esc(l.label)}</b><small>${esc(l.steps)}</small></span></label>`).join('')}
+      </div>
+      <div class="row" style="margin-top:10px;align-items:flex-end">
+        <div style="flex:2;min-width:200px">
+          <label class="fld" for="wf-engine">Engine type</label>
+          <select class="txt" id="wf-engine">
+            <option value="">Not given — the mechanic will check</option>
+            ${menu.engines.map((e) => `<option value="${esc(e.id)}"${cur.engine && cur.engine.id === e.id ? ' selected' : ''}>${esc(e.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div style="flex:1;min-width:110px">
+          <label class="fld" for="wf-count">Engines</label>
+          <input class="txt mono" id="wf-count" type="number" min="1" max="6" value="${esc(cur.engineCount || 1)}">
+        </div>
+      </div>
+      <p class="hint">Leave the engine type blank when the customer is not sure. The mechanic is told
+        Full or Basic either way, and picks the engine at the boat.</p>
+      ${groups.map((g) => `
+        <div class="subhead">${esc(g.name)}</div>
+        <div class="wf-grid">
+          ${g.items.map((s) => `
+            <label class="wf-item">
+              <input type="checkbox" data-wf="${esc(s.key)}"${chosen[s.key] ? ' checked' : ''}>
+              <span>${esc(s.label)}${s.winterize ? ' <span title="Winterization">❄</span>' : ''}</span>
+              ${s.kind === 'count' ? `<input class="txt mono wf-qty" type="number" min="1" max="99" data-wfqty="${esc(s.key)}"
+                value="${esc(chosen[s.key] ? qtyOf(chosen[s.key]) : 1)}" aria-label="How many">` : ''}
+            </label>`).join('')}
+        </div>`).join('')}
+    </div>`;
+}
+
+/** What the form says, in the shape createJob / setJobWinter take. Throws in words. */
+function readWinterForm(root, menu) {
+  const level = (root.querySelector('input[name="wf-level"]:checked') || {}).value || '';
+  if (!level) throw new Error('Choose Full service or Basic for the winterize.');
+  const levelDef = menu.levels.find((l) => l.id === level);
+  const items = menu.services.filter((s) => root.querySelector(`[data-wf="${s.key}"]`).checked).map((s) => {
+    const qtyBox = root.querySelector(`[data-wfqty="${s.key}"]`);
+    return { id: s.key, label: s.label, group: WINTER_GROUP_LABEL[s.group] || s.group, winterize: s.winterize,
+             count: s.kind === 'count', qty: qtyBox ? Number(qtyBox.value) || 1 : 1 };
+  });
+  return {
+    level, steps: levelDef.steps, stepsPwc: levelDef.stepsPwc, engines: menu.engines,
+    engineId: root.querySelector('#wf-engine').value,
+    engineCount: Number(root.querySelector('#wf-count').value) || 1,
+    items,
+  };
+}
+
+/** Load the menu into a box and draw the form there; null when it could not. */
+async function mountWinterForm(box, current) {
+  box.innerHTML = '<p class="msg"><span class="spinner"></span> Loading the winter services menu…</p>';
+  try {
+    const { menu, stale, error } = await loadWinterMenu();
+    box.innerHTML = (stale ? `<div class="banner warn" style="margin-bottom:10px">The winter system did not
+      answer (${esc(error || '')}). This is the last menu it gave.</div>` : '') + winterFormHtml(menu, current);
+    return menu;
+  } catch (error) {
+    box.innerHTML = `<div class="banner warn">Could not load the winter services menu: ${esc(error.message)}</div>`;
+    return null;
+  }
+}
+
+/** The checklist as the job page shows it: what is ticked, by whom. */
+function winterSummaryHtml(w) {
+  return `
+    <p style="margin:0 0 8px"><b>${esc(w.levelLabel)}</b> — ${esc(w.steps || '')}</p>
+    ${w.needsEngine ? `<div class="banner info" style="margin-bottom:8px">Engine type not given — the mechanic will pick it at the boat.</div>`
+      : `<p class="hint" style="margin-top:0">Engine: ${esc(w.engine.name)}${w.engineCount > 1 ? ` × ${w.engineCount}` : ''}${w.engineBy && w.engineBy !== 'Office' ? ` · picked by ${esc(w.engineBy)}` : ''}</p>`}
+    <ul class="wf-list">
+      ${w.items.map((x) => `<li class="${x.done ? 'done' : ''}">${x.done ? '✓' : '☐'} ${esc(x.label)}${x.winterize ? ' ❄' : ''}
+        ${x.done ? `<small>${esc(x.doneBy)}${x.doneAt ? ` · ${formatDateTime(x.doneAt)}` : ''}</small>` : ''}</li>`).join('')}
+    </ul>
+    <p class="hint">${w.left ? `${w.left} of ${w.items.length} still to do.` : 'All done.'} Anything beyond the
+      checklist is logged as hours and parts like any other job.</p>`;
 }
 
 /* ------------------------------------------------- customer parts order --- */
