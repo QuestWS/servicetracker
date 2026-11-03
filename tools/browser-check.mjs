@@ -1246,6 +1246,8 @@ console.log('\n== winter work ==');
   const listText = await mech.textContent('#view');
   check('each says how much is left to do', listText.includes('0 of 3') === false && listText.includes('3 of 3 to do'));
   check('and no money is anywhere on it', !/\$\d/.test(listText));
+  check('the list says where each one is being stored, or that it is not',
+    /Store: Inside \(non-heated\)/.test(listText) && /Not going into storage/.test(listText));
   check('winterization still to do is its own marker, not the alert',
     await mech.locator('[data-unit] .winterpill').count() === 2 &&
     (await mech.locator('[data-unit]').first().locator('.alertflag').count()) === 1);
@@ -1257,6 +1259,10 @@ console.log('\n== winter work ==');
   check('the unit says where it is and where the keys are', unitText.includes('B-12') && unitText.includes('front desk'));
   check("the customer's note is on it", unitText.includes('bilge pump'));
   check('an unpriced request is marked as one', unitText.includes('not priced yet'));
+  check('the unit says to tag it for inside storage, on its trailer',
+    /Tag for storage/i.test(await mech.textContent('#storebox')) &&
+    /Inside \(non-heated\)/i.test(await mech.textContent('#storebox')) &&
+    /On its trailer/.test(await mech.textContent('#storebox')));
   check('the winterization item is marked as one', (await mech.textContent('[data-item="0"]')).includes('❄') &&
     !(await mech.textContent('[data-item="1"]')).includes('❄'));
   await mech.locator('[data-item="0"]').click();

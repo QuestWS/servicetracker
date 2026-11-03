@@ -4556,6 +4556,19 @@ describe('winter work, from the winter services system', () => {
     expect(unit.winterizeLeft).toBe(1);
   });
 
+  it('says whether each unit is going into storage, and where, for the tag', () => {
+    const mech = withWinter(ok([
+      { ...UNIT, qn: 'QW-26-0010', storing: true, storageLabel: 'Inside (non-heated)', storageHow: 'On its trailer' },
+      { ...UNIT, qn: 'QW-26-0011', tab: 'No Storage', storing: false, storageLabel: 'Not going into storage' },
+      { ...UNIT, qn: 'QW-26-0012' },
+    ]));
+    const byQn = Object.fromEntries(backend.fn('winterWork', mech).units.map((u) => [u.qn, u]));
+    expect(byQn['QW-26-0010']).toMatchObject({ storing: true, storageLabel: 'Inside (non-heated)', storageHow: 'On its trailer' });
+    expect(byQn['QW-26-0011']).toMatchObject({ storing: false });
+    // An older winter backend that does not say: neither answer is claimed.
+    expect(byQn['QW-26-0012'].storing).toBe(null);
+  });
+
   it('has a tab for the ticks, and setup() makes it', () => {
     expect(backend.sheet('WinterWork').rows[0]).toEqual(
       ['id', 'quote_no', 'item', 'done', 'done_by', 'done_at', 'created_at']);

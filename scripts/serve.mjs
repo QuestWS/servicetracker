@@ -28,7 +28,8 @@ const PASSWORD = process.env.ADMIN_PASSWORD || 'shop';
  */
 const WINTER_UNITS = [
   { qn: 'QW-26-9001', name: 'Harbor, Pat', unit: 'Boat', ymm: '2019 Malibu 22 VLX', dims: "22' x 8'6\"",
-    tab: 'Inside', slip: 'B-12', keys: 'front desk', trailerLoc: '', state: 'pulled', stateLabel: 'Pulled',
+    tab: 'Inside', storing: true, storageLabel: 'Inside (non-heated)', storageHow: 'On its trailer',
+    slip: 'B-12', keys: 'front desk', trailerLoc: '', state: 'pulled', stateLabel: 'Pulled',
     stateAt: '2026-10-01T15:00:00Z', alert: '', cnote: 'Please check the bilge pump',
     work: [
       { sec: 'Engine winterization', label: 'Full service — Inboard', winterize: true },
@@ -36,7 +37,7 @@ const WINTER_UNITS = [
       { sec: 'Quote requested', label: 'Impeller change', requested: true },
     ] },
   { qn: 'QW-26-9002', name: 'Lot, Sam', unit: 'PWC', ymm: '2021 Sea-Doo GTX', dims: '',
-    tab: 'Outside', slip: '', keys: '', trailerLoc: '', state: 'dropped', stateLabel: 'Dropped off',
+    tab: 'No Storage', storing: false, storageLabel: 'Not going into storage', storageHow: '', slip: '', keys: '', trailerLoc: '', state: 'dropped', stateLabel: 'Dropped off',
     stateAt: '2026-10-02T15:00:00Z', alert: "owner says don't touch the canvas", cnote: '',
     work: [{ sec: 'Winterization', label: 'Basic — PWC / Jetski', winterize: true }] },
 ];

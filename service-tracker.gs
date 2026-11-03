@@ -3560,8 +3560,10 @@ function cancelPropRepair(token, id) {
  *    work, not towards skipping it.
  */
 const WINTER_EXEC_URL = 'https://script.google.com/macros/s/AKfycbxv8kqGKXU_4-9TytfWzdrv-QqqmyrYLxRwd8FDfA8b47sX3NlEBNDlIwIHRuQObZbL9w/exec';
-const WINTER_FEED_KEY_ = 'WINTER_FEED_v1';
-const WINTER_LAST_GOOD_KEY_ = 'WINTER_LASTGOOD_v1';
+// v2: units carry storing / storageLabel / storageHow. A cached v1 feed has
+// none of them, and the phone could not tell "not storing" from "too old to say".
+const WINTER_FEED_KEY_ = 'WINTER_FEED_v2';
+const WINTER_LAST_GOOD_KEY_ = 'WINTER_LASTGOOD_v2';
 const WINTER_FEED_TTL_ = 300;
 const WINTER_LAST_GOOD_TTL_ = 21600;
 const WINTER_ITEM_MAX_ = 200;
@@ -3610,6 +3612,11 @@ function fetchWinterFeed_() {
       return {
         qn: String(u.qn || ''), name: String(u.name || ''), unit: String(u.unit || ''),
         ymm: String(u.ymm || ''), dims: String(u.dims || ''), tab: String(u.tab || ''),
+        // Whether it is going into storage and where, for the mechanic's tag.
+        // null when the winter side is too old to say — the app then falls
+        // back to the bare storage area rather than claiming either answer.
+        storing: u.storing === undefined ? null : !!u.storing,
+        storageLabel: String(u.storageLabel || ''), storageHow: String(u.storageHow || ''),
         slip: String(u.slip || ''), keys: String(u.keys || ''), trailerLoc: String(u.trailerLoc || ''),
         state: String(u.state || ''), stateLabel: String(u.stateLabel || ''), stateAt: String(u.stateAt || ''),
         alert: String(u.alert || ''), cnote: String(u.cnote || ''),
@@ -3673,6 +3680,8 @@ function winterWork(token, fresh) {
     const winterizeLeft = work.filter(function (w) { return w.winterize && !w.done; }).length;
     return {
       qn: u.qn, name: u.name, unit: u.unit, ymm: u.ymm, dims: u.dims, tab: u.tab,
+      storing: u.storing === undefined ? null : u.storing,
+      storageLabel: u.storageLabel || '', storageHow: u.storageHow || '',
       slip: u.slip, keys: u.keys, trailerLoc: u.trailerLoc,
       state: u.state, stateLabel: u.stateLabel, stateAt: u.stateAt,
       alert: u.alert, cnote: u.cnote, work: work, left: left, winterizeLeft: winterizeLeft

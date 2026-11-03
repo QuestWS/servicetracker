@@ -668,7 +668,8 @@ function drawWinter(out, strip, tone) {
           ${unit.alert ? `<div style="margin-top:7px"><span class="alertflag">${ALERT_MARK} Read first</span></div>
             <div style="font-size:14px;line-height:1.4;color:var(--alert);font-weight:600;margin-top:5px">${esc(unit.alert)}</div>` : ''}
           ${unit.winterizeLeft ? `<div class="winterpill" style="margin-top:7px">❄ Winterize: ${unit.winterizeLeft} left</div>` : ''}
-          <div style="font-size:12px;opacity:.7;margin-top:4px">${esc([winterWhen(unit), unit.tab].filter(Boolean).join(' · '))}</div>
+          ${storeTagHtml(unit)}
+          <div style="font-size:12px;opacity:.7;margin-top:4px">${esc(winterWhen(unit))}</div>
         </button>`).join('')}
     </div>` : out.configured === false ? '' : `<p style="color:#9fc3dc">Nothing pulled or dropped off is waiting right now.</p>`}`;
 
@@ -678,12 +679,39 @@ function drawWinter(out, strip, tone) {
   });
 }
 
+/**
+ * Going into storage, and where — so the unit gets the right tag. On the list
+ * as a pill, on the unit as a box. When the winter side is too old to say
+ * (storing === null) it shows the bare storage area, as before, rather than
+ * claiming the unit is or is not being stored.
+ */
+function storeTagHtml(unit) {
+  if (unit.storing === false) return `<div style="margin-top:7px"><span class="storetag none">Not going into storage</span></div>`;
+  if (unit.storing === true) {
+    return `<div style="margin-top:7px"><span class="storetag">🏷 Store: ${esc(unit.storageLabel || unit.tab)}</span></div>`;
+  }
+  return unit.tab ? `<div style="font-size:12px;opacity:.7;margin-top:4px">${esc(unit.tab)}</div>` : '';
+}
+
+function storeBoxHtml(unit) {
+  if (unit.storing === false) {
+    return `<div class="storebox none" id="storebox"><div class="big">Not going into storage</div>
+      <div style="margin-top:3px">Here for work only — it goes back to the customer.</div></div>`;
+  }
+  if (unit.storing !== true) return '';
+  return `<div class="storebox" id="storebox"><div style="font-size:12px;font-weight:700;text-transform:uppercase;opacity:.75">Tag for storage</div>
+    <div class="big">${esc(unit.storageLabel || unit.tab)}</div>
+    ${unit.storageHow ? `<div style="margin-top:3px;font-weight:600">${esc(unit.storageHow)}</div>` : ''}</div>`;
+}
+
 /** One unit: where it is, what to read first, and the list to work down. */
 function renderWinterUnit(unit) {
   newVisit();
   screen(() => (state.winter ? drawWinter(state.winter, '', '') : renderWinter()));
   const facts = [
-    ['Where', unit.tab],
+    // The storage box says it when the winter side does; the bare area only
+    // for an older answer that cannot.
+    ['Where', unit.storing === null || unit.storing === undefined ? unit.tab : ''],
     ['Slip', unit.slip],
     ['Keys', unit.keys],
     ['Trailer is', unit.trailerLoc],
@@ -698,6 +726,7 @@ function renderWinterUnit(unit) {
         <span class="alertflag">${ALERT_MARK} Read first</span>
         <div style="margin-top:5px">${esc(unit.alert)}</div>
         <div style="margin-top:4px;font-size:12px;font-weight:400;color:var(--ink)">Harbor Haul Out alert — set by the office.</div></div>` : ''}
+      ${storeBoxHtml(unit)}
       <dl style="margin:12px 0 0;display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:15px">
         ${facts.map((f) => `<dt style="opacity:.7">${esc(f[0])}</dt><dd style="margin:0">${esc(f[1])}</dd>`).join('')}
       </dl>

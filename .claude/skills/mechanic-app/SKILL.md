@@ -272,6 +272,14 @@ and do not come across.
   `hourly()`, and the mechanic is told it will be. Nothing else is written over
   there. A boat marked Stored drops off this list — unless its winterization
   is still pending, when it stays.
+- **Where it is going, for the tag.** Each unit says whether it is going into
+  storage and which area (`storing`, `storageLabel`, `storageHow` — e.g.
+  *Inside (non-heated) · On its trailer*), or **Not going into storage** for a
+  unit here for work only. The winter side reads it off the quote's TAB, so a
+  staff relocation is what the mechanic sees. Gold `.storetag` on the list, a
+  `.storebox` at the top of the unit — the third colour, after the red alert
+  and the navy winterize pill. `storing: null` means the winter side is too
+  old to say, and the app shows the bare area rather than claiming either.
 - **Two markers, never one.** The office's Harbor Haul Out alert is the red
   *Read first* flag; winterization still to do is the navy `.winterpill`. Both
   can be on one unit, and neither replaces the other.
