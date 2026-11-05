@@ -3583,6 +3583,23 @@ const WINTER_FEED_TTL_ = 300;
 const WINTER_LAST_GOOD_TTL_ = 21600;
 const WINTER_ITEM_MAX_ = 200;
 
+/*
+ * Detailing is Harbor Haul Out's, not the floor's (Nov 2026: "show Exterior
+ * detail, Wash & wax, Interior detail and Interior wipe-down only in the
+ * Harbor Haul Out app"). The detailers work from that app; a mechanic should
+ * not see them on a boat's list, and a writer should not be offered them on a
+ * walk-in winterize. Matched on the menu key or the words, either way round,
+ * so a quote line that says "Wash & wax" is caught as surely as the key.
+ */
+const HARBOR_ONLY_KEYS_ = { extDetail: true, washWax: true, intDetail: true, intWipe: true };
+const HARBOR_ONLY_LABELS_ = ['exterior detail', 'wash & wax', 'interior detail', 'interior wipe-down'];
+
+function harborOnly_(key, label) {
+  if (HARBOR_ONLY_KEYS_[String(key || '')]) return true;
+  const words = String(label || '').toLowerCase().replace(/\s+/g, ' ').replace(/\s*-\s*/g, '-').trim();
+  return HARBOR_ONLY_LABELS_.some(function (l) { return words === l || words.indexOf(l + ' ') === 0 || words.indexOf(l + ' (') === 0; });
+}
+
 /**
  * One call to the winter system's tracker door. Throws with a sentence a
  * mechanic can read; the answer when it worked.
@@ -3638,7 +3655,7 @@ function fetchWinterFeed_() {
         work: (u.work || []).map(function (w) {
           return { sec: String(w.sec || ''), label: String(w.label || '').slice(0, WINTER_ITEM_MAX_),
                    requested: !!w.requested, winterize: !!w.winterize };
-        }).filter(function (w) { return w.label; })
+        }).filter(function (w) { return w.label && !harborOnly_('', w.label); })
       };
     }).filter(function (u) { return u.qn; })
   };
@@ -3685,7 +3702,8 @@ function winterWork(token, fresh) {
   if (!got.feed) return { configured: true, units: [], stale: true, error: got.error };
   const ticks = winterTicks_();
   const units = got.feed.units.map(function (u) {
-    const work = u.work.map(function (w) {
+    // Filtered again here: a feed cached before the filter still has them.
+    const work = u.work.filter(function (w) { return !harborOnly_('', w.label); }).map(function (w) {
       const t = ticks[u.qn + '\n' + w.label];
       const done = !!(t && t.done === 'yes');
       return { sec: w.sec, label: w.label, requested: w.requested, winterize: !!w.winterize,
@@ -3828,8 +3846,14 @@ function cleanWinterMenu_(m) {
       return { key: str(x.key, 40), label: str(x.label), kind: x.kind === 'count' ? 'count' : 'flag',
                group: str(x.group, 60), needs: str(x.needs, 40), request: !!x.request, winterize: !!x.winterize,
                units: (x.units || []).map(function (u) { return str(u, 20); }) };
-    }).filter(function (x) { return x.key && x.label; })
+    }).filter(function (x) { return x.key && x.label && !harborOnly_(x.key, x.label); })
   };
+}
+
+/** A menu kept from before the filter, made to match it. */
+function withoutHarborOnly_(menu) {
+  menu.services = (menu.services || []).filter(function (x) { return !harborOnly_(x.key, x.label); });
+  return menu;
 }
 
 /** The winter services menu, for the intake form. */
@@ -3837,7 +3861,7 @@ function winterMenu(token) {
   requireAdmin_(token);
   if (!winterKey_()) throw new Error('Not connected to the winter system yet. The office needs to add WINTER_KEY.');
   const cached = cacheGetBig_(WINTER_MENU_KEY_);
-  if (cached && cached.levels) return { menu: cached };
+  if (cached && cached.levels) return { menu: withoutHarborOnly_(cached) };
   try {
     const menu = cleanWinterMenu_(winterCall_({ fn: 'menu' }));
     if (!menu.levels.length) throw new Error('The winter system sent an empty menu.');
@@ -3847,7 +3871,7 @@ function winterMenu(token) {
   } catch (err) {
     let kept = null;
     try { kept = JSON.parse(props_().getProperty(WINTER_MENU_PROP_) || 'null'); } catch (e) { kept = null; }
-    if (kept && kept.levels) return { menu: kept, stale: true, error: String(err.message || err) };
+    if (kept && kept.levels) return { menu: withoutHarborOnly_(kept), stale: true, error: String(err.message || err) };
     throw err;
   }
 }
@@ -3916,7 +3940,11 @@ function winterView_(spec) {
     label: levelLabel + ' winterize — ' + (engineName || 'engine type to check') +
       (spec.engineCount > 1 ? ' × ' + spec.engineCount : '')
   };
-  const items = [engineItem].concat((spec.items || []).map(function (x) {
+  // A job set up before detailing moved to Harbor Haul Out may still carry
+  // one; it is not shown, and does not hold the checklist open.
+  const items = [engineItem].concat((spec.items || []).filter(function (x) {
+    return !harborOnly_(x.id, x.label);
+  }).map(function (x) {
     return { id: x.id, kind: 'service', group: x.group, winterize: !!x.winterize,
              label: x.label + (x.count && x.qty > 1 ? ' × ' + x.qty : '') };
   })).map(function (x) {

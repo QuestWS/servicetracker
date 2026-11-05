@@ -4416,6 +4416,18 @@ describe('winter work, from the winter services system', () => {
   }
   const ok = (units, extra = {}) => ({ code: 200, body: { ok: 1, _api: 'tracker', at: '2026-10-01T13:00:00Z', units, ...extra } });
 
+  it('leaves detailing off the floor\'s list — that work is Harbor Haul Out\'s', () => {
+    const mech = withWinter(ok([{ ...UNIT, work: [...UNIT.work,
+      { sec: 'Quote requested', label: 'Exterior detail', requested: true },
+      { sec: 'Quote requested', label: 'Wash & wax', requested: true },
+      { sec: 'Quote requested', label: 'Interior detail', requested: true },
+      { sec: 'Quote requested', label: 'Interior wipe-down', requested: true },
+    ] }]));
+    const unit = backend.fn('winterWork', mech).units[0];
+    expect(unit.work.map((w) => w.label)).toEqual(UNIT.work.map((w) => w.label));
+    expect(unit.left).toBe(3);
+  });
+
   it('lists the units the winter system has pulled or had dropped off, with their work', () => {
     const mech = withWinter(ok([UNIT]));
     const out = backend.fn('winterWork', mech);
@@ -5102,12 +5114,13 @@ describe('a walk-in winterize, on an ordinary work order', () => {
     return backend.fn('jobRow_', id).token;
   }
 
-  it('offers the winter system\'s whole menu at intake', () => {
+  it('offers the winter system\'s menu at intake', () => {
     shop();
     const { menu } = backend.fn('winterMenu', adminToken);
     expect(menu.levels.map((l) => l.id)).toEqual(['basic', 'full']);
     expect(menu.engines.map((e) => e.id)).toContain('pwc');
-    expect(menu.services.length).toBe(MENU.services.length);
+    // All but the four detailing items, which are Harbor Haul Out's.
+    expect(menu.services.length).toBe(MENU.services.length - 4);
     expect(calls[0]).toMatchObject({ api: 'tracker', fn: 'menu', key: KEY });
     // Six hours of cache: a second intake does not ask again.
     backend.call('forget_(); _props = null;');
@@ -5125,6 +5138,21 @@ describe('a walk-in winterize, on an ordinary work order', () => {
     const out = backend.fn('winterMenu', adminToken);
     expect(out.stale).toBe(true);
     expect(out.menu.levels).toHaveLength(2);
+  });
+
+  it('leaves the detailing to Harbor Haul Out: not offered at intake, not on an old checklist', () => {
+    shop();
+    const { menu } = backend.fn('winterMenu', adminToken);
+    const keys = menu.services.map((x) => x.key);
+    for (const k of ['extDetail', 'washWax', 'intDetail', 'intWipe']) expect(keys).not.toContain(k);
+    expect(keys).toContain('impeller');
+    expect(keys).toContain('skiDetail');
+    walkIn('01-7009', chosen({ items: [
+      { id: 'wrap', label: 'Shrinkwrap', group: 'Shrinkwrap' },
+      { id: 'washWax', label: 'Wash & wax', group: 'Quoted on request' },
+    ] }));
+    const job = backend.fn('getJob', adminToken, '01-7009').job;
+    expect(job.winter.items.map((x) => x.label)).toEqual([expect.stringMatching(/^Full service/), 'Shrinkwrap']);
   });
 
   it('is a writer\'s menu, not something anybody can ask for', () => {
