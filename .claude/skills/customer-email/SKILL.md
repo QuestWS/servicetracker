@@ -177,9 +177,12 @@ invoice PDF instead.
 
 Plenty of customers here never give an email address — a phone number at the
 counter is the whole of it. So the same invoice goes out the other door:
-`invoiceText` writes a short message, the writer copies it into **BiT**, BiT
-sends it, and `markInvoiceTexted` is the writer saying afterwards that they
-did. **Nothing in this app sends a text**, and nothing in it may start trying
+`invoiceText` writes a short message, the writer sends it — in practice from
+the shop's 815 number on their own phone: **Open as a text** is an `sms:` link
+(`assets/lib/sms.js`) that opens Messages with the number and wording filled
+in, so they only press send; copying it into BiT still works — and
+`markInvoiceTexted` is the writer saying afterwards that they did. Opening the
+draft logs nothing, exactly like the copy button. **Nothing in this app sends a text**, and nothing in it may start trying
 to. The rule about BiT is not suspended because texting would be convenient.
 
 Three things hang together and each one bites on its own:
@@ -190,7 +193,11 @@ Three things hang together and each one bites on its own:
   token's twenty, because the whole message has to stay inside one segment;
   still the only credential on that page, so it is not shorter than that.
   Lazy because a code that exists is a live door into somebody's invoice.
-- **The message.** ASCII only, and `gsmSafe_` is what keeps it that way. One
+- **The footer.** Every text ends, after a line break, with `SMS_FOOTER`:
+  the number it comes from is not watched, so it says to call or email
+  instead. The shop asked for it knowing it makes every text two segments;
+  the news and link above it (`invoiceTextBody_`) are still held to one.
+- **The message.** ASCII (plus that one newline) only, and `gsmSafe_` is what keeps it that way. One
   character outside GSM-7 — a curly apostrophe pasted in, an em dash, an
   accent — turns the whole text to UCS-2, where a segment holds 70 instead of
   160. A message that reads fine in the portal then arrives in pieces and

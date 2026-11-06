@@ -6142,6 +6142,20 @@ function textSegments_(message) {
  * the lot.
  */
 function invoiceTextMessage_(job, code, purpose) {
+  return gsmSafe_(invoiceTextBody_(job, code, purpose) + '\n' + SMS_FOOTER);
+}
+
+/**
+ * The last line of every text. The texts go out from a phone number nobody
+ * watches for replies, so a customer who answers one would be talking to
+ * nobody; this says where to go instead. It pushes every message to two
+ * segments, which the shop asked for knowingly — the count in the portal
+ * shows it.
+ */
+const SMS_FOOTER = 'Please note: This inbox is not regularly monitored. Please call ' + SHOP_PHONE +
+  ' or email ' + SERVICE_EMAIL + ' if you have any questions.';
+
+function invoiceTextBody_(job, code, purpose) {
   const due = jobBalance_(job);
   const owed = due === null || settled_(due) ? '' : money_(due);
   // A parts order's receipt, sent the day it is paid for: what it is for,

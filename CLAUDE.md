@@ -33,8 +33,10 @@ These apply everywhere and are not negotiable by any skill.
    the ticket and sends nothing; `sendInvoiceEmail` is a separate call behind a
    separate button. Do not put those back together, and do not add a send to a
    status change or a trigger. **The text is not a send at all** — this app
-   writes the message and mints the code, a person sends it from BiT, and
-   `markInvoiceTexted` is them saying so afterwards. Nothing here dials out.
+   writes the message and mints the code, a person sends it (from the shop's
+   own phone, via the portal's *Open as a text* `sms:` draft, or from BiT), and
+   `markInvoiceTexted` is them saying so afterwards. Nothing here dials out,
+   and opening the draft is never taken as a send.
 
    A **customer parts order** has two more: its receipt (`sendOrderReceipt`)
    and the arrival notice (`sendArrivalEmail`), each by email or by a text

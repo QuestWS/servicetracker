@@ -1,0 +1,16 @@
+{
+  "id": "admin/",
+  "name": "Quest Watersports Service Portal",
+  "short_name": "Quest Portal",
+  "description": "The service writer's portal: work orders, invoices, parts orders and statements.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0C1B2A",
+  "theme_color": "#14293E",
+  "icons": [
+    { "src": "../assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "../assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "../assets/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

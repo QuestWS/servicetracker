@@ -6,6 +6,14 @@
 <title>Service Tracker — Quest Watersports</title>
 <meta name="robots" content="noindex, nofollow">
 <link rel="icon" type="image/png" href="../assets/quest-mark.png">
+<!-- Its own installable app, separate from the mechanic one: its own manifest,
+     with its own id and scope, so "Install" on this page offers this page. -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#14293E">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Quest Portal">
+<link rel="apple-touch-icon" href="../assets/icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <!-- Loaded without blocking the page. A stylesheet from another origin holds
@@ -44,6 +52,7 @@ import { api as callBackend, storeSession, storedToken, tokenExpiry, clearSessio
          savedCopy, saveCopy, savedOneOf, saveOneOf } from '../assets/lib/api.js';
 import { byLastName } from '../assets/lib/names.js';
 import { SITE_URL } from '../assets/lib/config.js';
+import { smsDraftUrl, isApple } from '../assets/lib/sms.js';
 import { ENTRY_LABEL, STATUSES, STATUS_LABEL, STATUS_PILL, ORDER_STATUSES, ORDER_STATUS_LABEL, statusLabelFor,
   formatHours, decimalHours } from '../assets/lib/entry-types.js';
 import { extractPdf } from '../assets/lib/extract.js';
@@ -1174,11 +1183,12 @@ async function drawJob(id, data, savedAt) {
 
           <div id="textbox" hidden style="margin-top:14px">
             ${data.testMode ? `<div class="banner warn" style="margin:0 0 10px">Test mode holds the
-              <b>email</b> back. It cannot hold a text back — we do not send it, BiT does.</div>` : ''}
+              <b>email</b> back. It cannot hold a text back — we do not send it, you do.</div>` : ''}
             <label class="fld" for="invoicetext" id="invoicetextlabel">The message</label>
             <textarea class="txt" id="invoicetext" rows="4" readonly></textarea>
             <p class="hint" id="invoicetextmeta"></p>
             <div class="row tight" style="margin-top:10px">
+              <a class="btn gold sm" id="smsdraft" href="#">Open as a text</a>
               <button class="btn ghost sm" type="button" id="copyinvoicetext">Copy the message</button>
               <button class="btn ghost sm" type="button" id="opentextlink">Open the link</button>
               <button class="btn gold sm" type="button" id="marktexted">I have sent it</button>
@@ -1287,8 +1297,9 @@ ${receiptSection}` : `
             </button>
             ${job.customerEmail ? '' : '<p class="hint" style="margin-top:8px">No email address on file for this customer.</p>'}
 
-            <p class="hint" style="margin:14px 0 8px">Or text it. BiT sends the text; we only write it.
-              Copy it into BiT, send it from there, then tell us you have.</p>
+            <p class="hint" style="margin:14px 0 8px">Or text it. We only write the text; you send it.
+              <b>Open as a text</b> puts it in your phone's Messages ready to send (or copy it into
+              BiT), then tell us you have.</p>
             ${arrivalTexted ? `<p class="hint" style="margin:0 0 10px">Arrival texted ${formatDateTime(arrivalTexted.created_at)}
               to ${esc(arrivalTexted.recipient)}.</p>` : ''}
             <button class="btn ${arrivalTexted ? 'ghost' : 'gold'} block" type="button" id="writetext">
@@ -1463,22 +1474,24 @@ ${invoiceForm}
 
             <h3 style="font-family:var(--disp);font-size:17px;color:var(--navy);margin:0 0 4px">Text it instead</h3>
             <p class="hint" style="margin:0 0 10px">For the customers who never give us an email address.
-              BiT sends the text; we only write it. Copy this into BiT, send it from there, then tell us
-              you have — this app never touches BiT itself.</p>
+              We only write the text; you send it. <b>Open as a text</b> puts it in your phone's
+              Messages with the number filled in, ready to send (or copy it into BiT). Then tell us
+              you have.</p>
             ${invoiceTexted
               ? `<p class="hint" style="margin:0 0 10px">Texted ${formatDateTime(invoiceTexted.created_at)}
                  to ${esc(invoiceTexted.recipient)}.</p>`
               : ''}
-            ${job.customerPhone ? '' : '<p class="hint" style="margin:0 0 10px">No phone number on file — worth adding one before you go looking for it in BiT.</p>'}
+            ${job.customerPhone ? '' : '<p class="hint" style="margin:0 0 10px">No phone number on file — add one first, or pick the contact in Messages.</p>'}
             ${data.testMode ? `<div class="banner warn" style="margin:0 0 10px">Test mode holds the
-              <b>email</b> back. It cannot hold this one back — we do not send it, BiT does. Send it
-              from BiT and the customer really gets it.</div>` : ''}
+              <b>email</b> back. It cannot hold this one back — we do not send it, you do. Send it
+              and the customer really gets it.</div>` : ''}
             <div id="textbox" hidden>
               <label class="fld" for="invoicetext">The message</label>
               <textarea class="txt" id="invoicetext" rows="4" readonly></textarea>
               <p class="hint" id="invoicetextmeta"></p>
               <div class="row tight" style="margin-top:10px">
-                <button class="btn ghost sm" type="button" id="copyinvoicetext">Copy the message</button>
+                <a class="btn gold sm" id="smsdraft" href="#">Open as a text</a>
+              <button class="btn ghost sm" type="button" id="copyinvoicetext">Copy the message</button>
                 <button class="btn ghost sm" type="button" id="opentextlink">Open the link</button>
                 <button class="btn gold sm" type="button" id="marktexted">I have sent it</button>
               </div>
@@ -2401,11 +2414,14 @@ ${emailLogCard}
       $('textbox').hidden = false;
       if (order) $('textbox').scrollIntoView({ block: 'nearest' });
       $('opentextlink').onclick = () => window.open(text.url, '_blank', 'noreferrer');
+      // A draft in the phone's own Messages app. Opening it sends nothing and
+      // logs nothing: "I have sent it" is still the writer saying it went.
+      $('smsdraft').href = smsDraftUrl(text.phone, text.message, isApple(navigator));
       $('copyinvoicetext').onclick = async () => {
         const field = $('invoicetext');
         try {
           await navigator.clipboard.writeText(field.value);
-          toast('Copied. Paste it into BiT.');
+          toast('Copied. Paste it into your text.');
         } catch {
           // No clipboard permission, or an http:// preview. Select it so the
           // writer can copy it by hand rather than retype it.

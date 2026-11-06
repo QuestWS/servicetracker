@@ -159,7 +159,9 @@ function navigate(event) {
       settled = true;
       clearTimeout(timer);
       caches.match(request)
-        .then((hit) => hit || caches.match(shellUrl('m/')))
+        // Only the mechanic app falls back to its own shell. The portal offline
+        // must not open as the mechanic app — it is its own installed app now.
+        .then((hit) => hit || (inApp ? caches.match(shellUrl('m/')) : undefined))
         .then((hit) => {
           // Offline: the page is the cached generation, so its modules are too.
           if (hit && client) servedFromCache.add(client);

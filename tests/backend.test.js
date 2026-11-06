@@ -1809,14 +1809,19 @@ describe('the invoice by text', () => {
     expect(text.message).toContain('View it here');
   });
 
-  it('fits in one text, in characters a phone can carry', () => {
+  it('fits in two texts, in characters a phone can carry', () => {
     const text = backend.fn('invoiceText', adminToken, textable());
     // One character outside GSM-7 — a curly apostrophe, an em dash — turns the
     // whole message into UCS-2, where a segment holds 70 rather than 160. The
     // message then arrives in pieces and costs three times as much to send.
-    expect(text.message).toMatch(/^[\x20-\x7E]+$/);
-    expect(text.characters).toBeLessThanOrEqual(160);
-    expect(text.segments).toBe(1);
+    expect(text.message).toMatch(/^[\x20-\x7E\n]+$/);
+    // The news and the link are still one segment on their own; the footer
+    // saying nobody reads replies is what makes it two, and the shop chose that.
+    const [news, footer] = text.message.split('\n');
+    expect(news.length).toBeLessThanOrEqual(160);
+    expect(footer).toBe('Please note: This inbox is not regularly monitored. Please call (815) 433-2200 '
+      + 'or email service@questwatersports.com if you have any questions.');
+    expect(text.segments).toBe(2);
   });
 
   it('flattens the characters that would triple what a text costs', () => {
@@ -4766,7 +4771,7 @@ describe('customer parts orders', () => {
     expect(text.message).toContain('ready for pick-up');
     expect(text.message).toContain('$1,408.80');
     expect(text.message).not.toContain('2,408.80');
-    expect(text.segments).toBe(1);
+    expect(text.segments).toBe(2);
     expect(backend.fn('getJob', adminToken, '01-9131').emails).toHaveLength(0);
     backend.fn('markInvoiceTexted', adminToken, '01-9131');
     expect(backend.fn('getJob', adminToken, '01-9131').emails[0].kind).toBe('customer_arrived_text');
@@ -4876,8 +4881,8 @@ describe('customer parts orders', () => {
     const text = backend.fn('invoiceText', adminToken, '01-9131', 'receipt');
     expect(text.message).toContain('paid in full');
     expect(text.message).toContain('Parts on order');
-    expect(text.message).toMatch(/\/i\/\?c=[0-9A-HJ-NP-TV-Z]{8}$/);
-    expect(text.segments).toBe(1);
+    expect(text.message).toMatch(/\/i\/\?c=[0-9A-HJ-NP-TV-Z]{8}\nPlease note:/);
+    expect(text.segments).toBe(2);
     expect(backend.fn('getJob', adminToken, '01-9131').emails).toHaveLength(0);
     backend.fn('markInvoiceTexted', adminToken, '01-9131', 'receipt');
     const logged = backend.fn('getJob', adminToken, '01-9131').emails;
@@ -4890,7 +4895,7 @@ describe('customer parts orders', () => {
     takeOrder('01-9131', { deposits: 0, amountDue: 12408.80 });
     const text = backend.fn('invoiceText', adminToken, '01-9131', 'receipt');
     expect(text.message).toContain('$12,408.80 due');
-    expect(text.segments).toBe(1);
+    expect(text.segments).toBe(2);
   });
 
   it('opens the receipt link while the parts are still on order', () => {
@@ -5030,7 +5035,7 @@ describe('customer parts orders', () => {
     const text = backend.fn('invoiceText', adminToken, '01-9131', 'receipt');
     expect(text.message).toContain('cancelled and settled');
     expect(text.message).toContain('$2,373.76 refunded, nothing owed');
-    expect(text.segments).toBe(1);
+    expect(text.segments).toBe(2);
     backend.fn('markInvoiceTexted', adminToken, '01-9131', 'receipt');
     const logged = backend.fn('getJob', adminToken, '01-9131').emails[0];
     expect(logged.kind).toBe('customer_receipt_text');

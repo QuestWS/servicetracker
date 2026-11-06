@@ -5,6 +5,11 @@ description: Working on the service writer's portal (admin/index.html) — the j
 
 # The service writer's portal
 
+**It is its own installable app** — `admin/manifest.webmanifest`, with its own
+`id` and scope. The mechanic app's manifest is scoped to `m/` for the same
+reason: while it covered the whole site, a phone with the mechanic app
+installed said the portal was "already installed". Do not widen either scope.
+
 `admin/index.html` — password → 12-hour sealed token in localStorage. This is
 the office side: one person at a counter, on a laptop or an iPad, usually with
 a customer in front of them.
@@ -229,8 +234,9 @@ deliberate acts behind two buttons.
 
 **Three buttons, now that a customer can be texted instead.** Below the email
 button, *Write the text message* asks the backend for the wording and the short
-code — which is what mints the code, and is not a send. The writer copies the
-message into BiT, sends it there, and presses *I have sent it*, which is the
+code — which is what mints the code, and is not a send. The writer presses
+*Open as a text* (an `sms:` draft in their phone's Messages, number filled in)
+or copies it into BiT, sends it, and presses *I have sent it*, which is the
 only thing that logs anything. Do not fold those two together and do not infer
 a send from the copy button: that would mark a job texted because somebody
 looked at the wording. The panel says in red during a rehearsal that test mode

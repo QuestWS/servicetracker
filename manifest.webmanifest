@@ -3,7 +3,7 @@
   "short_name": "Quest Shop",
   "description": "Scan a work order, log hours, notes, parts and photos as you work.",
   "start_url": "m/",
-  "scope": "./",
+  "scope": "m/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0C1B2A",

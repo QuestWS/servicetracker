@@ -72,6 +72,23 @@ admin.on('console', (message) => { if (message.type() === 'error' && !isEnvironm
 
 console.log('\n== service writer ==');
 await admin.goto(`${BASE}/admin/`, { waitUntil: 'networkidle' });
+// Its own installable app. The mechanic app's scope used to be the whole
+// site, so a phone with it installed said the portal was "already installed".
+const portalManifest = await admin.evaluate(async () => {
+  const link = document.querySelector('link[rel=manifest]');
+  if (!link) return null;
+  const body = await (await fetch(link.href)).json();
+  const mech = await (await fetch(new URL('../manifest.webmanifest', link.href))).json();
+  return {
+    scope: new URL(body.scope, link.href).pathname,
+    start: new URL(body.start_url, link.href).pathname,
+    id: body.id,
+    mechScope: new URL(mech.scope, new URL('../manifest.webmanifest', link.href)).pathname,
+  };
+});
+check('the portal is its own installable app, out of the mechanic app\'s scope',
+  portalManifest && /\/admin\/$/.test(portalManifest.scope) && portalManifest.start === portalManifest.scope
+    && portalManifest.id && /\/m\/$/.test(portalManifest.mechScope), JSON.stringify(portalManifest));
 await admin.fill('#password', PASSWORD);
 await admin.click('button[type=submit]');
 await admin.waitForSelector('.page-title');
@@ -1650,11 +1667,17 @@ const smsMeta = await admin.textContent('#invoicetextmeta');
 check('the portal writes the text for the writer to send from BiT',
   smsMessage.includes('Quest Watersports') && smsMessage.includes(invoiceNumber), smsMessage);
 check('with a link to the invoice page in it', /\/i\/\?c=[0-9A-HJ-NP-TV-Z]{8}/.test(smsMessage), smsMessage);
-check('and says what it will cost to send', /one text/.test(smsMeta), smsMeta);
+check('and says what it will cost to send', /2 texts/.test(smsMeta), smsMeta);
+check('ending with where to go, since nobody reads replies',
+  /\nPlease note: This inbox is not regularly monitored\. Please call \(815\) 433-2200 or email service@questwatersports\.com if you have any questions\.$/.test(smsMessage), smsMessage);
 // One character outside GSM-7 turns the whole message into UCS-2, where a
 // segment holds 70 rather than 160 — three texts instead of one.
 // eslint-disable-next-line no-control-regex
-check('in characters a phone can carry', /^[\x20-\x7E]+$/.test(smsMessage), smsMessage);
+check('in characters a phone can carry', /^[\x20-\x7E\n]+$/.test(smsMessage), smsMessage);
+// Open as a text: the phone's own Messages app, number and wording filled in.
+const smsHref = await admin.getAttribute('#smsdraft', 'href');
+check('it opens as a text draft with the whole message in it',
+  /^sms:(\+1\d{10})?[?&]body=/.test(smsHref) && decodeURIComponent(smsHref.split('body=')[1]) === smsMessage, smsHref);
 check('nothing is logged just for writing it',
   !/Texted /.test(await admin.evaluate(() => document.body.innerText)));
 
@@ -3022,8 +3045,9 @@ await admin.waitForSelector('#textbox:not([hidden])', { timeout: 30000 });
 const receiptText = await admin.inputValue('#invoicetext');
 check('a receipt text can be written while the parts are on order',
   /Parts on order/.test(receiptText) && /\$70\.50 due/.test(receiptText), receiptText);
-check('ready to copy into BiT, in one text',
-  (await admin.locator('#copyinvoicetext').count()) === 1 && /one text/.test(await admin.textContent('#invoicetextmeta')));
+check('ready to send, in two texts',
+  (await admin.locator('#copyinvoicetext').count()) === 1 && (await admin.locator('#smsdraft').count()) === 1
+    && /2 texts/.test(await admin.textContent('#invoicetextmeta')));
 const receiptCode = receiptText.match(/\/i\/\?c=([0-9A-HJ-NP-TV-Z]{8})/)[1];
 const receiptPhone = await shopContext({ viewport: { width: 390, height: 844 } });
 const receiptLink = await receiptPhone.newPage();
@@ -3060,7 +3084,7 @@ await admin.waitForSelector('#textbox:not([hidden])', { timeout: 30000 });
 const orderText = await admin.inputValue('#invoicetext');
 check('the arrival text says it is ready, with the balance',
   /ready for pick-up/.test(orderText) && /\$70\.50/.test(orderText) && !/120\.50/.test(orderText), orderText);
-check('in one text', /one text/.test(await admin.textContent('#invoicetextmeta')));
+check('in two texts', /2 texts/.test(await admin.textContent('#invoicetextmeta')));
 const orderCode = orderText.match(/\/i\/\?c=([0-9A-HJ-NP-TV-Z]{8})/)[1];
 const orderPhone = await shopContext({ viewport: { width: 390, height: 844 } });
 const orderLink = await orderPhone.newPage();
@@ -3173,9 +3197,9 @@ check('the settlement receipt is emailed from the same Send a receipt buttons', 
 await admin.click('#writereceipttext');
 await admin.waitForSelector('#textbox:not([hidden])', { timeout: 30000 });
 const settledText = await admin.inputValue('#invoicetext');
-check('the settlement text says it is cancelled, settled and refunded, in one text',
+check('the settlement text says it is cancelled, settled and refunded, in two texts',
   /cancelled and settled/.test(settledText) && /\$2,373\.76 refunded, nothing owed/.test(settledText)
-    && /one text/.test(await admin.textContent('#invoicetextmeta')), settledText);
+    && /2 texts/.test(await admin.textContent('#invoicetextmeta')), settledText);
 const settledCode = settledText.match(/\/i\/\?c=([0-9A-HJ-NP-TV-Z]{8})/)[1];
 const settledPhone = await shopContext({ viewport: { width: 390, height: 844 } });
 const settledLink = await settledPhone.newPage();
