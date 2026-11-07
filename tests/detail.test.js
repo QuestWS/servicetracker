@@ -721,3 +721,64 @@ describe('detail quotes in the writer\'s portal, from the start', () => {
     expect(() => backend.fn('decideDetailLines', admin, d.id, 'all', 'accepted', '')).toThrow(/Nothing on this quote/);
   });
 });
+
+describe('a work order with confirmed mechanical work and detail to quote', () => {
+  function ticket(id = '01-9301') {
+    backend.fn('createJob', admin, { invoiceNumber: id, customerName: 'Jane Rivers', customerPhone: '815-555-0142',
+      customerEmail: 'jane@example.com', boatInfo: '2019 Yamaha 242X' });
+    const out = backend.fn('setJobDetail', admin, id, { split: 'both', quote: true, loa: 24,
+      items: [{ key: 'washWax', label: 'Wash & wax', price: 384 }, { key: 'carpet', label: 'Carpet cleaning' }] });
+    return { token: backend.fn('jobRow_', id).token, d: out.detail };
+  }
+
+  it('goes in unpriced with a D-number, and John is emailed to price the detail on that work order', () => {
+    const { d } = ticket();
+    expect(d.quoteNo).toBe('D-1001');
+    expect(d.items.map((x) => x.price)).toEqual([null, null]);
+    expect(d.stage).toBe('price');
+    const m = backend.sentMail.find((x) => /quote requested/.test(x.subject));
+    expect(m.to).toBe(JOHN);
+    expect(m.opts.htmlBody).toContain('on work order 01-9301');
+  });
+
+  it('the mechanic\'s confirmed work goes ahead; accepted detail becomes the detailer\'s, and the job waits for both', () => {
+    const { token, d } = ticket();
+    expect(backend.fn('openJobs', mech(), true).jobs.map((j) => j.id)).toContain('01-9301');
+    const q = backend.fn('sendDetailQuote', detailer(), d.id, { [d.items[0].id]: 384, [d.items[1].id]: 150 }, 'email').detail;
+    backend.fn('finishWork', mech(), token);
+    expect(backend.fn('getJob', admin, '01-9301').job.detail.waitingOn).toBe('detail');
+    backend.fn('answerDetailQuote', q.quoteCode, [{ item: d.items[0].id, choice: 'accepted' }, { item: d.items[1].id, choice: 'declined' }], '');
+    expect(backend.fn('getDetail', admin, d.id).detail.stage).toBe('todo');
+    backend.fn('finishDetail', detailer(), d.id);
+    expect(backend.fn('getJob', admin, '01-9301').job.status).toBe('work_finished');
+  });
+
+  it('declined in full, the detail half closes itself and the job finishes with the mechanic', () => {
+    const { token, d } = ticket();
+    const q = backend.fn('sendDetailQuote', detailer(), d.id, { [d.items[0].id]: 384, [d.items[1].id]: 150 }, 'email').detail;
+    backend.fn('answerDetailQuote', q.quoteCode, d.items.map((x) => ({ item: x.id, choice: 'declined' })), '');
+    const after = backend.fn('getDetail', admin, d.id).detail;
+    expect(after.status).toBe('done');
+    expect(backend.fn('getJob', admin, '01-9301').job.detail.waitingOn).toBe('mechanic');
+    const m = backend.sentMail.find((x) => /Detail declined on job 01-9301/.test(x.subject));
+    expect(m.to).toBe(SERVICE);
+    expect(m.opts.cc).toBe(JOHN);
+    expect(backend.fn('finishWork', mech(), token).status).toBe('work_finished');
+  });
+
+  it('declined after the mechanic already finished, the job is ready to close out at once — recorded from the desk too', () => {
+    const { token, d } = ticket();
+    backend.fn('sendDetailQuote', detailer(), d.id, { [d.items[0].id]: 384, [d.items[1].id]: 150 }, 'email');
+    backend.fn('finishWork', mech(), token);
+    backend.fn('decideDetailLines', admin, d.id, 'all', 'declined', 'Not this year');
+    expect(backend.fn('getJob', admin, '01-9301').job.status).toBe('work_finished');
+  });
+
+  it('without "quote these first" the lines are confirmed work, as before', () => {
+    backend.fn('createJob', admin, { invoiceNumber: '01-9302', customerName: 'A', boatInfo: 'x' });
+    const d = backend.fn('setJobDetail', admin, '01-9302', { split: 'both', items: [{ key: 'washWax', label: 'Wash & wax', price: 384 }] }).detail;
+    expect(d.quoteNo).toBe('');
+    expect(d.items[0].price).toBe(384);
+    expect(backend.sentMail.some((x) => /quote requested/.test(x.subject))).toBe(false);
+  });
+});

@@ -8218,10 +8218,14 @@ function notifyNewRequest_(row) {
     row.customer_name + (row.quote_no ? ' (' + row.quote_no + ')' : '');
   const html = staffMailHtml_({
     tone: 'gold', quoteNo: row.quote_no,
-    heading: 'New quote to price' + (online ? ' — requested online' : ''),
-    sub: online ? 'The customer filled in the Request a detail page.' : 'Taken in by ' + (row.created_by || 'the desk') + '.',
+    heading: 'New quote to price' + (online ? ' — requested online' : row.job_id ? ' — on work order ' + row.job_id : ''),
+    sub: online ? 'The customer filled in the Request a detail page.'
+      : row.job_id ? 'The work order is in for confirmed work; they want these quoted while it is in the shop.'
+      : 'Taken in by ' + (row.created_by || 'the desk') + '.',
     rows: detailCustomerRows_(row),
-    lines: detailItems_(row).map(function (x) { return { label: x.label, qty: x.qty, price: x.price }; }),
+    // On a work order, only the lines still to price — not ones already agreed.
+    lines: detailItems_(row).filter(function (x) { return !row.job_id || !x.quote; })
+      .map(function (x) { return { label: x.label, qty: x.qty, price: x.price }; }),
     notes: row.notes,
     button: { url: detailUrl_(row.id), label: 'Price it and send the quote' }
   });
@@ -8432,7 +8436,7 @@ function setDetailStatus(token, id, to) {
 function setJobDetail(token, jobId, input) {
   const who = requireAdmin_(token);
   ensureDetailSchema_();
-  return withLock_(function () {
+  const out = withLock_(function () {
     forget_('Jobs');
     forget_('Details');
     const job = jobRow_(jobId);
@@ -8454,12 +8458,24 @@ function setJobDetail(token, jobId, input) {
     if (split !== 'detail' && split !== 'both') throw new Error('Say who is on it: the detailer alone, or the mechanic and the detailer.');
     const items = sanitizeDetailItems_(input.items, row ? detailItems_(row) : null);
     if (!items.length) throw new Error('Tick at least one thing for the detailer.');
+    /* "Quote these first" (Chris, Nov 7 2026): the mechanical work on the
+       ticket is confirmed, the detail is not. The lines go in with no price,
+       John is emailed to price and send them, and only what the customer
+       accepts becomes the detailer's work. Lines already answered or done
+       keep what they have. */
+    const quoteFirst = input.quote === true;
+    let newlyToQuote = false;
+    if (quoteFirst) {
+      items.forEach(function (x) {
+        if (!x.quote && !x.done && !x.winter) { if (x.price !== null) x.price = null; newlyToQuote = true; }
+      });
+    }
     const fields = cleanDetailFields_({ loa: input.loa, beam: input.beam, notes: input.notes });
     const jobPatch = { detail_split: split, updated_at: at };
     if (row) {
       updateRow_('Details', row._row, Object.assign(fields, { items: JSON.stringify(items), updated_at: at,
         customer_name: job.customer_name, customer_phone: job.customer_phone, customer_email: job.customer_email,
-        unit: job.boat_info }));
+        unit: job.boat_info }, quoteFirst && !row.quote_no ? { quote_no: nextDetailQuoteNo_() } : {}));
       if (row.status === 'done') {
         // A line added to a finished detail re-opens it.
         if (items.some(function (x) { return detailDoable_(x) && !x.done; })) {
@@ -8471,7 +8487,7 @@ function setJobDetail(token, jobId, input) {
       row = Object.assign({ id: newId_('det'), source: 'job', job_id: job.id, winter_qn: '',
         customer_name: job.customer_name, customer_phone: job.customer_phone, customer_email: job.customer_email,
         unit: job.boat_info, items: JSON.stringify(items), status: 'requested', created_by: whoIs_(who),
-        created_at: at, updated_at: at }, fields);
+        created_at: at, updated_at: at, quote_no: quoteFirst ? nextDetailQuoteNo_() : '' }, fields);
       appendRow_('Details', row);
       detailEvent_(row.id, 'created', 'Job ' + job.id + ' (' + (job.customer_name || 'no name') + ') sent to detail: ' +
         items.map(function (x) { return x.label; }).join(', '), whoIs_(who));
@@ -8481,8 +8497,68 @@ function setJobDetail(token, jobId, input) {
     bumpDetailVersion_();
     forget_('Details');
     const fresh = jobRow_(job.id);
-    return { job: jobSummary_(fresh), detail: detailView_(detailForJob_(job.id), fresh) };
+    const saved = detailForJob_(job.id);
+    return { job: jobSummary_(fresh), detail: detailView_(saved, fresh), row: newlyToQuote ? saved : null };
   });
+  // John prices it: told once there is something new to price on it.
+  if (out.row) {
+    notifyNewRequest_(out.row);
+    pushNotify_('New quote request', out.row.customer_name + ' (job ' + out.row.job_id + '): ' +
+      detailItems_(out.row).filter(function (x) { return !x.quote; }).map(function (x) { return x.label; }).join(', '), out.row.id);
+  }
+  delete out.row;
+  return out;
+}
+
+/**
+ * A detail on a work order the customer declined in full: there is nothing
+ * for the detailer to do, so its half of the ticket is closed rather than
+ * holding the job at "waiting on detail" for ever. The job then finishes
+ * when the mechanic does (or now, if they already have, or if there is no
+ * mechanic on it). The desk and John are told. Never throws.
+ */
+function settleDeclinedDetail_(id) {
+  try {
+    const out = withLock_(function () {
+      forget_('Details');
+      forget_('Jobs');
+      const row = detailRow_(id);
+      if (!row || !row.job_id || row.status === 'done' || row.status === 'cancelled') return null;
+      const items = detailItems_(row);
+      if (!items.length || items.some(function (x) { return detailDoable_(x) || x.quote === 'pending' || x.quote === 'call'; })) return null;
+      const at = nowIso_();
+      updateRow_('Details', row._row, { status: 'done', done_at: at, done_by: 'Declined by the customer', updated_at: at });
+      const job = jobRow_(row.job_id);
+      let note = '';
+      if (job && job.status !== 'done') {
+        updateRow_('Jobs', job._row, { detail_done_at: at, updated_at: at });
+        forget_('Jobs');
+        const fresh = jobRow_(row.job_id);
+        const split = String(fresh.detail_split || '');
+        if (split === 'detail' || (split === 'both' && fresh.mech_done_at)) {
+          if (fresh.status === 'received') setStatus_(fresh, 'work_underway', 'detailer', 'Customer', 'Detail declined');
+          setStatus_(jobRow_(row.job_id), 'work_finished', 'detailer', 'Customer', 'Detail declined — nothing to do');
+          note = 'Job ' + row.job_id + ' is ready to close out.';
+        } else {
+          note = 'Job ' + row.job_id + ' finishes when the mechanic does.';
+        }
+      }
+      detailEvent_(row.id, 'done', row.customer_name + ' declined all the detail — nothing for the detailer. ' + note, 'Customer');
+      bumpDetailVersion_();
+      return { row: detailRow_(id), note: note };
+    });
+    if (!out) return false;
+    const subject = 'Detail declined on job ' + out.row.job_id + ': ' + out.row.customer_name + (out.row.quote_no ? ' (' + out.row.quote_no + ')' : '');
+    send_({ to: SERVICE_EMAIL, cc: DETAIL_ALERT_EMAIL, subject: subject, kind: 'detail_declined', jobId: out.row.job_id, text: subject,
+      html: staffMailHtml_({ tone: 'navy', quoteNo: out.row.quote_no, heading: 'Detail declined — nothing for the detailer',
+        sub: 'The customer said no to every detail line on job ' + out.row.job_id + '.', rows: detailCustomerRows_(out.row),
+        linesTitle: 'Declined', lines: detailItems_(out.row).map(function (x) { return { label: x.label, qty: x.qty, price: x.price, state: x.quote }; }),
+        next: esc_(out.note), button: { url: SITE_URL + '/admin/?job=' + encodeURIComponent(out.row.job_id), label: 'Open job ' + out.row.job_id } }) });
+    pushNotify_('Detail declined', out.row.customer_name + ' — ' + out.note, out.row.id);
+    return true;
+  } catch (err) {
+    return false;
+  }
 }
 
 /** What the writer's list and job page say about the split. Off the row alone. */
@@ -8811,6 +8887,7 @@ function answerDetailQuote(code, answers, note) {
     const call = out.changed.some(function (x) { return x.quote === 'call'; });
     pushNotify_(call ? 'Call requested' : 'Detail quote answered', out.text, out.row.id);
     notifyDetailAnswer_(out.row, out.changed, out.ask);
+    settleDeclinedDetail_(out.row.id);
   }
   const page = detailQuote(c);
   page.saved = out.changed.length;
@@ -8896,6 +8973,7 @@ function decideDetailLines(token, id, itemIds, choice, note) {
   });
   if (out.changed.length && (choice === 'accepted' || choice === 'declined' || choice === 'call')) {
     notifyDetailAnswer_(out.row, out.changed, said, by);
+    if (settleDeclinedDetail_(out.row.id)) out.row = detailRow_(id);
     pushNotify_(choice === 'call' ? 'Call requested' : 'Detail quote answered',
       out.row.customer_name + ': ' + out.changed.map(function (x) { return x.label; }).join(', ') + ' — ' +
       ({ accepted: 'accepted', declined: 'declined', call: 'please call them' })[choice], out.row.id);

@@ -656,7 +656,7 @@ async function renderDetailQuote(id) {
     <div class="row" style="justify-content:space-between;margin-bottom:6px">
       <h1 class="page-title">${esc(d.quoteNo || 'Detail quote')} · ${esc(d.customerName)}</h1>
       <span class="pill ${st[1]}" style="font-size:14px">${esc(st[0])}</span></div>
-    <p class="hint" style="margin:0 0 14px"><a href="?view=details">← Detail quotes</a> ·
+    <p class="hint" style="margin:0 0 14px">${d.jobId ? `<a href="?job=${encodeURIComponent(d.jobId)}">← Job ${esc(d.jobId)}</a>` : '<a href="?view=details">← Detail quotes</a>'} ·
       ${d.createdBy === 'Online request' ? 'Requested online' : `Taken in by ${esc(d.createdBy || 'the desk')}`}, ${esc(formatDateTime(d.createdAt))} ·
       <a href="../d/?detail=${encodeURIComponent(d.id)}" target="_blank" rel="noreferrer">Open in the Detail Tracker</a>
       ${d.quoteUrl ? ` · <a href="${esc(d.quoteUrl)}" target="_blank" rel="noreferrer">The customer's quote page</a>` : ''}</p>
@@ -3063,6 +3063,9 @@ function mountDetailForm(box, current, dims) {
         <span>Mechanic and detailer — split<small>Each does their part. The job only shows as finished when both have marked theirs done.</small></span></label>
       <label class="checkline"><input type="radio" name="dsplit" value="detail" ${split === 'detail' ? 'checked' : ''}>
         <span>Detailer only<small>No mechanical work. It stays off the mechanics' list; the detailer marking it done finishes the job.</small></span></label>
+      <label class="checkline" style="margin-top:10px"><input type="checkbox" id="dquote" ${current && current.quoteNo ? 'checked' : ''}>
+        <span>Quote these first<small>The mechanical work is confirmed; the detail is not. John is emailed to price these and send the
+          customer a quote, and only what they accept becomes the detailer's work. If they decline it all, the detail half closes itself.</small></span></label>
       <div id="dpick"></div>
       <label class="fld" for="dnotes">Notes for the detailer</label>
       <textarea class="txt" id="dnotes" rows="2">${esc((current && current.notes) || '')}</textarea>
@@ -3076,7 +3079,8 @@ function mountDetailForm(box, current, dims) {
       const items = picker.items();
       if (!items.length) throw new Error('Tick at least one thing for the detailer, or untick Detail.');
       const d = picker.dims();
-      return { split: chosen ? chosen.value : 'both', items, loa: d.loa, beam: d.beam, notes: box.querySelector('#dnotes').value.trim() };
+      return { split: chosen ? chosen.value : 'both', items, loa: d.loa, beam: d.beam, notes: box.querySelector('#dnotes').value.trim(),
+        quote: box.querySelector('#dquote').checked };
     },
   };
 }
@@ -3092,8 +3096,9 @@ function detailCardHtml(job, work) {
       ${work ? `<div class="filelist">${work.items.map((x) => `<div class="filerow"><span class="grow">${x.done ? '✓ ' : ''}${esc(x.label)}${x.qty > 1 ? ` × ${x.qty}` : ''}
         ${x.quote ? `<span class="pill ${x.quote === 'accepted' ? 'green' : x.quote === 'declined' ? 'grey' : 'gold'}">${esc(x.quote === 'call' ? 'call me' : x.quote)}</span>` : ''}</span>
         <span class="mono">${esc(money(x.price))}</span></div>`).join('')}</div>
-        <p class="hint">${esc(work.statusLabel)}${work.doneBy ? ` — ${esc(work.doneBy)}, ${esc(formatDateTime(work.doneAt))}` : ''} ·
-          <a href="../d/?detail=${encodeURIComponent(work.id)}" target="_blank" rel="noreferrer">Open in the Detail Tracker</a></p>` : ''}`
+        <p class="hint">${esc((DQ_STAGE[work.stage] || [work.statusLabel])[0])}${work.doneBy ? ` — ${esc(work.doneBy)}, ${esc(formatDateTime(work.doneAt))}` : ''} ·
+          <a href="?detail=${encodeURIComponent(work.id)}">${work.quoteNo ? 'Quote, notes &amp; the customer\'s answer' : 'Notes &amp; history'}</a> ·
+          <a href="../d/?detail=${encodeURIComponent(work.id)}" target="_blank" rel="noreferrer">Detail Tracker</a></p>` : ''}`
       : `<p class="hint" style="margin-top:0">Detailing, washes or bottom work on this ticket go to the Detail Tracker,
           for the detailer alone or split with the mechanic.</p>`}
     <div id="detailedit"></div>

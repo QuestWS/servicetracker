@@ -3390,6 +3390,28 @@ const detailErrors = [];
     check('and keeps a note on it', true);
   }
 
+  // Confirmed mechanical work with the detail to be quoted first.
+  {
+    const o = (await post('adminSignIn', '', [PASSWORD])).token;
+    await post('createJob', o, [{ invoiceNumber: '01-6262', customerName: 'Mixed Checkperson', customerPhone: '815-555-0144',
+      customerEmail: 'mixed@example.com', boatInfo: '2018 Tige 22, Length: 22 ft' }]);
+    await admin.goto(`${BASE}/admin/?job=01-6262`, { waitUntil: 'networkidle' });
+    await admin.waitForSelector('#detailopen', { timeout: 30000 });
+    await admin.click('#detailopen');
+    await admin.check('#dquote');
+    await admin.click('#detailcard summary:has-text("Basic wash")');
+    await admin.check('#detailcard .dp-line[data-key=washWax] input[type=checkbox]');
+    await admin.click('#detailsave');
+    await admin.waitForFunction(() => /D-\d{4}/.test(document.getElementById('detailcard').innerText)
+      && /Needs John/i.test(document.getElementById('detailcard').innerText), null, { timeout: 30000 });
+    const asked = (await (await fetch(`${BASE}/dev/mail`)).json()).filter((m) => /quote requested: Mixed Checkperson/.test(m.subject));
+    check('a work order can carry detail to be quoted first: John is emailed to price it, and it gets a D-number',
+      asked.length === 1 && /on work order 01-6262/.test(asked[0].opts.htmlBody));
+    await admin.click('#detailcard a[href^="?detail="]');
+    await admin.waitForFunction(() => /← Job 01-6262/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+    check('and its Detail card opens the quote page, which leads back to the job', true);
+  }
+
   // A split ticket: the writer sends a work order to detail and the mechanic.
   const office = (await post('adminSignIn', '', [PASSWORD])).token;
   await post('createJob', office, [{ invoiceNumber: '01-6161', customerName: 'Split Checkperson', boatInfo: '2018 Tige 22, Length: 22 ft' }]);
