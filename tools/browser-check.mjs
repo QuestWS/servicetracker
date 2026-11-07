@@ -3438,6 +3438,26 @@ const detailErrors = [];
   const fin = await post('finishDetail', detTok, [page.detailWork.id]);
   check('the detailer finishing second finishes the job', /ready to close out/.test(fin.jobNote || '')
     && (await post('getJob', office, ['01-6161'])).job.status === 'work_finished');
+  // Bottom paint is a package on the customer's quote page.
+  {
+    const o = (await post('adminSignIn', '', [PASSWORD])).token;
+    const bp = (await post('createDetail', o, [{ customerName: 'Paint Checkperson', customerEmail: 'paint@example.com',
+      items: [{ key: 'bottomReapply', label: 'Bottom paint re-application (off trailer)' }] }])).detail;
+    const sent = (await post('sendDetailQuote', o, [bp.id, Object.fromEntries(bp.items.map((x) => [x.id, 200])), 'email'])).detail;
+    const paintPage = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();
+    paintPage.on('pageerror', (e) => detailErrors.push('q: ' + e.message));
+    await paintPage.goto(`${BASE}/q/?c=${sent.quoteCode}`, { waitUntil: 'networkidle' });
+    await paintPage.waitForSelector('.offer', { timeout: 20000 });
+    const supplies = paintPage.locator('.offer', { hasText: 'Paint & supplies' });
+    const paint = paintPage.locator('.offer', { hasText: 're-application' });
+    await paint.locator('input[value=accepted]').check();
+    await supplies.locator('input[value=declined]').check({ force: true });
+    check('the customer cannot decline paint & supplies while keeping the bottom paint',
+      !(await supplies.locator('input[value=declined]').isChecked()) && /comes with the bottom paint/.test(await paintPage.textContent('#msg')));
+    await paint.locator('input[value=declined]').check();
+    check('declining the bottom paint declines paint & supplies with it', await supplies.locator('input[value=declined]').isChecked());
+  }
+
   // Scan: the same scanner as the mechanic app; a typed number goes the same way.
   await det.goto(`${BASE}/d/?scan`, { waitUntil: 'networkidle' });
   await det.waitForSelector('.scanner video', { timeout: 20000 });

@@ -40,7 +40,7 @@
 <main class="wrap narrow" id="main"><section class="card" style="margin-top:22px"><p class="lead" style="margin:0">Loading your quote…</p></section></main>
 
 <script type="module">
-import { api } from '../assets/lib/api.js';
+import { api, NoAnswer } from '../assets/lib/api.js';
 import { esc } from '../assets/lib/ui.js';
 
 const main = document.getElementById('main');
@@ -51,6 +51,35 @@ const code = (() => {
   const raw = (new URLSearchParams(location.search).get('c') || location.hash.replace(/^#/, '') || '').trim().toUpperCase();
   return /^[0-9A-HJ-NP-TV-Z]{6,12}$/.test(raw) ? raw : '';
 })();
+/* Bottom paint is a package: paint & supplies cannot be declined while any
+   bottom paint is still on, and declining all the bottom paint declines it
+   too. The backend holds the same rule (paintPackage_); this only says so
+   before the customer presses send. */
+const PAINT = ['bottomPaint', 'bottomReapply', 'sandblast'];
+const SUPPLIES = 'paintSupplies';
+function choiceOf(l) { return PICK[l.id] || l.status; }
+function setChoice(l, v) {
+  PICK[l.id] = v;
+  const box = main.querySelector(`input[data-id="${l.id}"][value="${v}"]`);
+  if (box) box.checked = true;
+}
+function packageRule(changed, value) {
+  const lines = DATA.quote.lines;
+  const paint = lines.filter((l) => PAINT.includes(l.key));
+  const supplies = lines.filter((l) => l.key === SUPPLIES && l.status !== 'accepted');
+  if (!paint.length) return true;
+  if (changed.key === SUPPLIES && value === 'declined' && paint.some((l) => choiceOf(l) !== 'declined')) {
+    document.getElementById('msg').textContent = 'Paint & supplies comes with the bottom paint. Accept it or ask us to call ' +
+      'about it — or decline the bottom paint too, and it goes with it.';
+    return false;
+  }
+  if (PAINT.includes(changed.key) && paint.every((l) => choiceOf(l) === 'declined')) {
+    supplies.forEach((l) => setChoice(l, 'declined'));
+  }
+  document.getElementById('msg').textContent = '';
+  return true;
+}
+
 const WORDS = {
   pending: 'Waiting on your answer',
   call: "You asked us to call — we'll be in touch. You can still answer here.",
@@ -103,7 +132,18 @@ function render(data, msg) {
     <div class="hint" id="msg" role="status" aria-live="polite" style="margin-top:10px;font-size:15px">${esc(msg || '')}</div>
     <p class="hint" style="margin-top:16px">${esc(q.finePrint || '')}</p>
     <p class="hint">Questions? Call us on <a href="${tel(shop.phone)}">${esc(shop.phone)}</a>.</p></section>`;
-  main.querySelectorAll('input[type=radio]').forEach((r) => { r.onchange = () => { PICK[r.dataset.id] = r.value; sync(); }; });
+  main.querySelectorAll('input[type=radio]').forEach((r) => {
+    r.onchange = () => {
+      const line = DATA.quote.lines.find((l) => l.id === r.dataset.id);
+      const was = PICK[r.dataset.id];
+      PICK[r.dataset.id] = r.value;
+      if (line && !packageRule(line, r.value)) {
+        // Put the box back the way it was.
+        if (was) setChoice(line, was); else { delete PICK[r.dataset.id]; r.checked = false; }
+      }
+      sync();
+    };
+  });
   const send = document.getElementById('send');
   if (send) { sync(); send.onclick = submit; }
 }
@@ -120,6 +160,13 @@ async function submit() {
     if (out.notFound) return missing(out.shop);
     render(out, 'Saved — thank you. We have your answers.');
   } catch (e) {
+    // A real answer saying no (bottom paint is a package, say): show it as it is.
+    if (!(e instanceof NoAnswer)) {
+      send.disabled = false;
+      send.textContent = 'Send my answers';
+      document.getElementById('msg').textContent = e.message;
+      return;
+    }
     // The answer may have landed even though the reply did not: look before saying it failed.
     try {
       const now = await api('detailQuote', [code]);

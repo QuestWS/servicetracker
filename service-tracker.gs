@@ -7701,6 +7701,37 @@ const DETAIL_WINTER_WORDS_ = [
 const DETAIL_NEEDS_ = { bottomPaint: ['paintSupplies'], bottomReapply: ['paintSupplies'], sandblast: ['paintSupplies'] };
 const DETAIL_NEEDS_LABELS_ = { paintSupplies: ['Paint & supplies (estimate)', 'Bottom cleaning & painting'] };
 
+/**
+ * Bottom paint is a package (Chris, Nov 2026): "a customer can't approve
+ * painting and decline the paint and supplies — the most they can accept the
+ * bottom paint and ask for a call about paint and supplies, or decline the
+ * whole package. Declining the bottom painting automatically means they're
+ * declining paint and supplies." Run on the lines after any answer, from the
+ * customer or the desk: declines paint & supplies when every bottom paint line
+ * is declined, and refuses a declined paint & supplies while any bottom paint
+ * is still on. Returns { auto: [lines it changed] } or { error }.
+ */
+const DETAIL_PACKAGE_ERROR_ = 'Paint & supplies comes with the bottom paint. Accept it or ask us to call about it \u2014 ' +
+  'or decline the bottom paint too, and it goes with it.';
+function paintPackage_(items, at, by) {
+  const parents = items.filter(function (x) { return DETAIL_NEEDS_[x.key] && !x.winter; });
+  if (!parents.length) return { auto: [] };
+  const kids = items.filter(function (x) {
+    return !x.winter && parents.some(function (p) { return DETAIL_NEEDS_[p.key].indexOf(x.key) !== -1; });
+  });
+  const auto = [];
+  if (parents.every(function (p) { return p.quote === 'declined'; })) {
+    kids.forEach(function (k) {
+      if (k.quote !== 'declined' && !k.done) {
+        k.quote = 'declined'; k.answeredAt = at; k.answeredBy = by; auto.push(k);
+      }
+    });
+    return { auto: auto };
+  }
+  if (kids.some(function (k) { return k.quote === 'declined'; })) return { error: DETAIL_PACKAGE_ERROR_ };
+  return { auto: auto };
+}
+
 function detailKeyForLabel_(label) {
   const words = String(label || '').trim();
   const hit = DETAIL_WINTER_WORDS_.filter(function (w) { return w[0].test(words); })[0];
@@ -8855,7 +8886,7 @@ function detailQuote(code) {
   if (!row || row.status === 'cancelled') return { notFound: true, shop: shop };
   // Named one field at a time. Only lines that were sent to them.
   const lines = detailItems_(row).filter(function (x) { return x.quote; }).map(function (x) {
-    return { id: x.id, label: x.label, qty: x.qty, price: x.price, status: x.quote, done: !!x.done };
+    return { id: x.id, key: x.key, label: x.label, qty: x.qty, price: x.price, status: x.quote, done: !!x.done };
   });
   return {
     quote: {
@@ -8892,6 +8923,10 @@ function answerDetailQuote(code, answers, note) {
       x.answeredBy = 'customer';
       changed.push(x);
     });
+    // Bottom paint is a package: nothing is saved if this answer breaks it.
+    const pkg = paintPackage_(items, at, 'customer');
+    if (pkg.error) throw new Error(pkg.error);
+    pkg.auto.forEach(function (x) { if (changed.indexOf(x) === -1) changed.push(x); });
     const ask = String(note || '').trim().slice(0, 1000);
     if (changed.length) {
       if (ask) changed.forEach(function (x) { if (x.quote === 'call') x.note = ask; });
@@ -8988,6 +9023,9 @@ function decideDetailLines(token, id, itemIds, choice, note) {
       changed.push(x);
     });
     if (!changed.length) return { row: row, changed: [] };
+    const pkg = paintPackage_(items, at, by);
+    if (pkg.error) throw new Error(pkg.error);
+    pkg.auto.forEach(function (x) { if (changed.indexOf(x) === -1) changed.push(x); });
     updateRow_('Details', row._row, { items: JSON.stringify(items), updated_at: at });
     const words = { '': 'not quoted', pending: 'waiting on the customer', call: 'wants John to call', accepted: 'accepted', declined: 'declined' };
     detailEvent_(row.id, choice === 'call' ? 'call' : 'answer', by + ' recorded: ' + row.customer_name + ' ' + words[choice] + ' — ' +

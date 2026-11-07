@@ -831,3 +831,50 @@ describe('bottom paint brings paint & supplies', () => {
     expect(w.items.map((x) => x.key)).toEqual(['washWax']);
   });
 });
+
+describe('bottom paint is a package', () => {
+  function quoted() {
+    const d = backend.fn('createDetail', admin, { customerName: 'Pat', customerEmail: 'p@example.com', items: [
+      { key: 'bottomReapply', label: 'Bottom paint re-application (off trailer)' }, { key: 'washWax', label: 'Wash & wax' }] }).detail;
+    const prices = Object.fromEntries(d.items.map((x) => [x.id, 100]));
+    const q = backend.fn('sendDetailQuote', admin, d.id, prices, 'email').detail;
+    const id = (k) => q.items.find((x) => x.key === k).id;
+    return { q, paint: id('bottomReapply'), supplies: id('paintSupplies'), wash: id('washWax') };
+  }
+
+  it('the customer cannot accept the paint and decline the paint & supplies — and nothing is saved', () => {
+    const { q, paint, supplies } = quoted();
+    expect(() => backend.fn('answerDetailQuote', q.quoteCode, [{ item: paint, choice: 'accepted' }, { item: supplies, choice: 'declined' }], ''))
+      .toThrow(/comes with the bottom paint/);
+    expect(backend.fn('detailQuote', q.quoteCode).quote.lines.map((x) => x.status)).toEqual(['pending', 'pending', 'pending']);
+  });
+
+  it('they can accept the paint and ask for a call about the paint & supplies', () => {
+    const { q, paint, supplies } = quoted();
+    const out = backend.fn('answerDetailQuote', q.quoteCode, [{ item: paint, choice: 'accepted' }, { item: supplies, choice: 'call' }], 'How much paint?');
+    expect(out.saved).toBe(2);
+  });
+
+  it('declining the bottom paint declines the paint & supplies with it, in the same email to John', () => {
+    const { q, paint, supplies, wash } = quoted();
+    backend.fn('answerDetailQuote', q.quoteCode, [{ item: paint, choice: 'declined' }, { item: wash, choice: 'accepted' }], '');
+    const lines = backend.fn('detailQuote', q.quoteCode).quote.lines;
+    expect(lines.find((x) => x.id === supplies).status).toBe('declined');
+    const m = backend.sentMail.find((x) => /Detail quote answered/.test(x.subject));
+    expect(m.opts.htmlBody).toContain('Paint &amp; supplies');
+  });
+
+  it('accepted supplies go too when the paint is declined after', () => {
+    const { q, paint, supplies } = quoted();
+    backend.fn('answerDetailQuote', q.quoteCode, [{ item: supplies, choice: 'accepted' }], '');
+    backend.fn('answerDetailQuote', q.quoteCode, [{ item: paint, choice: 'declined' }], '');
+    expect(backend.fn('detailQuote', q.quoteCode).quote.lines.find((x) => x.id === supplies).status).toBe('declined');
+  });
+
+  it('the same rule holds when the desk records it', () => {
+    const { q, supplies } = quoted();
+    expect(() => backend.fn('decideDetailLines', admin, q.id, [supplies], 'declined', '')).toThrow(/comes with the bottom paint/);
+    backend.fn('decideDetailLines', admin, q.id, 'all', 'declined', '');
+    expect(backend.fn('getDetail', admin, q.id).detail.items.every((x) => x.quote === 'declined')).toBe(true);
+  });
+});
