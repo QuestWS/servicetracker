@@ -37,6 +37,10 @@ function load() {
   admin = backend.fn('adminSignIn', 'pw').token;
 }
 
+const JOHN = 'john@questwatersports.com';
+const SERVICE = 'service@questwatersports.com';
+/** Mail to the customer — not John's or the desk's alerts. */
+const toCustomer = () => backend.sentMail.filter((m) => m.to !== JOHN && m.to !== SERVICE);
 const mech = () => backend.fn('mechanicSignIn', 'Dale', true).token;
 const detailer = () => backend.fn('mechanicSignIn', 'John', true).token;
 
@@ -113,7 +117,7 @@ describe('a detail quote, waiting on the customer', () => {
     expect(d.stage).toBe('waiting');
     expect(text).toContain('/q/?c=' + d.quoteCode);
     expect(text).not.toMatch(/boat/i);
-    expect(backend.sentMail).toHaveLength(0);
+    expect(toCustomer()).toHaveLength(0);
     // A re-quote keeps the link already in their inbox.
     const again = backend.fn('quoteDetail', admin, d.id, [d.items[2].id]).detail;
     expect(again.quoteCode).toBe(d.quoteCode);
@@ -133,15 +137,17 @@ describe('a detail quote, waiting on the customer', () => {
   it('takes Accept / Call me in one request, tells the office once, and wakes the phones', () => {
     backend.fn('pushSubscribe', admin, { endpoint: 'https://fcm.googleapis.com/fcm/send/abc' }, 'counter iPad');
     const { d } = quoted();
+    pushed.length = 0;   // the new request's own push is not what this is about
     const out = backend.fn('answerDetailQuote', d.quoteCode, [
       { item: d.items[0].id, choice: 'accepted' },
       { item: d.items[1].id, choice: 'call' },
     ], 'Does it include the cabin?');
     expect(out.saved).toBe(2);
     expect(out.quote.lines.map((x) => x.status)).toEqual(['accepted', 'call']);
-    const office = backend.sentMail.filter((m) => m.to === 'service@questwatersports.com');
+    const office = backend.sentMail.filter((m) => m.opts.kind === undefined && /answered/.test(m.subject));
     expect(office).toHaveLength(1);
-    expect(office[0].opts.cc).toBe('john@questwatersports.com');
+    expect(office[0].to).toBe(JOHN);
+    expect(office[0].opts.cc).toBe(SERVICE);
     expect(office[0].subject).toMatch(/CALL REQUESTED/);
     expect(office[0].opts.htmlBody).toContain('Does it include the cabin?');
     expect(pushed).toHaveLength(1);
@@ -187,10 +193,10 @@ describe('a detail quote, waiting on the customer', () => {
 
   it('emails the quote only when somebody presses the button, with a link and no answer buttons', () => {
     const { d } = quoted();
-    expect(backend.sentMail).toHaveLength(0);
+    expect(toCustomer()).toHaveLength(0);
     backend.fn('sendDetailQuoteEmail', admin, d.id);
-    expect(backend.sentMail).toHaveLength(1);
-    const m = backend.sentMail[0];
+    expect(toCustomer()).toHaveLength(1);
+    const m = toCustomer()[0];
     expect(m.to).toBe('pat@example.com');
     expect(m.opts.htmlBody).toContain('/q/?c=' + d.quoteCode);
     expect(m.opts.htmlBody).not.toMatch(/choice=|accept\?/i);
@@ -202,8 +208,9 @@ describe('a detail quote, waiting on the customer', () => {
     backend.call('_props = null;');
     const { d } = quoted();
     backend.fn('sendDetailQuoteEmail', admin, d.id);
-    expect(backend.sentMail[0].to).not.toBe('pat@example.com');
-    expect(backend.sentMail[0].subject).toMatch(/TEST/);
+    const quote = backend.sentMail.find((m) => /detailing quote/.test(m.subject));
+    expect(quote.to).not.toBe('pat@example.com');
+    expect(quote.subject).toMatch(/TEST/);
   });
 });
 
@@ -397,5 +404,102 @@ describe('signing in with the Harbor Haul Out staff PIN', () => {
     const { token } = backend.fn('detailSignIn', '4821');
     expect(() => backend.fn('listJobs', token, {})).toThrow(/service writer/);
     expect(() => backend.fn('setJobDetail', token, '01-1', null)).toThrow(/service writer/);
+  });
+});
+
+
+describe('a quote request, start to finish', () => {
+  function request() {
+    return backend.fn('createDetail', admin, {
+      customerName: 'Pat Harbor', customerPhone: '815-555-0142', customerEmail: 'pat@example.com',
+      unit: '2019 Malibu 22', loa: 22, beam: 8.5,
+      items: [{ key: 'washWax', label: 'Wash & wax' }, { key: 'carpet', label: 'Carpet cleaning' }],
+    }).detail;
+  }
+
+  it('emails John that a quote is wanted, with service@ copied, and waits on his prices', () => {
+    const d = request();
+    expect(d.stage).toBe('price');
+    const m = backend.sentMail.find((x) => /quote requested/.test(x.subject));
+    expect(m.to).toBe(JOHN);
+    expect(m.opts.cc).toBe(SERVICE);
+    expect(m.opts.htmlBody).toContain('/d/?detail=' + d.id);
+    expect(m.opts.htmlBody).toContain('Carpet cleaning');
+  });
+
+  it('a request with prices typed at the desk still waits on John to send it', () => {
+    const d = newDetail({ items: [{ key: 'washWax', label: 'Wash & wax', price: 352 }] });
+    expect(d.stage).toBe('price');
+  });
+
+  it('John prices it and sends it in one press; the customer gets it, and nothing went to them before', () => {
+    const d = request();
+    expect(toCustomer()).toHaveLength(0);
+    expect(() => backend.fn('sendDetailQuote', detailer(), d.id, { [d.items[0].id]: 352 }, 'email')).toThrow(/Carpet cleaning/);
+    const out = backend.fn('sendDetailQuote', detailer(), d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 }, 'email');
+    expect(out.emailed).toBe(true);
+    expect(out.detail.stage).toBe('waiting');
+    expect(out.detail.items.map((x) => x.price)).toEqual([352, 150]);
+    expect(toCustomer()).toHaveLength(1);
+    expect(toCustomer()[0].to).toBe('pat@example.com');
+  });
+
+  it('by text, it hands back the words and sends nothing', () => {
+    const d = request();
+    const out = backend.fn('sendDetailQuote', detailer(), d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 }, 'text');
+    expect(out.text).toContain('/q/?c=');
+    expect(out.phone).toBe('815-555-0142');
+    expect(toCustomer()).toHaveLength(0);
+  });
+
+  it('approved, it waits for the work order number; then it is work to do', () => {
+    const d = request();
+    const sent = backend.fn('sendDetailQuote', detailer(), d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 }, 'email').detail;
+    backend.fn('answerDetailQuote', sent.quoteCode, [{ item: d.items[0].id, choice: 'accepted' }, { item: d.items[1].id, choice: 'declined' }], '');
+    expect(backend.fn('getDetail', admin, d.id).detail.stage).toBe('ticket');
+    const after = backend.fn('updateDetail', admin, d.id, { ticketNo: '01-8891' }).detail;
+    expect(after.ticketNo).toBe('01-8891');
+    expect(after.stage).toBe('todo');
+  });
+
+  it('declined in full, it says so rather than waiting for a work order', () => {
+    const d = request();
+    const sent = backend.fn('sendDetailQuote', detailer(), d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 }, 'email').detail;
+    backend.fn('answerDetailQuote', sent.quoteCode, d.items.map((x) => ({ item: x.id, choice: 'declined' })), '');
+    expect(backend.fn('getDetail', admin, d.id).detail.stage).toBe('declined');
+  });
+
+  it('"customer already agreed" skips the quote', () => {
+    const d = request();
+    const out = backend.fn('acceptDetailForCustomer', admin, d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 }).detail;
+    expect(out.items.every((x) => x.quote === 'accepted' && x.answeredBy === 'Office')).toBe(true);
+    expect(out.stage).toBe('ticket');
+    expect(toCustomer()).toHaveLength(0);
+  });
+
+  it('done, the desk is emailed to contact the customer and collect, with the ticket and the approved total', () => {
+    const d = request();
+    backend.fn('acceptDetailForCustomer', admin, d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 });
+    backend.fn('updateDetail', admin, d.id, { ticketNo: '01-8891' });
+    backend.fn('finishDetail', detailer(), d.id);
+    const m = backend.sentMail.find((x) => /Detail done/.test(x.subject));
+    expect(m.to).toBe(SERVICE);
+    expect(m.subject).toMatch(/collect payment/);
+    expect(m.opts.htmlBody).toContain('01-8891');
+    expect(m.opts.htmlBody).toContain('$502.00');
+    expect(m.opts.htmlBody).toContain('815-555-0142');
+  });
+
+  it('a split job still waiting on the mechanic does not tell the desk to collect', () => {
+    backend.fn('createJob', admin, { invoiceNumber: '01-9101', customerName: 'Jane Rivers', boatInfo: 'x' });
+    const { detail } = backend.fn('setJobDetail', admin, '01-9101', { split: 'both', items: [{ key: 'washWax', label: 'Wash & wax', price: 1 }] });
+    backend.fn('finishDetail', detailer(), detail.id);
+    expect(backend.sentMail.some((x) => /Detail done/.test(x.subject))).toBe(false);
+  });
+
+  it('a ticket number that is a job here links to it', () => {
+    backend.fn('createJob', admin, { invoiceNumber: '01-8891', customerName: 'Pat Harbor', boatInfo: 'x' });
+    const d = request();
+    expect(backend.fn('updateDetail', admin, d.id, { ticketNo: '8891' }).detail.ticketJob).toBe('01-8891');
   });
 });

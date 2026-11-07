@@ -517,7 +517,9 @@ const SHEETS = {
   // sanitizeDetailItems_. `quote_code` is the only credential on /q/.
   Details: ['id', 'source', 'job_id', 'winter_qn', 'customer_name', 'customer_phone', 'customer_email',
             'unit', 'loa', 'beam', 'items', 'status', 'assigned_to', 'notes', 'quote_code', 'quote_sent_at',
-            'created_by', 'created_at', 'updated_at', 'started_at', 'done_at', 'done_by', 'archived_at'],
+            'created_by', 'created_at', 'updated_at', 'started_at', 'done_at', 'done_by', 'archived_at',
+            // The BiT work order the writer made once the quote was approved.
+            'ticket_no'],
   // What happened on the board, newest last: what the live feed and a push
   // notification say.
   DetailEvents: ['id', 'detail_id', 'kind', 'text', 'actor', 'created_at'],
@@ -1097,6 +1099,8 @@ function apiFns_(data) {
     setDetailStatus:  function (a) { return setDetailStatus(data.token, a[0], a[1]); },
     setJobDetail:     function (a) { return setJobDetail(data.token, a[0], a[1] || null); },
     quoteDetail:      function (a) { return quoteDetail(data.token, a[0], a[1]); },
+    sendDetailQuote:  function (a) { return sendDetailQuote(data.token, a[0], a[1] || {}, a[2]); },
+    acceptDetailForCustomer: function (a) { return acceptDetailForCustomer(data.token, a[0], a[1] || {}); },
     detailQuoteText:  function (a) { return detailQuoteText(data.token, a[0]); },
     markDetailQuoteSent: function (a) { return markDetailQuoteSent(data.token, a[0], a[1]); },
     sendDetailQuoteEmail: function (a) { return sendDetailQuoteEmail(data.token, a[0]); },
@@ -7677,7 +7681,7 @@ function detailKeyForLabel_(label) {
 function ensureDetailSchema_() {
   const ss = ss_();
   if (ss.getSheetByName('Details') && ss.getSheetByName('DetailEvents') && ss.getSheetByName('PushSubs') &&
-      headerHas_('Jobs', 'detail_done_at')) return;
+      headerHas_('Jobs', 'detail_done_at') && headerHas_('Details', 'ticket_no')) return;
   ensureSheets_(ss);
   _headers = {};
 }
@@ -7778,13 +7782,25 @@ function detailDoable_(x) {
 }
 
 /** Where a detail sits on the board. */
+/*
+ * A quote request (Chris, Nov 7 2026) runs: the desk takes it in → John
+ * prices it and sends it ('price') → the customer answers ('waiting' /
+ * 'call') → the desk writes the BiT work order and puts its number on
+ * ('ticket') → whoever does it marks it done → the desk is emailed to call
+ * the customer and collect. A work order or winter unit skips the first and
+ * the fourth: it already has its ticket, or its invoice is the winter quote.
+ */
 function detailStage_(row, items) {
   if (row.status === 'cancelled') return 'cancelled';
   if (row.status === 'done') return 'done';
   if (row.status === 'in_progress') return 'doing';
   if (items.some(function (x) { return x.quote === 'call'; })) return 'call';
   if (items.some(function (x) { return x.quote === 'pending'; })) return 'waiting';
+  const request = (row.source || 'request') === 'request';
+  if (request && items.every(function (x) { return !x.quote; })) return 'price';
   if (items.some(function (x) { return x.quote === '' && x.price === null; })) return 'price';
+  if (items.length && !items.some(detailDoable_)) return 'declined';
+  if (request && !row.ticket_no) return 'ticket';
   return 'todo';
 }
 
@@ -7812,6 +7828,9 @@ function detailView_(row, job) {
     createdBy: row.created_by || '', createdAt: row.created_at || '', updatedAt: row.updated_at || '',
     startedAt: row.started_at || '', doneAt: row.done_at || '', doneBy: row.done_by || '',
     archivedAt: row.archived_at || '',
+    ticketNo: row.ticket_no || '',
+    // The ticket number, when it is a job in this tracker, opens it.
+    ticketJob: row.ticket_no && !row.job_id && jobByNumber_(row.ticket_no) ? jobByNumber_(row.ticket_no).id : '',
     split: job ? String(job.detail_split || '') : '',
     mechDone: job ? !!job.mech_done_at : false,
     jobStatus: job ? job.status : ''
@@ -7888,6 +7907,7 @@ function cleanDetailFields_(input) {
   if (input.beam !== undefined) out.beam = dim(input.beam);
   if (input.notes !== undefined) out.notes = str(input.notes, 2000);
   if (input.assignedTo !== undefined) out.assigned_to = str(input.assignedTo, 80);
+  if (input.ticketNo !== undefined) out.ticket_no = str(input.ticketNo, 30).toUpperCase();
   return out;
 }
 
@@ -7901,7 +7921,7 @@ function createDetail(token, input) {
   const items = sanitizeDetailItems_(input.items, null);
   if (!items.length) throw new Error('Pick at least one thing to do from the menu.');
   const qn = String(input.winterQn || '').trim().toUpperCase().slice(0, 20);
-  return withLock_(function () {
+  const out = withLock_(function () {
     if (qn) {
       const already = rows_('Details').filter(function (r) {
         return r.winter_qn === qn && r.status !== 'cancelled' && r.status !== 'done' && !r.archived_at;
@@ -7915,11 +7935,63 @@ function createDetail(token, input) {
       created_at: at, updated_at: at
     }, fields);
     appendRow_('Details', row);
-    detailEvent_(row.id, 'created', 'New detail for ' + row.customer_name + ': ' +
+    detailEvent_(row.id, 'created', (qn ? 'Winter unit on the board: ' : 'New quote request for ') + row.customer_name + ': ' +
       items.map(function (x) { return x.label; }).join(', '), whoIs_(who));
     const v = bumpDetailVersion_();
-    return { detail: detailView_(detailRow_(row.id), null), v: v };
+    return { detail: detailView_(detailRow_(row.id), null), v: v, row: detailRow_(row.id) };
   });
+  // Outside the lock: mail and push are trips out. A quote request is John's
+  // to price, so he is told at once (service@ copied, as on all his mail).
+  if (out.row && out.row.source === 'request' && !out.existed) {
+    notifyNewRequest_(out.row);
+    pushNotify_('New quote request', out.row.customer_name + ': ' +
+      detailItems_(out.row).map(function (x) { return x.label; }).join(', '), out.row.id);
+  }
+  delete out.row;
+  return out;
+}
+
+/** The detail's own page in the Detail Tracker. */
+function detailUrl_(id) {
+  return SITE_URL + '/d/?detail=' + encodeURIComponent(id);
+}
+
+function detailContactHtml_(row) {
+  return '<p><b>' + esc_(row.customer_name) + '</b>' + (row.unit ? ' \u00b7 ' + esc_(row.unit) : '') + '<br>' +
+    (row.customer_phone ? esc_(row.customer_phone) : 'no phone') + ' \u00b7 ' +
+    (row.customer_email ? esc_(row.customer_email) : 'no email') +
+    (row.ticket_no ? '<br>Work order ' + esc_(row.ticket_no) : '') + '</p>';
+}
+
+/** John: a new quote to price. To him, service@ copied. Never the customer. */
+function notifyNewRequest_(row) {
+  const items = detailItems_(row);
+  const subject = 'New detail quote requested: ' + row.customer_name;
+  const html = '<div style="' + MAIL_FONT + ';font-size:15px">' + detailContactHtml_(row) +
+    '<p>They are asking for:</p><ul>' + items.map(function (x) {
+      return '<li>' + esc_(x.label) + (x.qty > 1 ? ' \u00d7 ' + x.qty : '') + '</li>'; }).join('') + '</ul>' +
+    (row.loa ? '<p>Length ' + esc_(row.loa) + ' ft' + (row.beam ? ', beam ' + esc_(row.beam) + ' ft' : '') + '</p>' : '') +
+    (row.notes ? '<p>Notes: ' + esc_(row.notes) + '</p>' : '') +
+    '<p><a href="' + esc_(detailUrl_(row.id)) + '">Open it, put your numbers in and send it to the customer</a></p></div>';
+  send_({ to: DETAIL_ALERT_EMAIL, cc: SERVICE_EMAIL, subject: subject, html: html, text: subject + ' \u2014 ' + detailUrl_(row.id),
+          jobId: row.id, kind: 'detail_request' });
+}
+
+/** The desk: the work is done, call the customer and collect. */
+function notifyDetailDone_(row) {
+  const items = detailItems_(row).filter(detailDoable_);
+  const total = items.reduce(function (t, x) { return t + (Number(x.price) || 0); }, 0);
+  const winter = !!row.winter_qn;
+  const subject = 'Detail done \u2014 contact ' + row.customer_name + (winter ? '' : ' and collect payment');
+  const html = '<div style="' + MAIL_FONT + ';font-size:15px">' + detailContactHtml_(row) +
+    '<p>' + esc_(row.done_by || 'The detailer') + ' marked it done.</p><ul>' + items.map(function (x) {
+      return '<li>' + esc_(x.label) + (x.qty > 1 ? ' \u00d7 ' + x.qty : '') + ' \u2014 ' + esc_(x.price === null ? 'no price' : money_(x.price)) + '</li>';
+    }).join('') + '</ul><p><b>Approved total: ' + esc_(money_(total)) + '</b> (before tax)</p>' +
+    '<p>' + (winter ? 'This is on winter quote ' + esc_(row.winter_qn) + ' \u2014 it is billed there.'
+      : row.job_id ? 'Close out job ' + esc_(row.job_id) + ' in the portal as usual.'
+      : 'Contact the customer and collect payment' + (row.ticket_no ? ' on work order ' + esc_(row.ticket_no) : ' \u2014 there is no work order number on it yet') + '.') + '</p>' +
+    '<p><a href="' + esc_(detailUrl_(row.id)) + '">Open it in the Detail Tracker</a></p></div>';
+  send_({ to: SERVICE_EMAIL, subject: subject, html: html, text: subject, jobId: row.job_id || row.id, kind: 'detail_done' });
 }
 
 /** Lines, dimensions, notes, who has it. Ticks and answers ride through on each line. */
@@ -8045,7 +8117,15 @@ function finishDetail(token, id) {
     return { row: detailRow_(id), jobNote: jobNote, v: bumpDetailVersion_() };
   });
   if (out.row.winter_qn) syncDetailToWinter_(out.row);
-  if (out.jobNote && !out.already) pushNotify_('Detail done', out.row.customer_name + ' —' + out.jobNote, out.row.id);
+  // The desk hears when there is a customer to call: a detail of its own, or
+  // a job whose last half this was. Not a split job still waiting on the mechanic.
+  if (!out.already && (!out.row.job_id || /ready to close out/.test(out.jobNote))) {
+    notifyDetailDone_(out.row);
+    pushNotify_('Detail done', out.row.customer_name + ' — ' + (out.row.winter_qn ? 'winter quote ' + out.row.winter_qn
+      : out.row.job_id ? 'job ' + out.row.job_id + ' is ready to close out' : 'contact them and collect payment'), out.row.id);
+  } else if (out.jobNote && !out.already) {
+    pushNotify_('Detail done', out.row.customer_name + ' —' + out.jobNote, out.row.id);
+  }
   return { detail: detailView_(out.row, out.row.job_id ? jobRow_(out.row.job_id) : null),
            jobNote: out.jobNote, v: out.v || detailVersion_() };
 }
@@ -8199,6 +8279,73 @@ function detailQuoteMessage_(row) {
     'decline or ask us to call: ' + detailQuoteUrl_(row.quote_code);
 }
 
+/** John's prices onto the lines: {itemId: price}. A line already answered keeps its figure. */
+function setDetailPrices_(id, prices) {
+  return withLock_(function () {
+    forget_('Details');
+    const row = detailRow_(id);
+    if (!row) throw new Error('No such detail.');
+    const items = detailItems_(row);
+    let dirty = false;
+    Object.keys(prices || {}).forEach(function (itemId) {
+      const x = items.filter(function (i) { return i.id === itemId; })[0];
+      if (!x || x.winter || x.quote === 'accepted' || x.quote === 'declined' || x.done) return;
+      const p = money2orNull_(prices[itemId]);
+      if (p !== x.price) { x.price = p; dirty = true; }
+    });
+    if (dirty) updateRow_('Details', row._row, { items: JSON.stringify(items), updated_at: nowIso_() });
+    return detailRow_(id);
+  });
+}
+
+/**
+ * "Send quote to customer" — John's one button. Saves his prices, puts every
+ * priced line not yet answered in front of the customer, and sends it:
+ * `via` 'email' emails it now; 'text' hands back the wording for him to send
+ * from his phone (and say so with markDetailQuoteSent). Pressing it is the
+ * send, so this is rule 4's own button, not a send riding on something else.
+ */
+function sendDetailQuote(token, id, prices, via) {
+  requireShop_(token);
+  const row = setDetailPrices_(id, prices);
+  const missing = detailItems_(row).filter(function (x) { return !x.quote && !x.done && x.price === null; });
+  if (missing.length) {
+    throw new Error('Put a price on ' + missing.map(function (x) { return '\u201c' + x.label + '\u201d'; }).join(', ') + ' first.');
+  }
+  const quoted = quoteDetail(token, id, []);
+  if (via === 'email') {
+    const sent = sendDetailQuoteEmail(token, id);
+    return { detail: detailView_(detailRow_(id), null), emailed: true, testMode: sent.testMode, v: detailVersion_() };
+  }
+  return { detail: quoted.detail, text: quoted.text, phone: row.customer_phone || '', v: quoted.v };
+}
+
+/**
+ * The customer already said yes — at the counter, on the phone — so there is
+ * no quote to send. Every priced line not yet answered becomes accepted, by
+ * whoever pressed it, and the detail goes on to the work order.
+ */
+function acceptDetailForCustomer(token, id, prices) {
+  const who = requireShop_(token);
+  setDetailPrices_(id, prices);
+  return withLock_(function () {
+    forget_('Details');
+    const row = detailRow_(id);
+    const items = detailItems_(row);
+    const missing = items.filter(function (x) { return !x.quote && !x.done && x.price === null && !x.winter; });
+    if (missing.length) throw new Error('Put a price on every line first, so the work order has the figures.');
+    let n = 0;
+    items.forEach(function (x) {
+      if (x.quote || x.done || x.winter) return;
+      x.quote = 'accepted'; x.answeredAt = nowIso_(); x.answeredBy = whoIs_(who); n += 1;
+    });
+    if (!n) throw new Error('Nothing left to agree to.');
+    updateRow_('Details', row._row, { items: JSON.stringify(items), updated_at: nowIso_() });
+    detailEvent_(row.id, 'answer', whoIs_(who) + ' marked the quote for ' + row.customer_name + ' as already agreed', whoIs_(who));
+    return { detail: detailView_(detailRow_(id), null), v: bumpDetailVersion_() };
+  });
+}
+
 /** The wording and number for a text. Not a send — a person sends it. */
 function detailQuoteText(token, id) {
   requireShop_(token);
@@ -8344,7 +8491,7 @@ function notifyDetailAnswer_(row, changed, ask) {
     (row.customer_phone ? ' · ' + esc_(row.customer_phone) : '') + '</p><ul>' + changed.map(line).join('') + '</ul>' +
     (ask ? '<p>They asked: “' + esc_(ask) + '”</p>' : '') +
     '<p><a href="' + esc_(SITE_URL + '/d/?detail=' + encodeURIComponent(row.id)) + '">Open it in the Detail Tracker</a></p></div>';
-  send_({ to: SERVICE_EMAIL, cc: DETAIL_ALERT_EMAIL, subject: subject, html: html, text: subject,
+  send_({ to: DETAIL_ALERT_EMAIL, cc: SERVICE_EMAIL, subject: subject, html: html, text: subject,
           jobId: row.job_id || row.id, kind: 'detail_answer' });
 }
 

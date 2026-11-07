@@ -91,6 +91,13 @@ rules that bite from anywhere:
   `/q/` answers by POST only; the email and the text are their own buttons,
   same as rule 4. `detailQuote` names its fields one at a time and
   `verify.sh` fails if it mentions notes, names or contact details.
+- **A quote request runs desk → John → customer → desk** (Chris, Nov 7
+  2026). *+ New quote* takes it in with no prices and emails John
+  (`notifyNewRequest_`); John prices it and presses *Send quote to customer*
+  (`sendDetailQuote`, or *Customer already agreed*); the answer emails John;
+  the desk puts the BiT work order number on (`ticket_no`, stage `ticket`);
+  *Mark detail done* emails the desk to contact the customer and collect
+  (`notifyDetailDone_`). **Every email to John copies service@.**
 - **Winter details are priced and answered in the winter system.** Its answers
   arrive by ping (`api:'detailPing'`, same shared key) and hourly catch-up;
   ticks go back as `winterTicks`.

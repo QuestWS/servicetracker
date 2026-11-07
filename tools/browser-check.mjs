@@ -3254,19 +3254,26 @@ const detailErrors = [];
   await det.fill('[data-d=lf]', '23');
   await det.fill('[data-d=bf]', '8');
   await det.fill('[data-d=bi]', '6');
+  check('the desk\'s new quote form asks what they want, not what it costs',
+    !(await det.locator('.dp-line[data-key=washWax] .dp-price').isVisible()));
   await det.click('summary:has-text("Basic wash")');
   await det.check('.dp-line[data-key=washWax] input[type=checkbox]');
-  check('the detail sheet suggests the price off the length (23 ft × $16)',
-    (await det.inputValue('.dp-line[data-key=washWax] .dp-price')) === '368.00');
   await det.click('summary:has-text("A la carte")');
   await det.check('.dp-line[data-key=carpet] input[type=checkbox]');
-  await det.fill('.dp-line[data-key=carpet] .dp-price', '150');
   await det.click('#save');
-  await det.waitForSelector('#quote', { timeout: 20000 });
-  await det.click('#quote');
+  await det.waitForSelector('#priceCard', { timeout: 20000 });
+  const asked = (await (await fetch(`${BASE}/dev/mail`)).json()).filter((m) => /quote requested: Detail Checkperson/.test(m.subject));
+  check('John is emailed that a quote is wanted, with service@ copied',
+    asked.length === 1 && asked[0].to === 'john@questwatersports.com' && asked[0].opts.cc === 'service@questwatersports.com');
+  const washBox = det.locator('[data-price]').first();
+  check('John\'s price box starts at the detail sheet\'s figure (23 ft × $16)', (await washBox.inputValue()) === '368.00');
+  await det.locator('[data-price]').nth(1).fill('150');
+  det.once('dialog', (dialog) => dialog.accept());
+  await det.click('#sendEmail');
   await det.waitForSelector('#sendBox a', { timeout: 20000 });
   const quoteCode = new URL(await det.getAttribute('#sendBox a', 'href')).searchParams.get('c');
-  check('quoting mints the customer\'s link and sends nothing', /^[0-9A-Z]{8}$/.test(quoteCode || ''));
+  const quoteMail = (await (await fetch(`${BASE}/dev/mail`)).json()).filter((m) => /detailing quote/.test(m.subject));
+  check('Send quote to customer emails them their link, in one press', /^[0-9A-Z]{8}$/.test(quoteCode || '') && quoteMail.length === 1);
 
   const cust = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();
   cust.on('pageerror', (e) => detailErrors.push('q: ' + e.message));
@@ -3287,7 +3294,25 @@ const detailErrors = [];
     && /Detail Checkperson/.test(document.getElementById('boardBody').innerText), null, { timeout: 30000 });
   check('the open board puts the call-me at the top without a reload', true);
   const mail = await (await fetch(`${BASE}/dev/mail`)).json();
-  check('the office is emailed once, with the question', mail.filter((m) => /CALL REQUESTED/.test(m.subject) && /Checkperson/.test(m.subject)).length === 1);
+  const answered = mail.filter((m) => /CALL REQUESTED/.test(m.subject) && /Checkperson/.test(m.subject));
+  check('John is emailed the answer once, with the question, service@ copied',
+    answered.length === 1 && answered[0].to === 'john@questwatersports.com' && answered[0].opts.cc === 'service@questwatersports.com');
+  // They ring; John marks the carpet accepted for them. Next: the work order.
+  await det.click('.dcard:has-text("Detail Checkperson")');
+  await det.waitForSelector('[data-dec=accepted]', { timeout: 20000 });
+  await det.click('[data-dec=accepted]');
+  await det.waitForSelector('#saveTicket', { timeout: 20000 });
+  await det.fill('#ticket', '01-5150');
+  await det.click('#saveTicket');
+  await det.waitForFunction(() => /Work order 01-5150/.test(document.body.innerText), null, { timeout: 20000 });
+  check('approved, it takes the work order number', true);
+  det.once('dialog', (dialog) => dialog.accept());
+  await det.click('#finish');
+  await det.waitForFunction(() => /Done/.test(document.body.innerText) && !document.getElementById('finish'), null, { timeout: 20000 });
+  const doneMail = (await (await fetch(`${BASE}/dev/mail`)).json()).filter((m) => /Detail done — contact Detail Checkperson and collect payment/.test(m.subject));
+  check('done, the desk is emailed to contact the customer and collect, with the work order',
+    doneMail.length === 1 && doneMail[0].to === 'service@questwatersports.com' && /01-5150/.test(doneMail[0].opts.htmlBody));
+  await det.click('#back');
 
   // A split ticket: the writer sends a work order to detail and the mechanic.
   const office = (await post('adminSignIn', '', [PASSWORD])).token;

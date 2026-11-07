@@ -76,7 +76,7 @@
 import { api, storedToken, storedWho, storeSession, clearSession, useSessionBucket, tokenExpiry } from '../assets/lib/api.js';
 import { API_URL } from '../assets/lib/config.js';
 import { esc, formatDateTime } from '../assets/lib/ui.js';
-import { DETAIL_FINE_PRINT } from '../assets/lib/detail-menu.js';
+import { DETAIL_FINE_PRINT, suggestPrice } from '../assets/lib/detail-menu.js';
 import { mountPicker, PICKER_CSS } from '../assets/lib/detail-picker.js';
 import { smsDraftUrl, isApple } from '../assets/lib/sms.js';
 
@@ -100,8 +100,9 @@ function toast(msg, ms = 4000) {
 }
 
 const STAGES = [
-  ['call', '📞 Call the customer'], ['waiting', 'Waiting on the customer'], ['price', 'Needs a price'],
-  ['doing', 'In progress'], ['todo', 'To do'], ['done', 'Done'], ['cancelled', 'Cancelled'],
+  ['call', '📞 Call the customer'], ['price', 'Quote requested — needs prices'], ['waiting', 'Waiting on the customer'],
+  ['ticket', 'Approved — write the work order'],
+  ['doing', 'In progress'], ['todo', 'To do'], ['done', 'Done'], ['declined', 'Declined'], ['cancelled', 'Cancelled'],
 ];
 const QUOTE_WORDS = { pending: 'waiting on customer', call: '📞 call me', accepted: 'accepted', declined: 'declined', '': '' };
 const QUOTE_PILL = { pending: 'gold', call: 'red', accepted: 'green', declined: 'grey' };
@@ -119,7 +120,7 @@ function nav() {
   const on = (v) => (state.view === v ? ' on' : '');
   $('nav').innerHTML = who ? `
     <button class="linkbtn${on('board')}" data-go="board">Board</button>
-    <button class="linkbtn${on('new')}" data-go="new">+ New</button>
+    <button class="linkbtn${on('new')}" data-go="new">+ New quote</button>
     <button class="linkbtn${on('winter')}" data-go="winter">Winter</button>
     <button class="linkbtn${on('feed')}" data-go="feed">Live</button>
     <button class="linkbtn${on('me')}" data-go="me">${esc(who.name || 'Office')}</button>` : '';
@@ -172,7 +173,7 @@ function renderSignIn() {
 function sourcePill(d) {
   if (d.source === 'job') return `<span class="pill blue">Work order ${esc(d.jobId)}</span>`;
   if (d.source === 'winter') return `<span class="pill frost">❄ Winter ${esc(d.winterQn)}</span>`;
-  return '<span class="pill grey">Request</span>';
+  return d.ticketNo ? `<span class="pill blue">Work order ${esc(d.ticketNo)}</span>` : '<span class="pill grey">Quote request</span>';
 }
 function splitPill(d) {
   if (d.split === 'both') return `<span class="pill ${d.mechDone ? 'green' : 'gold'}">Split · mechanic ${d.mechDone ? 'done' : 'still working'}</span>`;
@@ -208,7 +209,7 @@ function drawBoard() {
     const these = list.filter((d) => d.stage === stage);
     if (!these.length) return '';
     return `<div class="stage">${esc(title)} <span class="n">${these.length}</span></div>${these.map(cardHtml).join('')}`;
-  }).join('') || '<div class="card"><p class="lead" style="margin:0">Nothing on the board. Take in a request with <b>+ New</b>, or bring a unit over from <b>Winter</b>.</p></div>';
+  }).join('') || '<div class="card"><p class="lead" style="margin:0">Nothing on the board. Take in a quote request with <b>+ New quote</b>, or bring a unit over from <b>Winter</b>.</p></div>';
   $('boardBody').querySelectorAll('a.dcard').forEach((a) => { a.onclick = (ev) => { ev.preventDefault(); go('detail', a.dataset.id); }; });
 }
 
@@ -275,7 +276,16 @@ async function renderDetail(id, quiet) {
       <span class="amt">${money(x.price)}</span>
       ${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${acts}</div>`;
   }).join('');
-  const quotable = !winter && open && d.items.some((x) => !x.done && (x.quote === '' || x.quote === 'pending' || x.quote === 'call'));
+  /* John's prices: every line nobody has answered yet, with the detail
+     sheet's figure filled in when there is no price on it. */
+  const toPrice = winter || !open ? [] : d.items.filter((x) => !x.quote && !x.done);
+  const priceBox = toPrice.map((x) => {
+    const s = suggestPrice(x.key, { loa: d.loa, beam: d.beam, qty: x.qty });
+    const v = x.price != null ? x.price.toFixed(2) : (s.amount != null ? s.amount.toFixed(2) : '');
+    return `<div class="line" style="grid-template-columns:1fr auto"><div><span class="nm">${esc(x.label)}${x.qty > 1 ? ` × ${x.qty}` : ''}</span>
+      <div class="sub">${esc(s.amount != null ? 'Sheet: ' + s.how : s.why || '')}</div></div>
+      <label style="display:flex;align-items:center;gap:4px">$<input class="txt" data-price="${esc(x.id)}" inputmode="decimal" value="${esc(v)}" style="width:110px;padding:9px;font-family:var(--mono)"></label></div>`;
+  }).join('');
   const tel = d.customerPhone ? `<a href="tel:${esc(d.customerPhone.replace(/[^\d+]/g, ''))}">${esc(d.customerPhone)}</a>` : '';
   main.innerHTML = `
     <p><a href="./" id="back">← Board</a></p>
@@ -297,15 +307,27 @@ async function renderDetail(id, quiet) {
         ${open ? '<button class="btn green" id="finish">Mark detail done</button>' : ''}
         ${open && !winter ? '<button class="btn ghost" id="edit">Edit lines</button>' : ''}
       </div></section>
-    ${quotable || d.quoteCode ? `<section class="card"><h2>Quote</h2>
-      ${quotable ? `<p class="hint">Sends the priced lines that are not answered yet for the customer to accept, decline or ask for a call. Nothing goes out until you press Email or Text.</p>
-        <button class="btn gold" id="quote">Quote the priced lines</button>` : ''}
-      ${d.quoteCode ? `<div id="sendBox" style="margin-top:12px">
-        <p class="hint">Their link: <a href="${esc(d.quoteUrl)}" target="_blank">${esc(d.quoteUrl)}</a>${d.quoteSentAt ? ` · last sent ${esc(formatDateTime(d.quoteSentAt))}` : ''}</p>
-        <div class="row"><button class="btn navy" id="email" ${d.customerEmail ? '' : 'disabled'}>Email the quote</button>
-        <button class="btn ghost" id="text" ${d.customerPhone ? '' : 'disabled'}>Write the text</button></div>
-        <div id="textBox"></div></div>` : ''}
+    ${toPrice.length ? `<section class="card" id="priceCard" style="border:2px solid var(--gold)"><h2>Price it and send it</h2>
+      <p class="hint">Put your numbers in. <b>Send quote to customer</b> sends them a link to accept, decline or ask for a call —
+        nothing goes to them before you press it.${d.loa ? '' : ' Add the length with Edit lines to get the sheet\'s figures.'}</p>
+      ${priceBox}
+      <div class="row" style="margin-top:14px">
+        <button class="btn gold" id="sendEmail" ${d.customerEmail ? '' : 'disabled'}>Send quote to customer — email</button>
+        <button class="btn ghost" id="sendText" ${d.customerPhone ? '' : 'disabled'}>Send by text</button>
+        <button class="btn ghost" id="agreed">Customer already agreed</button></div>
+      ${d.customerEmail || d.customerPhone ? '' : '<p class="hint">No email or phone on it — add one with Edit lines.</p>'}
+      <div id="textBox"></div>
       <p class="hint" style="margin-top:10px">${esc(DETAIL_FINE_PRINT)}</p></section>` : ''}
+    ${d.quoteCode ? `<section class="card"><h2>Quote sent</h2><div id="sendBox">
+        <p class="hint">Their link: <a href="${esc(d.quoteUrl)}" target="_blank">${esc(d.quoteUrl)}</a>${d.quoteSentAt ? ` · last sent ${esc(formatDateTime(d.quoteSentAt))}` : ''}</p>
+        ${d.pending || d.calls ? `<div class="row"><button class="btn ghost" id="email" ${d.customerEmail ? '' : 'disabled'}>Email it again</button>
+        <button class="btn ghost" id="text" ${d.customerPhone ? '' : 'disabled'}>Text it again</button></div>` : ''}
+        <div id="textBox2"></div></div></section>` : ''}
+    ${d.source === 'request' && (open || d.ticketNo) ? `<section class="card" ${d.stage === 'ticket' ? 'style="border:2px solid var(--navy)"' : ''}><h2>Work order</h2>
+      <p class="hint">${d.stage === 'ticket' ? 'Approved — write it up in BiT and put the work order number here.' : 'The BiT work order for this detail.'}</p>
+      <div class="row"><input class="txt mono" id="ticket" value="${esc(d.ticketNo)}" placeholder="01-8891" style="max-width:200px">
+        <button class="btn navy" id="saveTicket">Save</button>
+        ${d.ticketJob ? `<a class="btn ghost" href="../admin/?job=${encodeURIComponent(d.ticketJob)}" target="_blank" rel="noreferrer">Open the job</a>` : ''}</div></section>` : ''}
     <section class="card"><h2>History</h2><div class="feed">${out.events.map((e) => `<div>${esc(e.text)}<small>${esc(formatDateTime(e.at))}</small></div>`).join('') || '<p class="hint">Nothing yet.</p>'}</div>
       <div class="row" style="margin-top:10px">
         ${open ? '<button class="btn sm danger" id="cancel">Cancel this detail</button>' : '<button class="btn sm ghost" id="reopen">Re-open</button>'}
@@ -329,7 +351,42 @@ async function renderDetail(id, quiet) {
   if ($('cancel')) $('cancel').onclick = () => { if (confirm('Cancel this detail?')) act('setDetailStatus', [id, 'cancelled'], 'Cancelled.'); };
   if ($('reopen')) $('reopen').onclick = () => act('setDetailStatus', [id, 'requested'], 'Re-opened.');
   if ($('archive')) $('archive').onclick = () => act('setDetailStatus', [id, 'archived'], 'Archived.');
-  if ($('quote')) $('quote').onclick = () => act('quoteDetail', [id, []], 'Quoted — now email or text it.');
+  const prices = () => {
+    const out = {};
+    main.querySelectorAll('[data-price]').forEach((el) => {
+      const v = el.value.replace(/[$,\s]/g, '');
+      out[el.dataset.price] = v === '' ? null : Number(v);
+    });
+    return out;
+  };
+  const textBox = (box, t) => {
+    $(box).innerHTML = `<textarea class="txt" id="sms" style="margin-top:10px">${esc(t.text)}</textarea>
+      <div class="row" style="margin-top:8px"><a class="btn ghost" id="openSms" href="${esc(smsDraftUrl(t.phone, t.text, isApple(navigator)))}">Open as a text</a>
+      <button class="btn ghost" id="copy">Copy</button><button class="btn navy" id="sent">I have sent it</button></div>
+      <p class="hint">Opening the text does not send it — you press send, then tell us here.</p>`;
+    $('sms').oninput = () => { $('openSms').href = smsDraftUrl(t.phone, $('sms').value, isApple(navigator)); };
+    $('copy').onclick = () => { navigator.clipboard && navigator.clipboard.writeText($('sms').value); toast('Copied.'); };
+    $('sent').onclick = () => act('markDetailQuoteSent', [id, 'text'], 'Logged as texted.');
+  };
+  if ($('sendEmail')) $('sendEmail').onclick = async () => {
+    if (!confirm(`Send the quote to ${d.customerEmail}?`)) return;
+    $('sendEmail').disabled = true;
+    const r = await act('sendDetailQuote', [id, prices(), 'email']);
+    if (r) toast(r.testMode ? 'Test mode: held and sent to the shop instead.' : 'Quote sent to the customer.');
+    else $('sendEmail').disabled = false;
+  };
+  if ($('sendText')) $('sendText').onclick = async () => {
+    try {
+      const t = await api('sendDetailQuote', [id, prices(), 'text']);
+      state.v = '';
+      textBox('textBox', t);
+      ['sendEmail', 'sendText', 'agreed'].forEach((k) => { if ($(k)) $(k).disabled = true; });
+    } catch (e) { toast(e.message, 7000); }
+  };
+  if ($('agreed')) $('agreed').onclick = () => {
+    if (confirm('The customer already said yes to these prices — skip sending the quote?')) act('acceptDetailForCustomer', [id, prices()], 'Marked agreed. Next: the work order.');
+  };
+  if ($('saveTicket')) $('saveTicket').onclick = () => act('updateDetail', [id, { ticketNo: $('ticket').value.trim() }], 'Work order saved.');
   if ($('email')) $('email').onclick = async () => {
     if (!confirm(`Email the quote to ${d.customerEmail}?`)) return;
     const r = await act('sendDetailQuoteEmail', [id]);
@@ -338,35 +395,30 @@ async function renderDetail(id, quiet) {
   if ($('text')) $('text').onclick = async () => {
     try {
       const t = await api('detailQuoteText', [id]);
-      $('textBox').innerHTML = `<textarea class="txt" id="sms" style="margin-top:10px">${esc(t.text)}</textarea>
-        <div class="row" style="margin-top:8px"><a class="btn ghost" id="openSms" href="${esc(smsDraftUrl(t.phone, t.text, isApple(navigator)))}">Open as a text</a>
-        <button class="btn ghost" id="copy">Copy</button><button class="btn navy" id="sent">I have sent it</button></div>
-        <p class="hint">Opening the text does not send it — you press send, then tell us here.</p>`;
-      $('sms').oninput = () => { $('openSms').href = smsDraftUrl(t.phone, $('sms').value, isApple(navigator)); };
-      $('copy').onclick = () => { navigator.clipboard && navigator.clipboard.writeText($('sms').value); toast('Copied.'); };
-      $('sent').onclick = () => act('markDetailQuoteSent', [id, 'text'], 'Logged as texted.');
+      textBox('textBox2', t);
     } catch (e) { toast(e.message, 6000); }
   };
 }
 
 /* ------------------------------------------------------- new and edit --- */
 function renderNew() {
-  main.innerHTML = `<section class="card"><h2>New detail request</h2>
+  main.innerHTML = `<section class="card"><h2>New quote request</h2>
+    <p class="hint">Fill in what you can and tick what they are asking for. John is emailed to put his numbers on it and send it to them.</p>
     <label class="fld" for="cn">Customer name</label><input class="txt" id="cn" autocomplete="off">
     <div class="grid2"><div><label class="fld" for="cp">Phone</label><input class="txt" id="cp" inputmode="tel"></div>
     <div><label class="fld" for="ce">Email</label><input class="txt" id="ce" inputmode="email"></div></div>
     <label class="fld" for="cu">Unit (year, make, model)</label><input class="txt" id="cu">
     <div id="picker"></div>
-    <label class="fld" for="cnotes">Notes for the detailer</label><textarea class="txt" id="cnotes"></textarea>
-    <div class="row" style="margin-top:14px"><button class="btn navy big" id="save">Put it on the board</button></div></section>`;
-  const picker = mountPicker($('picker'), {});
+    <label class="fld" for="cnotes">Notes for John</label><textarea class="txt" id="cnotes"></textarea>
+    <div class="row" style="margin-top:14px"><button class="btn navy big" id="save">Request the quote</button></div></section>`;
+  const picker = mountPicker($('picker'), { prices: false });
   $('save').onclick = async () => {
     const dims = picker.dims();
     $('save').disabled = true;
     try {
       const out = await api('createDetail', [{ customerName: $('cn').value, customerPhone: $('cp').value, customerEmail: $('ce').value,
         unit: $('cu').value, loa: dims.loa, beam: dims.beam, notes: $('cnotes').value, items: picker.items() }]);
-      toast('On the board.');
+      toast('Quote requested — John has been emailed.');
       state.v = '';
       go('detail', out.detail.id);
     } catch (e) { toast(e.message, 6000); $('save').disabled = false; }

@@ -38,6 +38,8 @@ export function mountPicker(el, opts = {}) {
   const open = new Set(Object.values(have).map((x) => (DETAIL_MENU.find((m) => m.key === x.key) || {}).group));
   if (!open.size) open.add(DETAIL_GROUPS[0]);
 
+  const priced = opts.prices !== false;
+  el.classList.toggle('dp-noprice', !priced);
   el.innerHTML = `
     <div class="dp-dims">
       <div><label class="fld">Length overall</label>
@@ -47,8 +49,8 @@ export function mountPicker(el, opts = {}) {
         <div class="dp-ftin"><input class="txt" data-d="bf" inputmode="decimal" value="${esc(bf)}" placeholder="ft"><span>ft</span>
         <input class="txt" data-d="bi" inputmode="numeric" value="${esc(bi)}" placeholder="in"><span>in</span></div></div>
     </div>
-    <p class="hint">Length includes platform and pulpit. Over 8&prime;6&Prime; beam takes the wide price. Prices are the
-      detail sheet&rsquo;s starting figures &mdash; change any of them.</p>
+    <p class="hint">Length includes platform and pulpit. ${priced ? `Over 8&prime;6&Prime; beam takes the wide price. Prices are the
+      detail sheet&rsquo;s starting figures &mdash; change any of them.` : 'Leave either blank if you do not know it.'}</p>
     ${fixed.length ? `<div class="dp-fixed">${fixed.map((x) => `<div class="dp-line on fixed"><span class="dp-name">${esc(x.label)}</span>
       <span class="dp-amt">${x.price == null ? 'no price yet' : '$' + Number(x.price).toFixed(2)}</span></div>`).join('')}
       <p class="hint">From the winter quote &mdash; priced and answered there.</p></div>` : ''}
@@ -120,7 +122,7 @@ export function mountPicker(el, opts = {}) {
           id: row.dataset.id || '', key: m.key, group: m.group,
           label: m.key === 'other' && words && words.value.trim() ? words.value.trim() : m.label,
           qty: Number(row.querySelector('.dp-qty').value) || 1,
-          price: p === '' || !isFinite(Number(p)) ? null : Number(p),
+          price: !priced || p === '' || !isFinite(Number(p)) ? null : Number(p),
           how: row.dataset.how || '',
         });
       });
@@ -150,5 +152,6 @@ export const PICKER_CSS = `
 .dp-how,.dp-about{grid-column:1/-1;font-size:12.5px;color:var(--muted)}
 .dp-about{font-style:italic}
 .dp-amt{font-family:var(--mono)}
+.dp-noprice .dp-nums label:last-child,.dp-noprice .dp-how{display:none}
 @media(max-width:420px){.dp-line{grid-template-columns:1fr}.dp-dims{grid-template-columns:1fr}}
 `;
