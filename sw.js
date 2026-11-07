@@ -40,7 +40,7 @@
  * The one exception is a page stuck on slow signal, and it is taken as a
  * whole shell or not at all — see NAV_TIMEOUT_MS below.
  */
-const VERSION = 'quest-shell-v3';
+const VERSION = 'quest-shell-v4';
 
 // Everything the mechanic app needs to paint its first screen without a
 // network. The scanner's ZXing fallback is deliberately absent: it is a third
@@ -55,6 +55,7 @@ const SHELL = [
   'assets/lib/config.js',
   'assets/lib/entry-types.js',
   'assets/lib/outbox.js',
+  'assets/lib/scanner.js',
   'assets/lib/tracking.js',
   'assets/lib/ui.js',
   'manifest.webmanifest',

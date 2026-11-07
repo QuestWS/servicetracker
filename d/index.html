@@ -79,6 +79,8 @@ import { esc, formatDateTime } from '../assets/lib/ui.js';
 import { DETAIL_FINE_PRINT, suggestPrice } from '../assets/lib/detail-menu.js';
 import { mountPicker, PICKER_CSS } from '../assets/lib/detail-picker.js';
 import { smsDraftUrl, isApple } from '../assets/lib/sms.js';
+import { startScanner, scannerHtml } from '../assets/lib/scanner.js';
+import { tokenFromScan, winterQnFromScan } from '../assets/lib/tracking.js';
 
 useSessionBucket('detail');
 
@@ -119,6 +121,7 @@ function nav() {
   const who = storedWho();
   const on = (v) => (state.view === v ? ' on' : '');
   $('nav').innerHTML = who ? `
+    <button class="linkbtn${on('scan')}" data-go="scan">Scan</button>
     <button class="linkbtn${on('board')}" data-go="board">Board</button>
     <button class="linkbtn${on('new')}" data-go="new">+ New quote</button>
     <button class="linkbtn${on('winter')}" data-go="winter">Winter</button>
@@ -128,13 +131,15 @@ function nav() {
 }
 
 function route() {
+  if (state.scanning) { state.scanning(); state.scanning = null; }
   const q = new URLSearchParams(location.search);
   // Twelve hours, like Harbor Haul Out: an expired PIN sign-in goes back to the PIN.
   if (storedToken() && tokenExpiry(storedToken()) && tokenExpiry(storedToken()) < Date.now()) clearSession();
   if (!storedToken()) { state.view = 'signin'; nav(); return renderSignIn(); }
   if (q.has('detail')) { state.view = 'detail'; nav(); return renderDetail(q.get('detail')); }
-  state.view = ['new', 'winter', 'feed', 'me', 'edit'].find((k) => q.has(k)) || 'board';
+  state.view = ['new', 'winter', 'feed', 'me', 'edit', 'scan'].find((k) => q.has(k)) || 'board';
   nav();
+  if (state.view === 'scan') return renderScan();
   if (state.view === 'new') return renderNew();
   if (state.view === 'edit') return renderEdit(q.get('edit'));
   if (state.view === 'winter') return renderWinter();
@@ -252,6 +257,55 @@ function startLive() {
   state.timer = setInterval(() => { if (document.visibilityState === 'visible' && storedToken()) poll(false); }, 20000);
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && storedToken()) poll(false); });
+
+/* --------------------------------------------------------------- scan --- */
+/* The same scanner as the mechanic app (assets/lib/scanner.js): a work
+   order's QR opens its detail, a winter quote's opens that unit (or offers to
+   bring it onto the board). A number can be typed instead: a work order, a
+   winter quote or a D-number. */
+function renderScan(message) {
+  main.innerHTML = `<div class="stack">
+    ${message ? `<div class="card" style="border-left:5px solid var(--gold)">${message}</div>` : ''}
+    ${scannerHtml('Line up the QR code on the work order or winter quote')}
+    <form class="card" id="typed"><label class="fld" for="code">Or type a number</label>
+      <div class="row"><input class="txt mono" id="code" placeholder="01-8891, QW-26-1255 or D-1001" style="flex:1" autocapitalize="characters">
+      <button class="btn navy" type="submit">Open</button></div></form></div>`;
+  $('typed').onsubmit = (ev) => {
+    ev.preventDefault();
+    const v = $('code').value.trim();
+    if (v) lookUp('text', v);
+  };
+  startScanner(main.querySelector('.scanner'), 'qr', (value) => {
+    state.scanning = null;
+    const token = tokenFromScan(value);
+    if (token) return lookUp('job', token);
+    const qn = winterQnFromScan(value);
+    if (qn) return lookUp('winter', qn);
+    renderScan('That code is not a Quest work order or winter quote. Try again, or type the number.');
+  }).then((stop) => { if (state.view === 'scan') state.scanning = stop; else stop(); });
+}
+
+async function lookUp(kind, code) {
+  if (state.scanning) { state.scanning(); state.scanning = null; }
+  main.innerHTML = '<p class="hint">Looking it up…</p>';
+  let out;
+  try { out = await api('detailForCode', [kind, code]); } catch (e) { return renderScan(esc(e.message)); }
+  if (out.detailId) return go('detail', out.detailId);
+  if (out.canPull) {
+    main.innerHTML = `<section class="card"><h2>${esc(out.name || out.winterQn)}</h2>
+      <p class="lead">${esc(out.unit || '')} · winter quote ${esc(out.winterQn)} has detail work that is not on the board yet.</p>
+      <div class="row"><button class="btn navy" id="pull">Bring it onto the board</button>
+      <button class="btn ghost" id="again">Scan another</button></div></section>`;
+    $('again').onclick = () => go('scan');
+    $('pull').onclick = async () => {
+      $('pull').disabled = true;
+      try { const r = await api('pullWinterDetail', [out.winterQn]); state.v = ''; go('detail', r.detail.id); }
+      catch (e) { toast(e.message, 7000); $('pull').disabled = false; }
+    };
+    return;
+  }
+  renderScan(esc(out.message || 'Nothing found for that.'));
+}
 
 /* ------------------------------------------------------------- detail --- */
 async function renderDetail(id, quiet) {

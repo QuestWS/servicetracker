@@ -3434,6 +3434,14 @@ const detailErrors = [];
   const fin = await post('finishDetail', detTok, [page.detailWork.id]);
   check('the detailer finishing second finishes the job', /ready to close out/.test(fin.jobNote || '')
     && (await post('getJob', office, ['01-6161'])).job.status === 'work_finished');
+  // Scan: the same scanner as the mechanic app; a typed number goes the same way.
+  await det.goto(`${BASE}/d/?scan`, { waitUntil: 'networkidle' });
+  await det.waitForSelector('.scanner video', { timeout: 20000 });
+  check('the Detail Tracker has a Scan screen with the camera scanner', true);
+  await det.fill('#code', '6161');
+  await det.click('#typed button');
+  await det.waitForFunction(() => /Split ticket/i.test(document.body.innerText) && /6161/.test(document.body.innerText), null, { timeout: 30000 });
+  check('a work order number opens that job\'s detail', true);
   await ctx.close();
 }
 

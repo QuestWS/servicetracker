@@ -782,3 +782,34 @@ describe('a work order with confirmed mechanical work and detail to quote', () =
     expect(backend.sentMail.some((x) => /quote requested/.test(x.subject))).toBe(false);
   });
 });
+
+describe('scanning in the Detail Tracker', () => {
+  it('a work order\'s QR opens its detail', () => {
+    backend.fn('createJob', admin, { invoiceNumber: '01-9401', customerName: 'Jane', boatInfo: 'x' });
+    const { detail } = backend.fn('setJobDetail', admin, '01-9401', { split: 'both', items: [{ key: 'washWax', label: 'Wash & wax', price: 1 }] });
+    const token = backend.fn('jobRow_', '01-9401').token;
+    expect(backend.fn('detailForCode', detailer(), 'job', token)).toEqual({ detailId: detail.id });
+    // Typed instead, however it is keyed.
+    expect(backend.fn('detailForCode', detailer(), 'text', '9401')).toEqual({ detailId: detail.id });
+  });
+
+  it('a work order with no detail on it says so, and who adds it', () => {
+    backend.fn('createJob', admin, { invoiceNumber: '01-9402', customerName: 'Jane', boatInfo: 'x' });
+    const out = backend.fn('detailForCode', detailer(), 'job', backend.fn('jobRow_', '01-9402').token);
+    expect(out.none).toBe(true);
+    expect(out.message).toMatch(/Send to detail/);
+  });
+
+  it('a winter quote\'s QR opens the unit on the board, or offers to bring it on', () => {
+    expect(backend.fn('detailForCode', detailer(), 'winter', 'QW-26-1255')).toMatchObject({ winterQn: 'QW-26-1255', canPull: true });
+    backend.fn('winterDetails', detailer(), true);
+    const d = backend.fn('pullWinterDetail', detailer(), 'QW-26-1255').detail;
+    expect(backend.fn('detailForCode', detailer(), 'winter', 'QW-26-1255')).toEqual({ detailId: d.id });
+    expect(backend.fn('detailForCode', detailer(), 'winter', 'QW-26-9999').notFound).toBe(true);
+  });
+
+  it('a typed D-number opens its quote', () => {
+    const d = backend.fn('createDetail', admin, { customerName: 'Pat', items: [{ key: 'washWax', label: 'Wash & wax' }] }).detail;
+    expect(backend.fn('detailForCode', detailer(), 'text', 'd1001')).toEqual({ detailId: d.id });
+  });
+});

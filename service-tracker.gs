@@ -1092,6 +1092,7 @@ function apiFns_(data) {
 
     /* the Detail Tracker */
     detailSignIn:     function (a) { return detailSignIn(a[0]); },
+    detailForCode:    function (a) { return detailForCode(data.token, a[0], a[1]); },
     detailBoard:      function (a) { return detailBoard(data.token, a[0], a[1]); },
     getDetail:        function (a) { return getDetail(data.token, a[0]); },
     createDetail:     function (a) { return createDetail(data.token, a[0]); },
@@ -1204,6 +1205,7 @@ const API_GET_FNS_ = {
      winter system's answers onto the board, which is a write. */
   detailBoard: true,
   getDetail: true,
+  detailForCode: true,
   detailQuoteText: true,
   pushInbox: true,
   /* the customer's detail quote page */
@@ -8979,6 +8981,44 @@ function decideDetailLines(token, id, itemIds, choice, note) {
       ({ accepted: 'accepted', declined: 'declined', call: 'please call them' })[choice], out.row.id);
   }
   return { detail: detailView_(out.row, out.row.job_id ? jobRow_(out.row.job_id) : null), v: out.v || detailVersion_() };
+}
+
+/**
+ * What a scan (or a typed number) in the Detail Tracker opens. Chris, Nov
+ * 2026: "I don't see a way to scan a QR code with the detail tracker." The
+ * page reads the code the way the mechanic app does (tracking.js) and asks
+ * here with what it found: `job` (a work order's token), `winter` (a winter
+ * quote number) or `text` (whatever was typed: a D-number, a winter quote
+ * number or a BiT work order number). Answers the detail to open, or what
+ * the code is when there is no detail on it yet. Writes nothing.
+ */
+function detailForCode(token, kind, code) {
+  requireShop_(token);
+  const c = String(code || '').trim();
+  if (!c) throw new Error('Scan a code or type a number.');
+  const has = !!ss_().getSheetByName('Details');
+  const open = function (r) { return r.status !== 'cancelled' && !r.archived_at; };
+  const winterQn = kind === 'winter' ? c.toUpperCase() : (/^QW-\d{2}-\d{3,5}$/i.test(c) ? c.toUpperCase() : '');
+  if (winterQn) {
+    const row = has ? rows_('Details').filter(function (r) { return r.winter_qn === winterQn && open(r); })
+      .sort(function (a, b) { return String(b.created_at).localeCompare(String(a.created_at)); })[0] : null;
+    if (row) return { detailId: row.id };
+    const got = winterKey_() ? winterDetailFeed_(false) : { feed: null };
+    const u = got.feed && got.feed.units.filter(function (x) { return x.qn === winterQn; })[0];
+    if (u) return { winterQn: winterQn, canPull: true, name: u.name, unit: [u.ymm, u.unit].filter(String).join(' \u00b7 ') };
+    return { notFound: true, message: 'Winter quote ' + winterQn + ' has no detailing or washes on it.' };
+  }
+  const dn = kind === 'text' && /^D-?\d{3,6}$/i.test(c) ? 'D-' + c.replace(/\D/g, '') : '';
+  if (dn) {
+    const row = has ? rows_('Details').filter(function (r) { return r.quote_no === dn; })[0] : null;
+    return row ? { detailId: row.id } : { notFound: true, message: 'There is no detail quote ' + dn + '.' };
+  }
+  const job = kind === 'job' ? jobByToken_(c) : jobByNumber_(c);
+  if (!job) return { notFound: true, message: kind === 'job' ? 'That work order is not in the tracker.' : 'No work order ' + c + '.' };
+  const row = has ? detailForJob_(job.id) : null;
+  if (row) return { detailId: row.id };
+  return { none: true, job: { id: job.id, customerName: job.customer_name || '', boatInfo: job.boat_info || '' },
+    message: 'Work order ' + job.id + ' has no detail on it. The office adds it from the job page (Send to detail).' };
 }
 
 /** A note on a quote, from whoever took the call. Goes in its history with their name. */

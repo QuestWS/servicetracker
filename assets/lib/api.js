@@ -294,7 +294,7 @@ const READS = new Set([
   'listJobs', 'getJob', 'jobHistory', 'listParts', 'listArchivedParts', 'listProps', 'listMechanics',
   'listOpenStatements', 'listSentStatements', 'listStatementDrafts', 'config', 'sheetStatus',
   // the Detail Tracker, and the customer's detail quote page
-  'detailBoard', 'getDetail', 'detailQuoteText', 'pushInbox', 'detailQuote',
+  'detailBoard', 'getDetail', 'detailForCode', 'detailQuoteText', 'pushInbox', 'detailQuote',
 ]);
 
 /**
