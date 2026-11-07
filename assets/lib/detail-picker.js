@@ -55,7 +55,7 @@ export function mountPicker(el, opts = {}) {
       <span class="dp-amt">${x.price == null ? 'no price yet' : '$' + Number(x.price).toFixed(2)}</span></div>`).join('')}
       <p class="hint">From the winter quote &mdash; priced and answered there.</p></div>` : ''}
     ${DETAIL_GROUPS.map((g) => `<details class="dp-group" ${open.has(g) ? 'open' : ''}><summary>${esc(g)}</summary>
-      ${DETAIL_MENU.filter((m) => m.group === g).map((m) => {
+      ${DETAIL_MENU.filter((m) => m.group === g && !(opts.exclude || []).includes(m.key)).map((m) => {
         const x = have[m.key];
         return `<div class="dp-line${x ? ' on' : ''}" data-key="${esc(m.key)}" data-id="${esc(x ? x.id : '')}">
           <label class="dp-tick"><input type="checkbox" ${x ? 'checked' : ''}><span class="dp-name">${esc(m.label)}</span></label>

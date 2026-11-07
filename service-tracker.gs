@@ -519,7 +519,10 @@ const SHEETS = {
             'unit', 'loa', 'beam', 'items', 'status', 'assigned_to', 'notes', 'quote_code', 'quote_sent_at',
             'created_by', 'created_at', 'updated_at', 'started_at', 'done_at', 'done_by', 'archived_at',
             // The BiT work order the writer made once the quote was approved.
-            'ticket_no'],
+            'ticket_no',
+            // D-1001, D-1002…: a quote request's own number, for the phone
+            // and the inbox, when it has no work order or winter quote yet.
+            'quote_no'],
   // What happened on the board, newest last: what the live feed and a push
   // notification say.
   DetailEvents: ['id', 'detail_id', 'kind', 'text', 'actor', 'created_at'],
@@ -1115,6 +1118,8 @@ function apiFns_(data) {
     /* the customer's detail quote — the code in the URL is the whole of it */
     detailQuote:      function (a) { return detailQuote(a[0]); },
     answerDetailQuote: function (a) { return answerDetailQuote(a[0], a[1], a[2]); },
+    /* the public Request a detail page — no credential at all; see requestDetailOnline */
+    requestDetailOnline: function (a) { return requestDetailOnline(a[0]); },
     setWinterItem:    function (a) { return setWinterItem(data.token, a[0], a[1], a[2] === true); },
 
     /* customer page — the token in the URL is the only credential */
@@ -7681,7 +7686,7 @@ function detailKeyForLabel_(label) {
 function ensureDetailSchema_() {
   const ss = ss_();
   if (ss.getSheetByName('Details') && ss.getSheetByName('DetailEvents') && ss.getSheetByName('PushSubs') &&
-      headerHas_('Jobs', 'detail_done_at') && headerHas_('Details', 'ticket_no')) return;
+      headerHas_('Jobs', 'detail_done_at') && headerHas_('Details', 'quote_no')) return;
   ensureSheets_(ss);
   _headers = {};
 }
@@ -7829,6 +7834,7 @@ function detailView_(row, job) {
     startedAt: row.started_at || '', doneAt: row.done_at || '', doneBy: row.done_by || '',
     archivedAt: row.archived_at || '',
     ticketNo: row.ticket_no || '',
+    quoteNo: row.quote_no || '',
     // The ticket number, when it is a job in this tracker, opens it.
     ticketJob: row.ticket_no && !row.job_id && jobByNumber_(row.ticket_no) ? jobByNumber_(row.ticket_no).id : '',
     split: job ? String(job.detail_split || '') : '',
@@ -7914,6 +7920,10 @@ function cleanDetailFields_(input) {
 /** A new request, taken in at the counter, on the phone, or off a winter unit. */
 function createDetail(token, input) {
   const who = requireShop_(token);
+  return createDetailAs_(whoIs_(who), input);
+}
+
+function createDetailAs_(by, input) {
   ensureDetailSchema_();
   input = input || {};
   const fields = cleanDetailFields_(input);
@@ -7931,12 +7941,13 @@ function createDetail(token, input) {
     const at = nowIso_();
     const row = Object.assign({
       id: newId_('det'), source: qn ? 'winter' : 'request', job_id: '', winter_qn: qn,
-      items: JSON.stringify(items), status: 'requested', created_by: whoIs_(who),
+      quote_no: qn ? '' : nextDetailQuoteNo_(),
+      items: JSON.stringify(items), status: 'requested', created_by: by,
       created_at: at, updated_at: at
     }, fields);
     appendRow_('Details', row);
-    detailEvent_(row.id, 'created', (qn ? 'Winter unit on the board: ' : 'New quote request for ') + row.customer_name + ': ' +
-      items.map(function (x) { return x.label; }).join(', '), whoIs_(who));
+    detailEvent_(row.id, 'created', (qn ? 'Winter unit on the board: ' : by === DETAIL_ONLINE_BY_ ? 'Online quote request from '
+      : 'New quote request for ') + row.customer_name + ': ' + items.map(function (x) { return x.label; }).join(', '), by);
     const v = bumpDetailVersion_();
     return { detail: detailView_(detailRow_(row.id), null), v: v, row: detailRow_(row.id) };
   });
@@ -7951,13 +7962,142 @@ function createDetail(token, input) {
   return out;
 }
 
+/**
+ * The next D-number. Called inside the lock, so two requests at once cannot
+ * take the same one. A script property rather than a count of rows: a
+ * cancelled or archived request keeps its number and nothing is ever reused.
+ */
+const DETAIL_QUOTE_NO_START_ = 1000;
+function nextDetailQuoteNo_() {
+  const n = Math.max(Number(props_().getProperty('DETAIL_QUOTE_SEQ') || 0), DETAIL_QUOTE_NO_START_) + 1;
+  props_().setProperty('DETAIL_QUOTE_SEQ', String(n));
+  return 'D-' + n;
+}
+
+/* ------------------------------------------------------- online requests --- */
+/*
+ * Chris, Nov 7 2026: "a customer facing request a detail site too that feeds
+ * into this like the winterizing has." /r/ is that page, and this is the one
+ * door it has. It makes exactly what + New quote makes — a quote request on
+ * the board, John emailed with service@ copied — and nothing more.
+ *
+ * It is an unauthenticated write that ends in an email, so:
+ *  - ONE EMAIL TO THE ADDRESS IT WAS GIVEN, about this request and nothing
+ *    else: "Hold tight! We got your detail request" with its D-number and
+ *    what they entered (Chris, Nov 7 2026 — his explicit exception to "a
+ *    person sends every customer email", because the customer pressed the
+ *    button themselves). The ceilings below are what stop the form being a
+ *    way to mail somebody else: three a day per address or phone. Test mode
+ *    holds it like every other customer email. John and service@ are told
+ *    by notifyNewRequest_, whose recipients are constants.
+ *  - NO PRICES COME IN. Every line arrives unpriced; John prices it.
+ *  - A FILLED-IN HIDDEN FIELD is a bot: it is thanked and nothing is saved.
+ *  - A CEILING: DETAIL_ONLINE_PER_HOUR_ requests an hour from everybody, and
+ *    three a day from one phone number or email. Past either it says to call.
+ *  - POST only, like every write: not on API_GET_FNS_.
+ */
+const DETAIL_ONLINE_BY_ = 'Online request';
+const DETAIL_ONLINE_PER_HOUR_ = 20;
+const DETAIL_ONLINE_PER_CONTACT_ = 3;
+
+function requestDetailOnline(input) {
+  input = input || {};
+  if (String(input.website || '').trim()) return { ok: true, ref: '' };   // the bot trap
+  const str = function (v, n) { return String(v === undefined || v === null ? '' : v).trim().slice(0, n); };
+  const name = str(input.name, 120);
+  const phone = str(input.phone, 40);
+  const email = str(input.email, 200);
+  if (!name) throw new Error('Please tell us your name.');
+  if (phone.replace(/\D/g, '').length < 10 && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    throw new Error('Please give us a phone number or an email address so we can send your quote.');
+  }
+  const items = (Array.isArray(input.items) ? input.items : []).slice(0, 30).map(function (x) {
+    return { key: /^[A-Za-z]{2,20}$/.test(String(x && x.key || '')) ? String(x.key) : '', label: str(x && x.label, 120),
+             group: str(x && x.group, 60), qty: x && x.qty, price: null };
+  }).filter(function (x) { return x.label; });
+  if (!items.length) throw new Error('Tick at least one thing you would like done.');
+
+  const cache = scriptCache_();
+  const hourKey = 'DREQ_H_' + Math.floor(Date.now() / 3600000);
+  const contact = 'DREQ_C_' + (phone.replace(/\D/g, '').slice(-10) || email.toLowerCase()).replace(/[^a-z0-9@.]/g, '').slice(0, 80);
+  const count = function (k) { try { return Number(cache && cache.get(k) || 0); } catch (e) { return 0; } };
+  if (count(hourKey) >= DETAIL_ONLINE_PER_HOUR_ || count(contact) >= DETAIL_ONLINE_PER_CONTACT_) {
+    throw new Error('We have had a lot of requests just now. Please call us on ' + SHOP_PHONE + ' and we will take it over the phone.');
+  }
+  try { if (cache) { cache.put(hourKey, String(count(hourKey) + 1), 3700); cache.put(contact, String(count(contact) + 1), 86400); } } catch (e) { /* no cache, no ceiling */ }
+
+  const notes = [
+    str(input.where, 200) ? 'Where it is: ' + str(input.where, 200) : '',
+    str(input.contactBy, 40) ? 'Best way to reach them: ' + str(input.contactBy, 40) : '',
+    str(input.notes, 1500) ? 'They wrote: ' + str(input.notes, 1500) : ''
+  ].filter(String).join('\n');
+  const out = createDetailAs_(DETAIL_ONLINE_BY_, { customerName: name, customerPhone: phone, customerEmail: email,
+    unit: str(input.unit, 200), loa: input.loa, beam: input.beam, notes: notes, items: items });
+  const row = detailRow_(out.detail.id);
+  const emailed = sendDetailReceived_(row, { where: str(input.where, 200), contactBy: str(input.contactBy, 40),
+    notes: str(input.notes, 1500) });
+  return { ok: true, ref: row.quote_no, emailed: emailed, shop: { phone: SHOP_PHONE, email: SERVICE_EMAIL } };
+}
+
+/**
+ * "Hold tight!" — the customer's own copy of what they asked for, with its
+ * D-number. Only ever to the address on this request. Never throws: the
+ * request is saved either way, and the page still thanks them.
+ */
+function sendDetailReceived_(row, extra) {
+  const to = normalizeEmails_(row.customer_email);
+  if (!to) return false;
+  try {
+    const rehearsal = testMode_();
+    const first = String(row.customer_name || '').split(/[ ,]/).filter(String)[0] || '';
+    const kv = function (k, v) {
+      return v ? '<tr><td style="' + MAIL_FONT + ';font-size:14px;color:#5C7185;padding:4px 14px 4px 0;vertical-align:top;white-space:nowrap">' +
+        esc_(k) + '</td><td style="' + MAIL_FONT + ';font-size:15px;color:#1D2B38;padding:4px 0">' + esc_(v) + '</td></tr>' : '';
+    };
+    const ft = function (v) { return v ? fmtFtIn_(Number(v)) : ''; };
+    const items = detailItems_(row);
+    const html = noticeHtml_({
+      banner: rehearsal ? mailBox_('#FFF6E0', '#E2C27A', '<b>Test mode.</b> This would have gone to ' + esc_(to) + '.') : '',
+      greeting: first,
+      intro: '<p style="margin:0 0 12px"><b>Hold tight! We got your detail request.</b> We\u2019ll look it over and send you a ' +
+        'quote to accept or decline. Nothing is booked until you say yes.</p>' +
+        '<p style="margin:0 0 12px">Your quote number is <b style="font-size:17px">' + esc_(row.quote_no) + '</b> \u2014 mention it if you call.</p>' +
+        '<p style="margin:14px 0 4px;font-weight:bold">What you asked for</p><ul style="margin:0 0 12px;padding-left:20px">' +
+        items.map(function (x) { return '<li>' + esc_(x.label) + (x.qty > 1 ? ' \u00d7 ' + x.qty : '') + '</li>'; }).join('') + '</ul>' +
+        '<p style="margin:14px 0 4px;font-weight:bold">What you told us</p>' +
+        '<table role="presentation" border="0" cellpadding="0" cellspacing="0">' +
+          kv('Name', row.customer_name) + kv('Phone', row.customer_phone) + kv('Email', row.customer_email) +
+          kv('Unit', row.unit) + kv('Where it is', extra && extra.where) + kv('Length', ft(row.loa)) + kv('Beam', ft(row.beam)) +
+          kv('Send my quote by', extra && extra.contactBy) + kv('Notes', extra && extra.notes) +
+        '</table>' +
+        '<p style="font-size:13px;color:#5C7185;line-height:19px;margin:16px 0 0">Got something wrong? Just reply to this email or give us a call.</p>'
+    });
+    return send_({
+      to: rehearsal ? testEmail_() : to, subject: (rehearsal ? '[TEST] ' : '') + 'Hold tight! We got your detail request (' + row.quote_no + ')',
+      html: html, text: 'We got your detail request. Your quote number is ' + row.quote_no + '.', jobId: row.id,
+      kind: 'detail_received', suppressed: rehearsal, intendedFor: to
+    });
+  } catch (err) {
+    return false;
+  }
+}
+
+/** Feet and inches, the way a tape reads: 22' 6". */
+function fmtFtIn_(v) {
+  if (!isFinite(v) || v <= 0) return '';
+  let ft = Math.floor(v), inch = Math.round((v - ft) * 12);
+  if (inch === 12) { ft += 1; inch = 0; }
+  return ft + "'" + (inch ? ' ' + inch + '"' : '');
+}
+
 /** The detail's own page in the Detail Tracker. */
 function detailUrl_(id) {
   return SITE_URL + '/d/?detail=' + encodeURIComponent(id);
 }
 
 function detailContactHtml_(row) {
-  return '<p><b>' + esc_(row.customer_name) + '</b>' + (row.unit ? ' \u00b7 ' + esc_(row.unit) : '') + '<br>' +
+  return (row.quote_no ? '<p style="font-size:17px;margin:0 0 6px"><b>' + esc_(row.quote_no) + '</b></p>' : '') +
+    '<p><b>' + esc_(row.customer_name) + '</b>' + (row.unit ? ' \u00b7 ' + esc_(row.unit) : '') + '<br>' +
     (row.customer_phone ? esc_(row.customer_phone) : 'no phone') + ' \u00b7 ' +
     (row.customer_email ? esc_(row.customer_email) : 'no email') +
     (row.ticket_no ? '<br>Work order ' + esc_(row.ticket_no) : '') + '</p>';
@@ -7966,7 +8106,8 @@ function detailContactHtml_(row) {
 /** John: a new quote to price. To him, service@ copied. Never the customer. */
 function notifyNewRequest_(row) {
   const items = detailItems_(row);
-  const subject = 'New detail quote requested: ' + row.customer_name;
+  const subject = (row.created_by === DETAIL_ONLINE_BY_ ? 'New detail quote requested online: ' : 'New detail quote requested: ') +
+    row.customer_name + (row.quote_no ? ' (' + row.quote_no + ')' : '');
   const html = '<div style="' + MAIL_FONT + ';font-size:15px">' + detailContactHtml_(row) +
     '<p>They are asking for:</p><ul>' + items.map(function (x) {
       return '<li>' + esc_(x.label) + (x.qty > 1 ? ' \u00d7 ' + x.qty : '') + '</li>'; }).join('') + '</ul>' +
@@ -7982,7 +8123,8 @@ function notifyDetailDone_(row) {
   const items = detailItems_(row).filter(detailDoable_);
   const total = items.reduce(function (t, x) { return t + (Number(x.price) || 0); }, 0);
   const winter = !!row.winter_qn;
-  const subject = 'Detail done \u2014 contact ' + row.customer_name + (winter ? '' : ' and collect payment');
+  const subject = 'Detail done \u2014 contact ' + row.customer_name + (winter ? '' : ' and collect payment') +
+    (row.quote_no ? ' (' + row.quote_no + ')' : '');
   const html = '<div style="' + MAIL_FONT + ';font-size:15px">' + detailContactHtml_(row) +
     '<p>' + esc_(row.done_by || 'The detailer') + ' marked it done.</p><ul>' + items.map(function (x) {
       return '<li>' + esc_(x.label) + (x.qty > 1 ? ' \u00d7 ' + x.qty : '') + ' \u2014 ' + esc_(x.price === null ? 'no price' : money_(x.price)) + '</li>';
@@ -8395,7 +8537,8 @@ function sendDetailQuoteEmail(token, id) {
     buttons: button_(detailQuoteUrl_(row.quote_code), 'Review my quote')
   });
   const ok = send_({
-    to: rehearsal ? testEmail_() : to, subject: (rehearsal ? '[TEST] ' : '') + 'Your detailing quote from ' + SHOP_NAME,
+    to: rehearsal ? testEmail_() : to, subject: (rehearsal ? '[TEST] ' : '') + 'Your detailing quote from ' + SHOP_NAME +
+      (row.quote_no ? ' (' + row.quote_no + ')' : ''),
     html: html, text: 'Your detailing quote: ' + detailQuoteUrl_(row.quote_code), jobId: row.job_id || row.id,
     kind: 'detail_quote', suppressed: rehearsal, intendedFor: to
   });
@@ -8424,7 +8567,7 @@ function detailQuote(code) {
   return {
     quote: {
       firstName: String(row.customer_name || '').split(/[ ,]/).filter(String)[0] || '',
-      unit: row.unit || '', lines: lines, finePrint: DETAIL_FINE_PRINT_, closed: row.status === 'done'
+      quoteNo: row.quote_no || '', unit: row.unit || '', lines: lines, finePrint: DETAIL_FINE_PRINT_, closed: row.status === 'done'
     },
     shop: shop
   };
@@ -8483,7 +8626,7 @@ function answerDetailQuote(code, answers, note) {
 /** One email to the office per submission, never per line. */
 function notifyDetailAnswer_(row, changed, ask) {
   const call = changed.filter(function (x) { return x.quote === 'call'; });
-  const subject = (call.length ? '📞 CALL REQUESTED — ' : '') + 'Detail quote answered: ' + row.customer_name;
+  const subject = (call.length ? '📞 CALL REQUESTED — ' : '') + 'Detail quote answered: ' + row.customer_name + (row.quote_no ? ' (' + row.quote_no + ')' : '');
   const line = function (x) { return '<li>' + esc_(x.label) + ' — ' + esc_(money_(x.price)) + ' — <b>' +
     esc_({ accepted: 'accepted', declined: 'declined', call: 'call me' }[x.quote]) + '</b></li>'; };
   const html = '<div style="' + MAIL_FONT + ';font-size:15px">' +

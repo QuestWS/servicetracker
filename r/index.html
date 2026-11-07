@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Request a detail — Quest Watersports</title>
+<meta name="description" content="Ask Quest Watersports for a detailing, wash or bottom paint quote.">
+<link rel="icon" type="image/png" href="../assets/quest-mark.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;600&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<link rel="stylesheet" href="../assets/app.css">
+<style>
+.trap{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+.contactby{display:flex;gap:8px;flex-wrap:wrap}
+.contactby label{display:flex;align-items:center;gap:6px;border:1.5px solid var(--line);border-radius:9px;padding:9px 12px;background:#fff;cursor:pointer;font-weight:600}
+.contactby label:has(input:checked){border-color:var(--navy);background:var(--frost-soft)}
+</style>
+</head>
+<body>
+<!--
+  The customer's way in to the Detail Tracker: ask for a detailing quote.
+  It feeds the board exactly as + New quote at the desk does — a quote
+  request John prices and sends. No prices here (John sends them), and the
+  backend sends one "Hold tight!" email to the address typed in, with the
+  request's D-number, and nobody else (see requestDetailOnline).
+  Customer-facing, so it never says "boat" — a trailer or a PWC comes
+  through the same door.
+-->
+<header class="tracker-head"><div class="inner"><img src="../assets/quest-mark.png" alt="">
+  <div><div class="co">Quest Watersports</div><div class="sub">Ottawa, IL</div></div></div></header>
+
+<main class="wrap narrow" id="main">
+  <section class="card" style="margin-top:22px">
+    <h1 class="page-title" style="font-size:30px">Request a detail</h1>
+    <p class="lead">Tell us about your unit and tick what you'd like done — detailing, washes, bottom paint. We'll look it
+      over and send you a quote to accept or decline. Nothing is booked until you say yes.</p>
+
+    <label class="fld" for="nm">Your name</label>
+    <input class="txt" id="nm" autocomplete="name">
+    <div class="grid2">
+      <div><label class="fld" for="ph">Phone</label><input class="txt" id="ph" type="tel" autocomplete="tel" inputmode="tel"></div>
+      <div><label class="fld" for="em">Email</label><input class="txt" id="em" type="email" autocomplete="email" inputmode="email"></div>
+    </div>
+    <label class="fld">Best way to send your quote</label>
+    <div class="contactby">
+      <label><input type="radio" name="cb" value="Email" checked>Email</label>
+      <label><input type="radio" name="cb" value="Text">Text</label>
+      <label><input type="radio" name="cb" value="Call">Call me</label>
+    </div>
+
+    <label class="fld" for="un">Year, make and model</label>
+    <input class="txt" id="un" placeholder="e.g. 2019 Malibu 22 VLX">
+    <label class="fld" for="wh">Where is it?</label>
+    <input class="txt" id="wh" placeholder="e.g. in storage at Quest, slip B-12, I'll bring it in">
+
+    <h2 style="margin:22px 0 4px">What would you like done?</h2>
+    <div id="picker"></div>
+
+    <label class="fld" for="nt">Anything else we should know?</label>
+    <textarea class="txt" id="nt" maxlength="1500" placeholder="Stains, oxidation, a date you need it by…"></textarea>
+    <!-- Left empty by people; filled in by bots. -->
+    <div class="trap" aria-hidden="true"><label for="website">Website</label><input id="website" tabindex="-1" autocomplete="off"></div>
+
+    <button class="btn navy big block" id="send" style="margin-top:16px">Request my quote</button>
+    <div class="hint" id="msg" role="status" aria-live="polite" style="margin-top:10px;font-size:15px"></div>
+    <p class="hint" style="margin-top:14px">All prices are estimates and "starting" prices; your quote will say what
+      applies to your unit. Questions? Call us on <a href="tel:+18154332200">(815) 433-2200</a>.</p>
+  </section>
+</main>
+
+<script type="module">
+import { api } from '../assets/lib/api.js';
+import { esc } from '../assets/lib/ui.js';
+import { mountPicker, PICKER_CSS } from '../assets/lib/detail-picker.js';
+
+const style = document.createElement('style');
+style.textContent = PICKER_CSS;
+document.head.appendChild(style);
+const $ = (id) => document.getElementById(id);
+
+// No prices: John sends them. The shop's own lines (materials, "other") are left off.
+const picker = mountPicker($('picker'), { prices: false, exclude: ['paintSupplies'] });
+
+$('send').onclick = async () => {
+  const items = picker.items();
+  const dims = picker.dims();
+  const msg = $('msg');
+  if (!$('nm').value.trim()) { msg.textContent = 'Please tell us your name.'; return; }
+  if (!$('ph').value.trim() && !$('em').value.trim()) { msg.textContent = 'Please give us a phone number or an email address so we can send your quote.'; return; }
+  if (!items.length) { msg.textContent = 'Tick at least one thing you would like done.'; return; }
+  $('send').disabled = true;
+  $('send').textContent = 'Sending…';
+  msg.textContent = '';
+  try {
+    const out = await api('requestDetailOnline', [{
+      name: $('nm').value, phone: $('ph').value, email: $('em').value,
+      contactBy: (document.querySelector('input[name="cb"]:checked') || {}).value || '',
+      unit: $('un').value, where: $('wh').value, notes: $('nt').value, website: $('website').value,
+      loa: dims.loa, beam: dims.beam, items,
+    }]);
+    $('main').innerHTML = `<section class="card" style="margin-top:22px;text-align:center">
+      <h1 class="page-title" style="font-size:30px">Thank you</h1>
+      ${out.ref ? `<p style="margin:10px 0 0">Your quote number</p><p class="mono" style="font-size:28px;font-weight:600;color:var(--navy);margin:2px 0 8px">${esc(out.ref)}</p>` : ''}
+      <p class="lead" style="margin:12px auto">Hold tight! We'll look it over and send you a quote to accept or decline.
+        ${out.emailed ? 'We have emailed you a copy of your request.' : 'Mention your quote number if you call.'}</p>
+      <p class="hint">Asked for: ${esc(items.map((x) => x.label).join(', '))}</p>
+      <p style="margin-top:18px"><a class="btn ghost" href="tel:+18154332200">Questions? (815) 433-2200</a></p></section>`;
+    window.scrollTo(0, 0);
+  } catch (e) {
+    $('send').disabled = false;
+    $('send').textContent = 'Request my quote';
+    msg.textContent = e.message;
+  }
+};
+</script>
+</body>
+</html>

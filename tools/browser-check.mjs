@@ -3315,6 +3315,28 @@ const detailErrors = [];
     doneMail.length === 1 && doneMail[0].to === 'service@questwatersports.com' && /01-5150/.test(doneMail[0].opts.htmlBody));
   await det.click('#back');
 
+  // The public Request a detail page feeds the same board.
+  const pub = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();
+  pub.on('pageerror', (e) => detailErrors.push('r: ' + e.message));
+  await pub.goto(`${BASE}/r/`, { waitUntil: 'networkidle' });
+  const pubText = await pub.evaluate(() => document.body.innerText);
+  check('the public request page shows no prices and never says boat', !/\$\d/.test(pubText) && !/\bboat\b/i.test(pubText), pubText.slice(0, 300));
+  await pub.fill('#nm', 'Online Checkperson');
+  await pub.fill('#ph', '815-555-0188');
+  await pub.fill('#un', '2020 Sea-Doo GTX');
+  await pub.click('summary:has-text("Basic wash")');
+  await pub.check('.dp-line[data-key=washWax] input[type=checkbox]');
+  await pub.click('#send');
+  await pub.waitForFunction(() => /Thank you/i.test(document.body.innerText), null, { timeout: 20000 });
+  check('a customer can ask for a detail quote, and is given its D-number',
+    /D-\d{4}/.test(await pub.evaluate(() => document.body.innerText)));
+  await det.goto(`${BASE}/d/`, { waitUntil: 'networkidle' });
+  await det.waitForFunction(() => /Online Checkperson/.test(document.getElementById('boardBody').innerText), null, { timeout: 30000 });
+  check('and it lands on the board as an online quote request for John to price',
+    /Online request/i.test(await det.locator('.dcard:has-text("Online Checkperson")').innerText()));
+  const online = (await (await fetch(`${BASE}/dev/mail`)).json()).filter((m) => /requested online: Online Checkperson/.test(m.subject));
+  check('John is emailed about it, service@ copied', online.length === 1 && online[0].to === 'john@questwatersports.com');
+
   // A split ticket: the writer sends a work order to detail and the mechanic.
   const office = (await post('adminSignIn', '', [PASSWORD])).token;
   await post('createJob', office, [{ invoiceNumber: '01-6161', customerName: 'Split Checkperson', boatInfo: '2018 Tige 22, Length: 22 ft' }]);

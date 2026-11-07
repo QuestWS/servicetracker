@@ -30,7 +30,7 @@ done
 # and the page rendered nothing — found three minutes into a browser run
 # rather than in the second this takes.
 echo "== page scripts =="
-for f in index.html admin/index.html m/index.html t/index.html i/index.html d/index.html q/index.html; do
+for f in index.html admin/index.html m/index.html t/index.html i/index.html d/index.html q/index.html r/index.html; do
   [ -f "$f" ] || continue
   python3 - "$f" > /tmp/page.mjs <<'PY'
 import re, sys
@@ -107,6 +107,15 @@ for field in notes assigned_to customer_phone customer_email created_by done_by 
     bad "detailQuote mentions $field — the customer's quote page must never carry it"
   fi
 done
+# The public Request a detail door takes an address from anybody. It sends
+# nothing itself: the customer's one "Hold tight!" goes through
+# sendDetailReceived_ (that request's own address, under the ceilings), and
+# John and service@ through notifyNewRequest_, whose recipients are constants.
+if awk '/^function requestDetailOnline\(/,/^}/' service-tracker.gs | grep -qE "send_\(|GmailApp|MailApp"; then
+  bad "requestDetailOnline sends mail itself — the public form must only ever reach John and service@"
+else
+  note "the public request form sends no mail of its own"
+fi
 awk '/^function detailQuote\(/,/^}/' service-tracker.gs | grep -q "quote: {" \
   && note "detailQuote names the customer's fields one at a time" \
   || bad "detailQuote no longer builds the customer payload field by field"

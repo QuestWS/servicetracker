@@ -98,6 +98,13 @@ rules that bite from anywhere:
   the desk puts the BiT work order number on (`ticket_no`, stage `ticket`);
   *Mark detail done* emails the desk to contact the customer and collect
   (`notifyDetailDone_`). **Every email to John copies service@.**
+  Every quote request gets a **D-number** (D-1001…, `quote_no`, never reused).
+  Customers can ask for one themselves at `/r/` (`requestDetailOnline`):
+  unauthenticated, takes no prices, has a bot trap and an hourly /
+  per-contact ceiling. It sends the customer **one** "Hold tight!" email
+  (`sendDetailReceived_`) — Chris's explicit exception to rule 4's "a person
+  sends it", because the customer pressed the button — to that request's own
+  address only, held by test mode like every customer email.
 - **Winter details are priced and answered in the winter system.** Its answers
   arrive by ping (`api:'detailPing'`, same shared key) and hourly catch-up;
   ticks go back as `winterTicks`.
@@ -114,6 +121,7 @@ t/index.html          customer page (?j=token is the only credential)
 i/index.html          the invoice a customer is texted (?c=code is the only credential)
 d/index.html          the Detail Tracker (staff PIN → token; own manifest + sw.js for push)
 q/index.html          a customer's detail quote: Accept / Decline / Call me (?c=code is the only credential)
+r/index.html          public "Request a detail" form → a quote request on the board (requestDetailOnline)
 assets/lib/           shared browser modules — no framework, plain ESM
 assets/vendor/        pdfjs, pdf-lib, qrcode, zxing, committed on purpose
 service-tracker.gs    the entire backend

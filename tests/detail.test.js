@@ -503,3 +503,78 @@ describe('a quote request, start to finish', () => {
     expect(backend.fn('updateDetail', admin, d.id, { ticketNo: '8891' }).detail.ticketJob).toBe('01-8891');
   });
 });
+
+describe('the public Request a detail page', () => {
+  const ask = (extra = {}) => backend.fn('requestDetailOnline', {
+    name: 'Pat Harbor', phone: '(815) 555-0142', email: 'pat@example.com', unit: '2019 Malibu 22', loa: 22, beam: 8.5,
+    where: 'In slip B-12', contactBy: 'Text', notes: 'Before Memorial Day please',
+    items: [{ key: 'washWax', label: 'Wash & wax', price: 1 }, { key: 'carpet', label: 'Carpet cleaning' }], ...extra,
+  });
+
+  it('lands on the board as a quote request, unpriced, and emails John with service@ copied', () => {
+    const out = ask();
+    expect(out.ok).toBe(true);
+    expect(out.ref).toBe('D-1001');
+    const d = backend.fn('detailBoard', admin, '').details[0];
+    expect(d.stage).toBe('price');
+    expect(d.createdBy).toBe('Online request');
+    expect(d.items.map((x) => x.price)).toEqual([null, null]);
+    expect(d.notes).toMatch(/slip B-12/);
+    const m = backend.sentMail.find((x) => /requested online/.test(x.subject));
+    expect(m.to).toBe(JOHN);
+    expect(m.opts.cc).toBe(SERVICE);
+  });
+
+  it('sends the customer a "Hold tight!" with their D-number, what they entered and what they asked for', () => {
+    ask();
+    const m = backend.sentMail.find((x) => /Hold tight/.test(x.subject));
+    expect(m.to).toBe('pat@example.com');
+    expect(m.subject).toContain('D-1001');
+    for (const bit of ['D-1001', 'Wash &amp; wax', 'Carpet cleaning', '2019 Malibu 22', 'In slip B-12', 'Text', 'Before Memorial Day', '22&#39;', '8&#39; 6&quot;']) {
+      expect(m.opts.htmlBody).toContain(bit);
+    }
+    expect(m.opts.htmlBody).not.toMatch(/\bboat\b/i);
+    // And nobody else: John's goes to John, and there is one of each.
+    expect(backend.sentMail.filter((x) => x.to === 'pat@example.com')).toHaveLength(1);
+  });
+
+  it('holds the Hold tight! in test mode, like every customer email', () => {
+    backend.properties.set('TEST_MODE', 'true');
+    backend.call('_props = null;');
+    ask();
+    expect(backend.sentMail.some((x) => x.to === 'pat@example.com')).toBe(false);
+    expect(backend.sentMail.find((x) => /Hold tight/.test(x.subject)).subject).toMatch(/^\[TEST\]/);
+  });
+
+  it('numbers every quote request, desk or online, and never reuses one', () => {
+    expect(ask().ref).toBe('D-1001');
+    const desk = backend.fn('createDetail', admin, { customerName: 'Sam', items: [{ key: 'washWax', label: 'Wash & wax' }] }).detail;
+    expect(desk.quoteNo).toBe('D-1002');
+    backend.fn('setDetailStatus', admin, desk.id, 'cancelled');
+    expect(ask({ phone: '815-555-0199', email: 'b@example.com' }).ref).toBe('D-1003');
+    const m = backend.sentMail.find((x) => /quote requested/.test(x.subject) && /D-1003/.test(x.subject));
+    expect(m.to).toBe(JOHN);
+  });
+
+  it('wants a way to reach them and something to do', () => {
+    expect(() => ask({ phone: '', email: '' })).toThrow(/phone number or an email/);
+    expect(() => ask({ items: [] })).toThrow(/Tick at least one/);
+    expect(() => ask({ name: '' })).toThrow(/name/);
+  });
+
+  it('thanks a bot and saves nothing', () => {
+    expect(ask({ website: 'http://spam' }).ok).toBe(true);
+    expect(backend.fn('detailBoard', admin, '').details).toHaveLength(0);
+    expect(backend.sentMail).toHaveLength(0);
+  });
+
+  it('stops one phone number after three in a day, so it cannot be used to mail somebody', () => {
+    ask(); ask(); ask();
+    expect(() => ask()).toThrow(/call us/);
+  });
+
+  it('can only be sent, never fetched', () => {
+    const out = backend.get({ fn: 'requestDetailOnline', args: JSON.stringify([{ name: 'x', phone: '8155550142', items: [{ label: 'a' }] }]) });
+    expect(out.error).toMatch(/sent, not fetched/);
+  });
+});

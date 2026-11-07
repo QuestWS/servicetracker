@@ -173,7 +173,8 @@ function renderSignIn() {
 function sourcePill(d) {
   if (d.source === 'job') return `<span class="pill blue">Work order ${esc(d.jobId)}</span>`;
   if (d.source === 'winter') return `<span class="pill frost">❄ Winter ${esc(d.winterQn)}</span>`;
-  return d.ticketNo ? `<span class="pill blue">Work order ${esc(d.ticketNo)}</span>` : '<span class="pill grey">Quote request</span>';
+  if (d.ticketNo) return `<span class="pill blue">Work order ${esc(d.ticketNo)}</span>`;
+  return d.createdBy === 'Online request' ? '<span class="pill gold">Online request</span>' : '<span class="pill grey">Quote request</span>';
 }
 function splitPill(d) {
   if (d.split === 'both') return `<span class="pill ${d.mechDone ? 'green' : 'gold'}">Split · mechanic ${d.mechDone ? 'done' : 'still working'}</span>`;
@@ -184,7 +185,7 @@ function splitPill(d) {
 function cardHtml(d) {
   const lines = d.items.map((x) => x.label).join(', ');
   return `<a class="dcard ${esc(d.stage)}" href="?detail=${encodeURIComponent(d.id)}" data-id="${esc(d.id)}">
-    <div class="who">${esc(d.customerName || 'No name')}</div>
+    <div class="who">${d.quoteNo ? `<span class="mono" style="color:var(--gold)">${esc(d.quoteNo)}</span> · ` : ''}${esc(d.customerName || 'No name')}</div>
     <div class="what">${esc(d.unit || '')}${d.unit ? ' · ' : ''}${esc(lines)}</div>
     <div class="pills">${sourcePill(d)}${splitPill(d)}
       ${d.calls ? `<span class="pill red">📞 ${d.calls} call me</span>` : ''}
@@ -204,7 +205,7 @@ function drawBoard() {
   const b = state.board;
   if (!b) return;
   const search = ($('q') && $('q').value || '').toLowerCase();
-  const list = b.details.filter((d) => !search || JSON.stringify([d.customerName, d.unit, d.jobId, d.winterQn, d.items.map((x) => x.label)]).toLowerCase().includes(search));
+  const list = b.details.filter((d) => !search || JSON.stringify([d.quoteNo, d.ticketNo, d.customerName, d.unit, d.jobId, d.winterQn, d.items.map((x) => x.label)]).toLowerCase().includes(search));
   $('boardBody').innerHTML = STAGES.map(([stage, title]) => {
     const these = list.filter((d) => d.stage === stage);
     if (!these.length) return '';
@@ -214,7 +215,7 @@ function drawBoard() {
 }
 
 async function renderBoard() {
-  main.innerHTML = `${liveBar()}<input class="txt" id="q" placeholder="Search name, unit, job #, quote #" style="margin-bottom:6px"><div id="boardBody"><p class="hint">Loading…</p></div>`;
+  main.innerHTML = `${liveBar()}<input class="txt" id="q" placeholder="Search name, unit, D-number, work order, quote #" style="margin-bottom:6px"><div id="boardBody"><p class="hint">Loading…</p></div>`;
   $('q').oninput = drawBoard;
   $('refresh').onclick = () => poll(true);
   if (state.board) drawBoard();
@@ -290,6 +291,7 @@ async function renderDetail(id, quiet) {
   main.innerHTML = `
     <p><a href="./" id="back">← Board</a></p>
     <section class="card">
+      ${d.quoteNo ? `<div class="mono" style="color:var(--gold);font-weight:600;font-size:17px">${esc(d.quoteNo)}</div>` : ''}
       <div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(d.customerName)}</h2>${sourcePill(d)}</div>
       <p class="lead" style="margin:6px 0">${esc(d.unit)}${d.loa ? ` · ${d.loa} ft` : ''}${d.beam ? ` × ${d.beam} ft beam` : ''}</p>
       <p style="margin:0 0 8px">${tel}${tel && d.customerEmail ? ' · ' : ''}${esc(d.customerEmail)}</p>
