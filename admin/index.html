@@ -564,15 +564,6 @@ function countJobs(all, kind) {
  * as usual (linkDetailJob). Drawn after the list, never holding it up.
  */
 let detailWaiting = [];
-async function loadDetailWaiting() {
-  try {
-    const board = await api('detailBoard', ['']);
-    detailWaiting = (board.details || []).filter((d) => d.stage === 'ticket');
-  } catch {
-    return;   // the jobs list does not depend on it
-  }
-  drawDetailWaiting();
-}
 function drawDetailWaiting() {
   const box = $('detailwait');
   if (!box) return;
@@ -599,6 +590,7 @@ function drawDetailWaiting() {
         const out = await api('linkDetailJob', [id, ticket]);
         detailWaiting = detailWaiting.filter((d) => d.id !== id);
         jobsCache = null;
+        jobsFreshAsked = false;
         toast(out.made ? `Job ${out.job.id} made from ${out.detail.quoteNo || 'the detail quote'}.` : `Linked to job ${out.job.id}.`);
         navigate(`?job=${encodeURIComponent(out.job.id)}`);
       } catch (error) {
@@ -660,7 +652,6 @@ async function renderJobs(kind = 'job') {
   jobsCacheAt = null;
   saveCopy('jobs', answer);
   draw(answer, false);
-  if (!orders) loadDetailWaiting();
 
   function listStrip(tone, text) {
     const old = $('liststrip');
@@ -668,7 +659,9 @@ async function renderJobs(kind = 'job') {
     view.insertAdjacentHTML('afterbegin', `<div class="banner ${tone}" id="liststrip" style="margin-bottom:12px">${esc(text)}</div>`);
   }
 
-  function draw({ jobs: everything, counts: jobCounts, testMode: mode }, stale) {
+  function draw({ jobs: everything, counts: jobCounts, testMode: mode, detailWaiting: waiting }, stale) {
+    // On the same answer as the list (listJobs), so the page is still one call.
+    detailWaiting = waiting || [];
     const counts = orders ? countJobs(everything, 'parts') : jobCounts;
     // Somebody may already be typing a search into the list drawn from the
     // cache; the fresh copy landing must not take the words out from under them.
@@ -2911,7 +2904,7 @@ function detailCardHtml(job, work) {
     both: 'Neither half is marked done yet.' })[s.waitingOn] : (s ? 'Both halves are done.' : '');
   return `<section class="card" id="detailcard">
     <h2>Detail</h2>
-    ${s ? `<p style="margin-top:0"><b>${esc(s.splitLabel)}</b>. ${esc(waiting)}</p>
+    ${s ? `<p style="margin-top:0">${work && work.quoteNo ? `<b class="mono">${esc(work.quoteNo)}</b> · ` : ''}<b>${esc(s.splitLabel)}</b>. ${esc(waiting)}</p>
       ${work ? `<div class="filelist">${work.items.map((x) => `<div class="filerow"><span class="grow">${x.done ? '✓ ' : ''}${esc(x.label)}${x.qty > 1 ? ` × ${x.qty}` : ''}
         ${x.quote ? `<span class="pill ${x.quote === 'accepted' ? 'green' : x.quote === 'declined' ? 'grey' : 'gold'}">${esc(x.quote === 'call' ? 'call me' : x.quote)}</span>` : ''}</span>
         <span class="mono">${esc(money(x.price))}</span></div>`).join('')}</div>

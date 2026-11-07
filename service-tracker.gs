@@ -2232,7 +2232,7 @@ function listJobs(token, filter) {
 }
 
 // Bump whenever a job summary gains a field, for the reason OPEN_JOBS_V_ says.
-const JOBS_LIST_V_ = 6;
+const JOBS_LIST_V_ = 7;
 const JOBS_LIST_KEY_ = 'JOBSLIST_v' + JOBS_LIST_V_ + '_';
 
 /**
@@ -2302,7 +2302,9 @@ function jobsListFromSheet_(filter) {
     byStatus[job.status] = (byStatus[job.status] || 0) + 1;
     if (isOpenJob_(job)) byStatus.open += 1;
   });
-  return { jobs: jobs, counts: byStatus, testMode: testMode_() };
+  // Approved detail quotes waiting on the writer's BiT work order — on the
+  // same answer, so the jobs page stays one call (linkDetailJob makes them jobs).
+  return { jobs: jobs, counts: byStatus, testMode: testMode_(), detailWaiting: detailsAwaitingTicket_() };
 }
 
 /**
@@ -7977,6 +7979,15 @@ function nextDetailQuoteNo_() {
   const n = Math.max(Number(props_().getProperty('DETAIL_QUOTE_SEQ') || 0), DETAIL_QUOTE_NO_START_) + 1;
   props_().setProperty('DETAIL_QUOTE_SEQ', String(n));
   return 'D-' + n;
+}
+
+/** Approved quote requests with no work order yet, for the writer's jobs page. */
+function detailsAwaitingTicket_() {
+  if (!ss_().getSheetByName('Details')) return [];
+  return rows_('Details').filter(function (r) {
+    return !r.archived_at && r.status !== 'cancelled' && (r.source || 'request') === 'request' && !r.job_id &&
+      detailStage_(r, detailItems_(r)) === 'ticket';
+  }).map(function (r) { return detailView_(r, null); });
 }
 
 /* ------------------------------------------------------- online requests --- */

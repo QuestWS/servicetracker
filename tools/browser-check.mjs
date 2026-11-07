@@ -3314,7 +3314,8 @@ const detailErrors = [];
   check('done, the desk is emailed to contact the customer and collect, with the work order',
     doneMail.length === 1 && doneMail[0].to === 'service@questwatersports.com' && /01-5150/.test(doneMail[0].opts.htmlBody));
   await admin.goto(`${BASE}/admin/?job=01-5150`, { waitUntil: 'networkidle' });
-  await admin.waitForFunction(() => /Detail Checkperson/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+  await admin.waitForFunction(() => document.getElementById('detailcard')
+    && /01-5150/.test(document.querySelector('.page-title')?.textContent || ''), null, { timeout: 30000 });
   const madeJob = await admin.evaluate(() => document.getElementById('view').innerText);
   check('and in the writer\'s portal it is Work finished, with the detail on it, ready to close out like any job',
     /Work finished/i.test(madeJob) && /Detailer only/i.test(madeJob) && /D-\d{4}/.test(madeJob) && /Wash & wax/.test(madeJob), madeJob.slice(0, 400));
@@ -3332,8 +3333,8 @@ const detailErrors = [];
     check('the writer\'s jobs page lists approved detail quotes that need a work order', true);
     await admin.fill(`[data-dticket="${req.id}"]`, '01-5151');
     await admin.click(`[data-dmake="${req.id}"]`);
-    await admin.waitForFunction(() => /Portal Checkperson/.test(document.getElementById('view').innerText)
-      && /01-5151/.test(document.getElementById('view').innerText) && /Detail/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+    await admin.waitForFunction(() => /01-5151/.test(document.querySelector('.page-title')?.textContent || '')
+      && document.getElementById('detailcard'), null, { timeout: 30000 });
     check('and typing the BiT number there makes the job and opens it', true);
   }
 
