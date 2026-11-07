@@ -3301,7 +3301,8 @@ const detailErrors = [];
   await det.click('.dcard:has-text("Detail Checkperson")');
   await det.waitForSelector('[data-dec=accepted]', { timeout: 20000 });
   await det.click('[data-dec=accepted]');
-  await det.waitForSelector('#saveTicket', { timeout: 20000 });
+  // Wait for the redraw that follows the answer, not the box already there.
+  await det.waitForFunction(() => /write it up in BiT/.test(document.body.innerText), null, { timeout: 20000 });
   await det.fill('#ticket', '01-5150');
   await det.click('#saveTicket');
   await det.waitForFunction(() => /Work order 01-5150/.test(document.body.innerText), null, { timeout: 20000 });
