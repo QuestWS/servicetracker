@@ -1334,8 +1334,8 @@ console.log('\n== a walk-in winterize ==');
   await admin.check('#winterjob');
   await admin.waitForSelector('.winterform', { timeout: 20000 });
   check('ticking Winterize job brings up the winter services menu',
-    await admin.locator('input[name="wf-level"]').count() === 2 && await admin.locator('[data-wf]').count() >= 12);
-  // (12, not 15: the washes and the jetski detail are the Detail Tracker's now.)
+    await admin.locator('input[name="wf-level"]').count() === 2 && await admin.locator('[data-wf]').count() >= 10);
+  // (10, not 15: the washes, the jetski detail and bottom paint are the Detail Tracker's now.)
   check('engine type can be left for the mechanic',
     /mechanic will check/.test(await admin.textContent('#wf-engine option[value=""]')));
   await admin.click('#create');

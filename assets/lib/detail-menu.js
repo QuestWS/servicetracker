@@ -162,6 +162,9 @@ const WINTER_WORDS = [
   [/^power\s*wash/i, 'powerwash'],
   [/^acid wash/i, 'acidWash'],
   [/^jetski detail/i, 'skiDetail'],
+  // Chris, Nov 7 2026: "Bottom paint is detailing."
+  [/^bottom paint touch-?\s*up/i, 'bottomReapply'],
+  [/^strip bottom paint/i, 'bottomPaint'],
 ];
 
 export function keyForWinterLabel(label) {

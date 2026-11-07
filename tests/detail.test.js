@@ -19,6 +19,7 @@ function load() {
       { l: 'Wash & wax', s: 'awaiting', a: 336 },
       { l: "Powerwash hull (21')", s: 'quoted', a: 118.86 },
       { l: 'Shrinkwrap', s: 'quoted', a: 400 },
+      { l: 'Bottom paint touch-up', s: 'open', a: null },
     ],
   }];
   backend = loadBackend({
@@ -285,8 +286,9 @@ describe('winter units with detailing', () => {
   it('lists the winter quotes with detail work, leaving the rest of the quote behind', () => {
     const out = backend.fn('winterDetails', detailer(), true);
     expect(out.units).toHaveLength(1);
-    expect(out.units[0].items.map((x) => x.label)).toEqual(['Wash & wax', "Powerwash hull (21')"]);
-    expect(out.units[0].items.map((x) => x.quote)).toEqual(['pending', 'accepted']);
+    expect(out.units[0].items.map((x) => x.label)).toEqual(['Wash & wax', "Powerwash hull (21')", 'Bottom paint touch-up']);
+    expect(out.units[0].items.map((x) => x.quote)).toEqual(['pending', 'accepted', '']);
+    expect(out.units[0].items[2].key).toBe('bottomReapply');
   });
 
   it('pulls a unit onto the board once, and refuses a quote from here', () => {

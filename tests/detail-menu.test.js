@@ -68,6 +68,8 @@ describe('the detail menu', () => {
     expect(keyForWinterLabel("Powerwash hull (22')")).toBe('powerwash');
     expect(keyForWinterLabel('Acid wash hull')).toBe('acidWash');
     expect(keyForWinterLabel('Jetski detail × 2')).toBe('skiDetail');
+    expect(keyForWinterLabel('Bottom paint touch-up')).toBe('bottomReapply');
+    expect(keyForWinterLabel('Strip bottom paint & reapply')).toBe('bottomPaint');
     expect(keyForWinterLabel('Shrinkwrap')).toBe('');
     expect(menuItem('nope')).toBeNull();
   });

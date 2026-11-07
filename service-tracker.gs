@@ -3692,9 +3692,10 @@ const WINTER_ITEM_MAX_ = 200;
  * was still to do is exactly the mix-up it was built to end.
  */
 const HARBOR_ONLY_KEYS_ = { extDetail: true, washWax: true, intDetail: true, intWipe: true,
-  powerwash: true, acidWash: true, skiDetail: true };
+  powerwash: true, acidWash: true, skiDetail: true, bottomTouch: true, bottomStrip: true };
+// Bottom paint too — Chris, Nov 7 2026: "Bottom paint is detailing."
 const HARBOR_ONLY_LABELS_ = ['exterior detail', 'wash & wax', 'interior detail', 'interior wipe-down',
-  'powerwash hull', 'acid wash hull', 'jetski detail'];
+  'powerwash hull', 'acid wash hull', 'jetski detail', 'bottom paint touch-up', 'strip bottom paint & reapply'];
 
 function harborOnly_(key, label) {
   if (HARBOR_ONLY_KEYS_[String(key || '')]) return true;
@@ -7652,7 +7653,10 @@ const DETAIL_WINTER_WORDS_ = [
   [/^interior wipe-?\s*down/i, 'intWipe'],
   [/^power\s*wash/i, 'powerwash'],
   [/^acid wash/i, 'acidWash'],
-  [/^jetski detail/i, 'skiDetail']
+  [/^jetski detail/i, 'skiDetail'],
+  // Chris, Nov 7 2026: "Bottom paint is detailing."
+  [/^bottom paint touch-?\s*up/i, 'bottomReapply'],
+  [/^strip bottom paint/i, 'bottomPaint']
 ];
 
 function detailKeyForLabel_(label) {

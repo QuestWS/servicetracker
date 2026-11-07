@@ -5124,8 +5124,8 @@ describe('a walk-in winterize, on an ordinary work order', () => {
     const { menu } = backend.fn('winterMenu', adminToken);
     expect(menu.levels.map((l) => l.id)).toEqual(['basic', 'full']);
     expect(menu.engines.map((e) => e.id)).toContain('pwc');
-    // All but the detailing and the washes, which are the Detail Tracker's.
-    expect(menu.services.length).toBe(MENU.services.length - 7);
+    // All but the detailing, the washes and bottom paint, which are the Detail Tracker's.
+    expect(menu.services.length).toBe(MENU.services.length - 9);
     expect(calls[0]).toMatchObject({ api: 'tracker', fn: 'menu', key: KEY });
     // Six hours of cache: a second intake does not ask again.
     backend.call('forget_(); _props = null;');
@@ -5149,7 +5149,7 @@ describe('a walk-in winterize, on an ordinary work order', () => {
     shop();
     const { menu } = backend.fn('winterMenu', adminToken);
     const keys = menu.services.map((x) => x.key);
-    for (const k of ['extDetail', 'washWax', 'intDetail', 'intWipe', 'powerwash', 'acidWash', 'skiDetail']) expect(keys).not.toContain(k);
+    for (const k of ['extDetail', 'washWax', 'intDetail', 'intWipe', 'powerwash', 'acidWash', 'skiDetail', 'bottomTouch', 'bottomStrip']) expect(keys).not.toContain(k);
     expect(keys).toContain('impeller');
     expect(keys).toContain('wrap');
     walkIn('01-7009', chosen({ items: [
