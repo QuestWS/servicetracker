@@ -8798,7 +8798,7 @@ function answerDetailQuote(code, answers, note) {
   });
   if (out.changed.length) {
     const call = out.changed.some(function (x) { return x.quote === 'call'; });
-    pushNotify_(call ? '📞 Call requested' : 'Detail quote answered', out.text, out.row.id);
+    pushNotify_(call ? 'Call requested' : 'Detail quote answered', out.text, out.row.id);
     notifyDetailAnswer_(out.row, out.changed, out.ask);
   }
   const page = detailQuote(c);
@@ -8970,7 +8970,7 @@ function applyWinterStates_(units, notify) {
   });
   if (notify) {
     moved.forEach(function (m) {
-      pushNotify_(m.call ? '📞 Call requested' : 'Winter detail quote', m.text, m.row.id);
+      pushNotify_(m.call ? 'Call requested' : 'Winter detail quote', m.text, m.row.id);
     });
   }
   return moved;
@@ -9028,7 +9028,7 @@ function detailPing_(body) {
     // A unit not on the board yet: still worth a buzz when a customer answered.
     const text = String(body.event).slice(0, 300);
     withLock_(function () { detailEvent_('', 'answer', text, 'Winter'); bumpDetailVersion_(); });
-    pushNotify_(/call/i.test(text) ? '📞 Call requested' : 'Winter detail quote', text, '');
+    pushNotify_(/call/i.test(text) ? 'Call requested' : 'Winter detail quote', text, '');
   }
   return { ok: 1, moved: moved.length };
 }
