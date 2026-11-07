@@ -38,6 +38,7 @@
     <a class="linkbtn" href="?view=statements" data-nav="statements">Statements</a>
     <a class="linkbtn" href="?view=parts" data-nav="parts">Parts</a>
     <a class="linkbtn" href="?view=props" data-nav="props">Props</a>
+    <a class="linkbtn" href="../d/" target="_blank" rel="noreferrer">Detail Tracker</a>
     <a class="linkbtn" href="?view=mechanics" data-nav="mechanics">Mechanics</a>
     <a class="linkbtn" href="?view=setup" data-nav="setup">App setup</a>
     <button class="linkbtn" type="button" id="signout">Sign out</button>
@@ -556,6 +557,58 @@ function countJobs(all, kind) {
   return counts;
 }
 
+/*
+ * Detail quotes the customer approved, waiting on the writer to write the BiT
+ * work order. Typing its number here makes it a job like any other — a
+ * detailer-only job the detailer marks done, which the writer then closes out
+ * as usual (linkDetailJob). Drawn after the list, never holding it up.
+ */
+let detailWaiting = [];
+async function loadDetailWaiting() {
+  try {
+    const board = await api('detailBoard', ['']);
+    detailWaiting = (board.details || []).filter((d) => d.stage === 'ticket');
+  } catch {
+    return;   // the jobs list does not depend on it
+  }
+  drawDetailWaiting();
+}
+function drawDetailWaiting() {
+  const box = $('detailwait');
+  if (!box) return;
+  if (!detailWaiting.length) { box.innerHTML = ''; return; }
+  const money = (n) => formatMoney(n || 0);
+  box.innerHTML = `<section class="card gold" style="margin-bottom:16px">
+    <h2>Approved detail quotes — need a work order</h2>
+    <p class="hint" style="margin-top:0">Write each one up in BiT and type its number here. It becomes a detailer-only job:
+      the detailer marks it done, and you close it out like any other.</p>
+    ${detailWaiting.map((d) => `<div class="row" style="padding:8px 0;border-top:1px solid var(--line);align-items:center">
+      <div style="flex:1 1 260px"><b>${esc(d.quoteNo || '')}</b> ${esc(d.customerName)}${d.unit ? ` · ${esc(d.unit)}` : ''}
+        <div class="hint">${esc(d.items.filter((x) => x.quote === '' || x.quote === 'accepted').map((x) => x.label).join(', '))} · ${money(d.total)}
+          · ${esc([d.customerPhone, d.customerEmail].filter(Boolean).join(' · '))}</div></div>
+      <input class="txt mono" data-dticket="${esc(d.id)}" placeholder="BiT work order #" style="max-width:170px">
+      <button class="btn navy sm" type="button" data-dmake="${esc(d.id)}">Make the job</button></div>`).join('')}
+  </section>`;
+  box.querySelectorAll('[data-dmake]').forEach((button) => {
+    button.onclick = async () => {
+      const id = button.dataset.dmake;
+      const ticket = box.querySelector(`[data-dticket="${id}"]`).value.trim();
+      if (!ticket) return toast('Type the BiT work order number first.');
+      button.disabled = true;
+      try {
+        const out = await api('linkDetailJob', [id, ticket]);
+        detailWaiting = detailWaiting.filter((d) => d.id !== id);
+        jobsCache = null;
+        toast(out.made ? `Job ${out.job.id} made from ${out.detail.quoteNo || 'the detail quote'}.` : `Linked to job ${out.job.id}.`);
+        navigate(`?job=${encodeURIComponent(out.job.id)}`);
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message);
+      }
+    };
+  });
+}
+
 async function renderJobs(kind = 'job') {
   // Customer parts orders are drawn by this same page off the same fetch:
   // only the words, the chips and the address differ.
@@ -607,6 +660,7 @@ async function renderJobs(kind = 'job') {
   jobsCacheAt = null;
   saveCopy('jobs', answer);
   draw(answer, false);
+  if (!orders) loadDetailWaiting();
 
   function listStrip(tone, text) {
     const old = $('liststrip');
@@ -650,6 +704,8 @@ async function renderJobs(kind = 'job') {
         ${stages.map((value) => `<a class="stat" href="${href(value)}">
           <div class="v">${counts[value] || 0}</div><div class="k">${stageLabel[value]}</div></a>`).join('')}
       </div>
+
+      ${orders ? '' : '<div id="detailwait"></div>'}
 
       <form class="row" id="searchform" style="margin-bottom:14px">
         <input class="txt" id="q" placeholder="${orders ? 'Invoice #, customer or part' : 'Invoice #, customer or boat'}" value="${esc(search)}" style="flex:1 1 240px">
@@ -720,6 +776,8 @@ async function renderJobs(kind = 'job') {
           : status !== 'all' ? 'No jobs at that stage.'
           : 'No jobs yet. Upload a BiT work order to create the first one.'}</div>`}`;
 
+    // A redraw of the list keeps the approved-detail box it already had.
+    drawDetailWaiting();
     $('searchform').onsubmit = (event) => {
       event.preventDefault();
       const next = startQuery();

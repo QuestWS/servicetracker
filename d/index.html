@@ -325,11 +325,13 @@ async function renderDetail(id, quiet) {
         ${d.pending || d.calls ? `<div class="row"><button class="btn ghost" id="email" ${d.customerEmail ? '' : 'disabled'}>Email it again</button>
         <button class="btn ghost" id="text" ${d.customerPhone ? '' : 'disabled'}>Text it again</button></div>` : ''}
         <div id="textBox2"></div></div></section>` : ''}
-    ${d.source === 'request' && (open || d.ticketNo) ? `<section class="card" ${d.stage === 'ticket' ? 'style="border:2px solid var(--navy)"' : ''}><h2>Work order</h2>
-      <p class="hint">${d.stage === 'ticket' ? 'Approved — write it up in BiT and put the work order number here.' : 'The BiT work order for this detail.'}</p>
-      <div class="row"><input class="txt mono" id="ticket" value="${esc(d.ticketNo)}" placeholder="01-8891" style="max-width:200px">
-        <button class="btn navy" id="saveTicket">Save</button>
-        ${d.ticketJob ? `<a class="btn ghost" href="../admin/?job=${encodeURIComponent(d.ticketJob)}" target="_blank" rel="noreferrer">Open the job</a>` : ''}</div></section>` : ''}
+    ${d.source === 'request' && (open || d.jobId) ? `<section class="card" ${d.stage === 'ticket' ? 'style="border:2px solid var(--navy)"' : ''}><h2>Work order</h2>
+      ${d.jobId ? `<p style="margin:0 0 8px">This is job <b>${esc(d.jobId)}</b> in the service writer's portal — invoice, payment and close-out happen there.</p>
+        <a class="btn ghost" href="../admin/?job=${encodeURIComponent(d.jobId)}" target="_blank" rel="noreferrer">Open the job</a>`
+      : `<p class="hint">${d.stage === 'ticket' ? 'Approved — write it up in BiT and type the work order number. It becomes a job in the portal, detailer only.'
+          : 'Once the customer has approved it: the BiT work order number makes it a job in the portal.'}</p>
+      <div class="row"><input class="txt mono" id="ticket" placeholder="01-8891" style="max-width:200px">
+        <button class="btn navy" id="saveTicket">Make the job</button></div>`}</section>` : ''}
     <section class="card"><h2>History</h2><div class="feed">${out.events.map((e) => `<div>${esc(e.text)}<small>${esc(formatDateTime(e.at))}</small></div>`).join('') || '<p class="hint">Nothing yet.</p>'}</div>
       <div class="row" style="margin-top:10px">
         ${open ? '<button class="btn sm danger" id="cancel">Cancel this detail</button>' : '<button class="btn sm ghost" id="reopen">Re-open</button>'}
@@ -388,7 +390,10 @@ async function renderDetail(id, quiet) {
   if ($('agreed')) $('agreed').onclick = () => {
     if (confirm('The customer already said yes to these prices — skip sending the quote?')) act('acceptDetailForCustomer', [id, prices()], 'Marked agreed. Next: the work order.');
   };
-  if ($('saveTicket')) $('saveTicket').onclick = () => act('updateDetail', [id, { ticketNo: $('ticket').value.trim() }], 'Work order saved.');
+  if ($('saveTicket')) $('saveTicket').onclick = async () => {
+    const r = await act('linkDetailJob', [id, $('ticket').value.trim()]);
+    if (r) toast(r.made ? `Job ${r.job.id} made in the portal.` : `Linked to job ${r.job.id}.`);
+  };
   if ($('email')) $('email').onclick = async () => {
     if (!confirm(`Email the quote to ${d.customerEmail}?`)) return;
     const r = await act('sendDetailQuoteEmail', [id]);

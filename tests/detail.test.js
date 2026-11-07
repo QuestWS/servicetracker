@@ -457,8 +457,9 @@ describe('a quote request, start to finish', () => {
     const sent = backend.fn('sendDetailQuote', detailer(), d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 }, 'email').detail;
     backend.fn('answerDetailQuote', sent.quoteCode, [{ item: d.items[0].id, choice: 'accepted' }, { item: d.items[1].id, choice: 'declined' }], '');
     expect(backend.fn('getDetail', admin, d.id).detail.stage).toBe('ticket');
-    const after = backend.fn('updateDetail', admin, d.id, { ticketNo: '01-8891' }).detail;
+    const after = backend.fn('linkDetailJob', admin, d.id, '01-8891').detail;
     expect(after.ticketNo).toBe('01-8891');
+    expect(after.jobId).toBe('01-8891');
     expect(after.stage).toBe('todo');
   });
 
@@ -480,7 +481,7 @@ describe('a quote request, start to finish', () => {
   it('done, the desk is emailed to contact the customer and collect, with the ticket and the approved total', () => {
     const d = request();
     backend.fn('acceptDetailForCustomer', admin, d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 });
-    backend.fn('updateDetail', admin, d.id, { ticketNo: '01-8891' });
+    backend.fn('linkDetailJob', admin, d.id, '01-8891');
     backend.fn('finishDetail', detailer(), d.id);
     const m = backend.sentMail.find((x) => /Detail done/.test(x.subject));
     expect(m.to).toBe(SERVICE);
@@ -497,10 +498,65 @@ describe('a quote request, start to finish', () => {
     expect(backend.sentMail.some((x) => /Detail done/.test(x.subject))).toBe(false);
   });
 
-  it('a ticket number that is a job here links to it', () => {
+  it('the work order number makes it a job in the writer\'s portal, detailer only', () => {
+    const d = request();
+    backend.fn('acceptDetailForCustomer', admin, d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 });
+    const out = backend.fn('linkDetailJob', detailer(), d.id, '01-8891');
+    expect(out.made).toBe(true);
+    const page = backend.fn('getJob', admin, '01-8891');
+    expect(page.job).toMatchObject({ customerName: 'Pat Harbor', customerPhone: '815-555-0142', customerEmail: 'pat@example.com',
+      boatInfo: '2019 Malibu 22', status: 'received' });
+    expect(page.job.detail).toMatchObject({ split: 'detail', waitingOn: 'detail' });
+    expect(page.job.workRequested).toMatch(/D-1001/);
+    expect(page.job.workRequested).toMatch(/Wash & wax — \$352\.00/);
+    expect(page.detailWork.id).toBe(d.id);
+    expect(backend.fn('listJobs', admin, { status: 'every' }).jobs.map((j) => j.id)).toContain('01-8891');
+    // Off the mechanics' list: it is the detailer's.
+    expect(backend.fn('openJobs', mech(), true).jobs.map((j) => j.id)).not.toContain('01-8891');
+  });
+
+  it('the detailer marking it done puts it in Work finished for the writer to close out, like a mechanic does', () => {
+    const d = request();
+    backend.fn('acceptDetailForCustomer', admin, d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 });
+    backend.fn('linkDetailJob', admin, d.id, '01-8891');
+    backend.fn('finishDetail', detailer(), d.id);
+    expect(backend.fn('getJob', admin, '01-8891').job.status).toBe('work_finished');
+    const m = backend.sentMail.find((x) => /Detail done/.test(x.subject));
+    expect(m.opts.htmlBody).toMatch(/Close out job 01-8891/);
+    // And from there it is an ordinary close-out.
+    backend.fn('saveInvoice', admin, '01-8891', '', 'JVBERi0=', { grandTotal: 502, deposits: 0, amountDue: 502 });
+    expect(backend.fn('markDone', admin, '01-8891').job.status).toBe('done');
+  });
+
+  it('links to a job the writer already loaded through intake instead of making a second', () => {
     backend.fn('createJob', admin, { invoiceNumber: '01-8891', customerName: 'Pat Harbor', boatInfo: 'x' });
     const d = request();
-    expect(backend.fn('updateDetail', admin, d.id, { ticketNo: '8891' }).detail.ticketJob).toBe('01-8891');
+    backend.fn('acceptDetailForCustomer', admin, d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 });
+    const out = backend.fn('linkDetailJob', admin, d.id, '8891');
+    expect(out.made).toBe(false);
+    expect(out.detail.jobId).toBe('01-8891');
+    expect(backend.fn('getJob', admin, '01-8891').job.detail.split).toBe('detail');
+  });
+
+  it('a detail already finished becomes a job ready to close out', () => {
+    const d = request();
+    backend.fn('acceptDetailForCustomer', admin, d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 });
+    backend.fn('finishDetail', detailer(), d.id);
+    backend.fn('linkDetailJob', admin, d.id, '01-8891');
+    expect(backend.fn('getJob', admin, '01-8891').job.status).toBe('work_finished');
+  });
+
+  it('will not make a job while the customer has not answered', () => {
+    const d = request();
+    backend.fn('sendDetailQuote', detailer(), d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 }, 'email');
+    expect(() => backend.fn('linkDetailJob', admin, d.id, '01-8891')).toThrow(/waiting on the customer/);
+  });
+
+  it('intake of the same number later says where the job came from', () => {
+    const d = request();
+    backend.fn('acceptDetailForCustomer', admin, d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 });
+    backend.fn('linkDetailJob', admin, d.id, '01-8891');
+    expect(() => backend.fn('createJob', admin, { invoiceNumber: '01-8891', customerName: 'x' })).toThrow(/detail quote D-1001.*stamp it/);
   });
 });
 

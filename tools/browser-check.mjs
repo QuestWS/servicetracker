@@ -3305,15 +3305,37 @@ const detailErrors = [];
   await det.waitForFunction(() => /write it up in BiT/.test(document.body.innerText), null, { timeout: 20000 });
   await det.fill('#ticket', '01-5150');
   await det.click('#saveTicket');
-  await det.waitForFunction(() => /Work order 01-5150/.test(document.body.innerText), null, { timeout: 20000 });
-  check('approved, it takes the work order number', true);
+  await det.waitForFunction(() => /This is job 01-5150/.test(document.body.innerText), null, { timeout: 20000 });
+  check('approved, its work order number makes it a job in the portal', true);
   det.once('dialog', (dialog) => dialog.accept());
   await det.click('#finish');
   await det.waitForFunction(() => /Done/.test(document.body.innerText) && !document.getElementById('finish'), null, { timeout: 20000 });
   const doneMail = (await (await fetch(`${BASE}/dev/mail`)).json()).filter((m) => /Detail done — contact Detail Checkperson and collect payment/.test(m.subject));
   check('done, the desk is emailed to contact the customer and collect, with the work order',
     doneMail.length === 1 && doneMail[0].to === 'service@questwatersports.com' && /01-5150/.test(doneMail[0].opts.htmlBody));
+  await admin.goto(`${BASE}/admin/?job=01-5150`, { waitUntil: 'networkidle' });
+  await admin.waitForFunction(() => /Detail Checkperson/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+  const madeJob = await admin.evaluate(() => document.getElementById('view').innerText);
+  check('and in the writer\'s portal it is Work finished, with the detail on it, ready to close out like any job',
+    /Work finished/i.test(madeJob) && /Detailer only/i.test(madeJob) && /D-\d{4}/.test(madeJob) && /Wash & wax/.test(madeJob), madeJob.slice(0, 400));
   await det.click('#back');
+
+  // An approved quote with no work order yet shows on the writer's jobs page,
+  // and the number typed there makes the job.
+  {
+    const o = (await post('adminSignIn', '', [PASSWORD])).token;
+    const req = (await post('createDetail', o, [{ customerName: 'Portal Checkperson', customerPhone: '815-555-0166',
+      items: [{ key: 'washWax', label: 'Wash & wax' }] }])).detail;
+    await post('acceptDetailForCustomer', o, [req.id, { [req.items[0].id]: 300 }]);
+    await admin.goto(`${BASE}/admin/`, { waitUntil: 'networkidle' });
+    await admin.waitForSelector(`[data-dmake="${req.id}"]`, { timeout: 30000 });
+    check('the writer\'s jobs page lists approved detail quotes that need a work order', true);
+    await admin.fill(`[data-dticket="${req.id}"]`, '01-5151');
+    await admin.click(`[data-dmake="${req.id}"]`);
+    await admin.waitForFunction(() => /Portal Checkperson/.test(document.getElementById('view').innerText)
+      && /01-5151/.test(document.getElementById('view').innerText) && /Detail/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+    check('and typing the BiT number there makes the job and opens it', true);
+  }
 
   // The public Request a detail page feeds the same board.
   const pub = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();

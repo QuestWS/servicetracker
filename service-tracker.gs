@@ -1102,6 +1102,7 @@ function apiFns_(data) {
     setDetailStatus:  function (a) { return setDetailStatus(data.token, a[0], a[1]); },
     setJobDetail:     function (a) { return setJobDetail(data.token, a[0], a[1] || null); },
     quoteDetail:      function (a) { return quoteDetail(data.token, a[0], a[1]); },
+    linkDetailJob:    function (a) { return linkDetailJob(data.token, a[0], a[1]); },
     sendDetailQuote:  function (a) { return sendDetailQuote(data.token, a[0], a[1] || {}, a[2]); },
     acceptDetailForCustomer: function (a) { return acceptDetailForCustomer(data.token, a[0], a[1] || {}); },
     detailQuoteText:  function (a) { return detailQuoteText(data.token, a[0]); },
@@ -1744,9 +1745,15 @@ function createJob(token, payload) {
   if (!id) throw new Error('An invoice number is required — it identifies the job.');
   if (payload.winter) ensureWinterColumn_();
 
-  return withLock_(function () {
+  return withLock_(function () { return createJobRow_(id, payload); });
+}
+
+/** The job row itself. Callers hold the lock. */
+function createJobRow_(id, payload) {
     if (jobRow_(id)) {
-      throw new Error('Job ' + id + ' already exists. Open it from the jobs list instead.');
+      const d = ss_().getSheetByName('Details') ? detailForJob_(id) : null;
+      throw new Error('Job ' + id + ' already exists' + (d && d.quote_no ? ' — it was made from detail quote ' + d.quote_no +
+        '. Open it from the jobs list and drop the work order on its page to stamp it.' : '. Open it from the jobs list instead.'));
     }
     const at = nowIso_();
     const fields = Object.assign({}, payload, { customerEmail: normalizeEmails_(payload.customerEmail) });
@@ -1776,9 +1783,8 @@ function createJob(token, payload) {
     if (payload.winter) job.winter_work = JSON.stringify(sanitizeWinterSpec_(payload.winter, null, 'Office'));
 
     appendRow_('Jobs', job);
-    recordStatus_(id, '', 'received', 'service_writer', '', 'Work order intake');
+    recordStatus_(id, '', 'received', 'service_writer', '', payload.intakeNote || 'Work order intake');
     return { job: jobSummary_(job) };
-  });
 }
 
 /**
@@ -7913,7 +7919,6 @@ function cleanDetailFields_(input) {
   if (input.beam !== undefined) out.beam = dim(input.beam);
   if (input.notes !== undefined) out.notes = str(input.notes, 2000);
   if (input.assignedTo !== undefined) out.assigned_to = str(input.assignedTo, 80);
-  if (input.ticketNo !== undefined) out.ticket_no = str(input.ticketNo, 30).toUpperCase();
   return out;
 }
 
@@ -8486,6 +8491,81 @@ function acceptDetailForCustomer(token, id, prices) {
     detailEvent_(row.id, 'answer', whoIs_(who) + ' marked the quote for ' + row.customer_name + ' as already agreed', whoIs_(who));
     return { detail: detailView_(detailRow_(id), null), v: bumpDetailVersion_() };
   });
+}
+
+/**
+ * The work order goes on, and the detail becomes a job in the writer's portal.
+ *
+ * Chris, Nov 7 2026: "this detail app should just be the detail version of the
+ * mechanic app but the service writer still has the same work to do either
+ * way." So an approved quote request, once its BiT work order is written, is a
+ * job like any other: a detailer-only job (`detail_split: 'detail'`) under the
+ * BiT number, carrying the customer, the unit and the approved lines. The
+ * detailer marking it done moves it to Work finished on the writer's list,
+ * exactly as a mechanic's Work finished does, and the writer closes it out —
+ * invoice, payment, email or text — the way every job is closed out.
+ *
+ * If the writer already loaded that work order through intake, the detail is
+ * linked to that job instead of making a second one.
+ */
+function linkDetailJob(token, id, ticketNo) {
+  const who = requireShop_(token);
+  ensureDetailSchema_();
+  const ticket = String(ticketNo || '').trim().toUpperCase().slice(0, 30);
+  if (!ticket) throw new Error('Type the BiT work order number.');
+  const out = withLock_(function () {
+    forget_('Details');
+    forget_('Jobs');
+    const row = detailRow_(id);
+    if (!row) throw new Error('No such detail.');
+    if (row.status === 'cancelled') throw new Error('That detail was cancelled.');
+    if (row.job_id) throw new Error('This detail is already job ' + row.job_id + '.');
+    const items = detailItems_(row);
+    if (items.some(function (x) { return x.quote === 'pending' || x.quote === 'call'; })) {
+      throw new Error('Some lines are still waiting on the customer. Get their answer first.');
+    }
+    const doable = items.filter(detailDoable_);
+    if (!doable.length) throw new Error('Nothing on this detail was approved, so there is no work order to make.');
+    let job = jobRow_(ticket) || jobByNumber_(ticket);
+    let made = false;
+    if (job) {
+      if (isPartsOrder_(job)) throw new Error(job.id + ' is a parts order, not a work order.');
+      if (job.status === 'done') throw new Error('Job ' + job.id + ' is already closed out.');
+      const other = detailForJob_(job.id);
+      if (other && other.id !== row.id) throw new Error('Job ' + job.id + ' already has a detail on it (' + (other.quote_no || other.id) + ').');
+    } else {
+      const lines = doable.map(function (x) {
+        return x.label + (x.qty > 1 ? ' \u00d7 ' + x.qty : '') + (x.price !== null ? ' \u2014 ' + money_(x.price) : '');
+      });
+      createJobRow_(ticket, {
+        customerName: row.customer_name, customerPhone: row.customer_phone, customerEmail: row.customer_email,
+        boatInfo: row.unit, intakeNote: 'Made from detail quote ' + (row.quote_no || row.id),
+        workRequested: 'Detail' + (row.quote_no ? ' ' + row.quote_no : '') + ':\n' + lines.join('\n') + (row.notes ? '\n\n' + row.notes : '')
+      });
+      job = jobRow_(ticket);
+      made = true;
+    }
+    const at = nowIso_();
+    updateRow_('Jobs', job._row, { detail_split: String(job.detail_split || '') === 'both' ? 'both' : 'detail',
+      detail_done_at: row.status === 'done' ? (row.done_at || at) : '', updated_at: at });
+    updateRow_('Details', row._row, { job_id: job.id, ticket_no: job.id, updated_at: at });
+    forget_('Jobs');
+    // Already finished before the work order went on: the job is ready to close out.
+    if (row.status === 'done') {
+      const j = jobRow_(job.id);
+      if (j.status === 'received') setStatus_(j, 'work_underway', 'detailer', row.done_by, 'Detail already done');
+      setStatus_(jobRow_(job.id), 'work_finished', 'detailer', row.done_by, 'Detail already done');
+    } else if (row.status === 'in_progress') {
+      const j = jobRow_(job.id);
+      if (j.status === 'received') setStatus_(j, 'work_underway', 'detailer', whoIs_(who), 'Detail started');
+    }
+    detailEvent_(row.id, 'job', (made ? 'Job ' + job.id + ' made from ' : 'Linked to job ' + job.id + ': ') +
+      (row.quote_no || 'this detail') + ' (' + row.customer_name + ')', whoIs_(who));
+    forget_('Details');
+    return { detail: detailView_(detailRow_(id), jobRow_(job.id)), job: jobSummary_(jobRow_(job.id)), made: made,
+             v: bumpDetailVersion_() };
+  });
+  return out;
 }
 
 /** The wording and number for a text. Not a send — a person sends it. */
