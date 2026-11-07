@@ -522,7 +522,7 @@ describe('a quote request, start to finish', () => {
     backend.fn('finishDetail', detailer(), d.id);
     expect(backend.fn('getJob', admin, '01-8891').job.status).toBe('work_finished');
     const m = backend.sentMail.find((x) => /Detail done/.test(x.subject));
-    expect(m.opts.htmlBody).toMatch(/Close out job 01-8891/);
+    expect(m.opts.htmlBody).toMatch(/Close out job <b>01-8891<\/b>/);
     // And from there it is an ordinary close-out.
     backend.fn('saveInvoice', admin, '01-8891', '', 'JVBERi0=', { grandTotal: 502, deposits: 0, amountDue: 502 });
     expect(backend.fn('markDone', admin, '01-8891').job.status).toBe('done');
@@ -632,5 +632,33 @@ describe('the public Request a detail page', () => {
   it('can only be sent, never fetched', () => {
     const out = backend.get({ fn: 'requestDetailOnline', args: JSON.stringify([{ name: 'x', phone: '8155550142', items: [{ label: 'a' }] }]) });
     expect(out.error).toMatch(/sent, not fetched/);
+  });
+});
+
+
+describe('the shop\'s own detail emails read well', () => {
+  it('keeps the notes\' line breaks, labels them, and links to call', () => {
+    backend.fn('requestDetailOnline', { name: 'Pat Harbor', phone: '(815) 555-0142', email: 'pat@example.com',
+      where: 'In slip B-12', contactBy: 'Text', notes: 'Oxidation on port side', loa: 22, beam: 8.5,
+      items: [{ key: 'washWax', label: 'Wash & wax' }] });
+    const m = backend.sentMail.find((x) => /requested online/.test(x.subject));
+    const html = m.opts.htmlBody;
+    expect(html).toContain('<b>Where it is:</b> In slip B-12<br><b>Best way to reach them:</b> Text<br><b>They wrote:</b> Oxidation on port side');
+    expect(html).toContain('href="tel:+18155550142"');
+    // The logo is shown in the email exactly when it is attached — never a stray attachment.
+    expect(html.includes('cid:questlogo')).toBe(!!(m.opts.inlineImages && m.opts.inlineImages.questlogo));
+    expect(html).toContain('Price it and send the quote');
+    expect(html).toContain("22&#39; long, 8&#39; 6&quot; beam");
+  });
+
+  it('puts no emoji in a subject (Outlook showed them as ??????)', () => {
+    const d = backend.fn('createDetail', admin, { customerName: 'Pat', customerEmail: 'p@example.com',
+      items: [{ key: 'washWax', label: 'Wash & wax' }] }).detail;
+    const q = backend.fn('sendDetailQuote', admin, d.id, { [d.items[0].id]: 300 }, 'email').detail;
+    backend.fn('answerDetailQuote', q.quoteCode, [{ item: d.items[0].id, choice: 'call' }], 'When?');
+    backend.sentMail.forEach((x) => expect(x.subject).not.toMatch(/[\u{1F300}-\u{1FAFF}✅]/u));
+    const call = backend.sentMail.find((x) => /^CALL REQUESTED — /.test(x.subject));
+    expect(call.opts.htmlBody).toContain('They want a call');
+    expect(call.opts.htmlBody).toContain('When?');
   });
 });

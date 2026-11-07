@@ -8111,26 +8111,110 @@ function detailUrl_(id) {
   return SITE_URL + '/d/?detail=' + encodeURIComponent(id);
 }
 
-function detailContactHtml_(row) {
-  return (row.quote_no ? '<p style="font-size:17px;margin:0 0 6px"><b>' + esc_(row.quote_no) + '</b></p>' : '') +
-    '<p><b>' + esc_(row.customer_name) + '</b>' + (row.unit ? ' \u00b7 ' + esc_(row.unit) : '') + '<br>' +
-    (row.customer_phone ? esc_(row.customer_phone) : 'no phone') + ' \u00b7 ' +
-    (row.customer_email ? esc_(row.customer_email) : 'no email') +
-    (row.ticket_no ? '<br>Work order ' + esc_(row.ticket_no) : '') + '</p>';
+/*
+ * THE SHOP'S OWN DETAIL EMAILS — to John and the desk, never a customer.
+ * Chris, Nov 7 2026: they "look bare and the notes not having linebreaks
+ * makes it extremely awkward to read". Same frame as the customer mail
+ * (noticeHtml_'s wordmark, gold rule and navy footer, so the inline logo is
+ * shown rather than arriving as a stray attachment), a coloured heading that
+ * says what happened, the customer as a table with tap-to-call, the lines with
+ * their prices, the notes with their line breaks, and one big button.
+ *
+ * No emoji in a subject: Outlook on Windows showed "📞" as "??????".
+ */
+const STAFF_TONES_ = {
+  navy: ['#14293E', '#FFFFFF'], gold: ['#C08A22', '#FFFFFF'], red: ['#B3261E', '#FFFFFF'], green: ['#1E6B3A', '#FFFFFF']
+};
+
+function staffMailHtml_(o) {
+  const tone = STAFF_TONES_[o.tone] || STAFF_TONES_.navy;
+  const cell = function (style, body) { return '<td style="' + MAIL_FONT + ';' + style + '">' + body + '</td>'; };
+  const logo = logoBlob_()
+    ? '<img src="cid:questlogo" alt="' + esc_(SHOP_NAME) + '" width="104" height="56" style="width:104px;height:56px;display:block;border:0">'
+    : '<div style="font-family:Arial Black,Arial,sans-serif;font-size:22px;color:#14293E">' + esc_(SHOP_NAME.toUpperCase()) + '</div>';
+  const section = function (title) {
+    return '<div style="' + MAIL_FONT + ';font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;' +
+      'color:#4A81A6;margin:20px 0 8px">' + esc_(title) + '</div>';
+  };
+  const rows = (o.rows || []).filter(function (r) { return r[1]; }).map(function (r) {
+    return '<tr>' + cell('font-size:13.5px;color:#5C7185;padding:5px 16px 5px 0;vertical-align:top;white-space:nowrap', esc_(r[0])) +
+      cell('font-size:15px;color:#1D2B38;padding:5px 0;vertical-align:top', r[2] ? r[1] : esc_(r[1])) + '</tr>';
+  }).join('');
+  const STATE = { accepted: ['Accepted', '#1E6B3A'], declined: ['Declined', '#5C7185'], call: ['Call me', '#B3261E'],
+    pending: ['Waiting on customer', '#9C6E14'] };
+  const lines = (o.lines || []).map(function (x) {
+    const st = x.state && STATE[x.state];
+    return '<tr>' + cell('font-size:15px;color:#1D2B38;padding:8px 0;border-bottom:1px solid #EBF1F6',
+        esc_(x.label) + (x.qty > 1 ? ' &times; ' + x.qty : '') +
+        (st ? '<br><span style="font-size:12.5px;font-weight:bold;color:' + st[1] + '">' + st[0] + '</span>' : '')) +
+      cell('font-size:15px;color:#1D2B38;padding:8px 0 8px 16px;border-bottom:1px solid #EBF1F6;text-align:right;white-space:nowrap;vertical-align:top',
+        x.price === null || x.price === undefined ? '<span style="color:#9AA8B5">to price</span>' : esc_(money_(x.price))) + '</tr>';
+  }).join('');
+  const multiline = function (text) {
+    return String(text || '').split('\n').filter(function (l) { return l.trim(); }).map(function (l) {
+      const m = l.match(/^([A-Z][^:]{1,30}):\s*(.*)$/);
+      return m ? '<b>' + esc_(m[1]) + ':</b> ' + esc_(m[2]) : esc_(l);
+    }).join('<br>');
+  };
+  const body =
+    '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" bgcolor="' + tone[0] + '" style="background:' + tone[0] + ';border-radius:8px">' +
+      '<tr>' + cell('padding:14px 18px;color:' + tone[1],
+        (o.quoteNo ? '<div style="font-size:13px;font-weight:bold;letter-spacing:1px;opacity:.85">' + esc_(o.quoteNo) + '</div>' : '') +
+        '<div style="font-size:20px;font-weight:bold;line-height:26px">' + esc_(o.heading) + '</div>' +
+        (o.sub ? '<div style="font-size:14px;line-height:20px;margin-top:3px">' + esc_(o.sub) + '</div>' : '')) + '</tr></table>' +
+    (o.ask ? '<div style="margin:16px 0 0">' + mailBox_('#FDECEA', '#E8B4B0', '<div style="' + MAIL_FONT + ';font-size:13px;font-weight:bold;color:#B3261E;margin-bottom:4px">THEY ASKED</div>' +
+      '<div style="' + MAIL_FONT + ';font-size:15px;line-height:22px;color:#1D2B38">' + multiline(o.ask) + '</div>') + '</div>' : '') +
+    (rows ? section('Customer') + '<table role="presentation" border="0" cellpadding="0" cellspacing="0">' + rows + '</table>' : '') +
+    (lines ? section(o.linesTitle || 'What they want') + '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0">' + lines +
+      (o.total !== undefined ? '<tr>' + cell('font-size:15px;font-weight:bold;padding:10px 0 0', esc_(o.totalLabel || 'Total')) +
+        cell('font-size:15px;font-weight:bold;padding:10px 0 0 16px;text-align:right;white-space:nowrap', esc_(money_(o.total))) + '</tr>' : '') +
+      '</table>' : '') +
+    (o.notes ? section('Notes') + '<div style="' + MAIL_FONT + ';font-size:15px;line-height:23px;color:#1D2B38;background:#F4F7FA;' +
+      'border-left:4px solid #C7D5E0;padding:10px 14px">' + multiline(o.notes) + '</div>' : '') +
+    (o.next ? '<p style="' + MAIL_FONT + ';font-size:15px;line-height:22px;color:#1D2B38;margin:20px 0 0">' + o.next + '</p>' : '') +
+    (o.button ? '<div style="margin:20px 0 0">' + button_(o.button.url, o.button.label, o.tone === 'gold' ? '#C08A22' : '') + '</div>' : '');
+  return '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" bgcolor="#EBF1F6" style="background:#EBF1F6">' +
+    '<tr><td align="center" style="padding:20px 10px">' +
+    '<!--[if mso]><table role="presentation" width="620" border="0" cellpadding="0" cellspacing="0"><tr><td><![endif]-->' +
+    '<table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" bgcolor="#FFFFFF" style="max-width:620px;background:#FFFFFF;border:1px solid #C7D5E0">' +
+      '<tr><td bgcolor="#FFFFFF" style="padding:18px 24px;border-bottom:4px solid #C08A22">' + logo + '</td></tr>' +
+      '<tr><td bgcolor="#FFFFFF" style="padding:22px 24px 26px">' + body + '</td></tr>' +
+      '<tr><td bgcolor="#14293E" style="background:#14293E;padding:14px 24px;' + MAIL_FONT + ';font-size:12px;line-height:18px;color:#B9CDDD;text-align:center">' +
+        'Detail Tracker &middot; for the shop, not the customer</td></tr>' +
+    '</table><!--[if mso]></td></tr></table><![endif]--></td></tr></table>';
+}
+
+/** The customer as table rows: tap-to-call, tap-to-email, the unit and its size. */
+function detailCustomerRows_(row) {
+  const phone = String(row.customer_phone || '');
+  const digits = phone.replace(/\D/g, '');
+  const ft = function (v) { return v ? fmtFtIn_(Number(v)) : ''; };
+  return [
+    ['Name', row.customer_name],
+    ['Phone', phone ? (digits.length >= 10 ? '<a href="tel:+1' + digits.slice(-10) + '" style="color:#14293E;font-weight:bold">' + esc_(phone) + '</a>' : esc_(phone)) : '', true],
+    ['Email', row.customer_email ? '<a href="mailto:' + esc_(row.customer_email) + '" style="color:#4A81A6">' + esc_(row.customer_email) + '</a>' : '', true],
+    ['Unit', row.unit],
+    ['Size', [ft(row.loa) ? ft(row.loa) + ' long' : '', ft(row.beam) ? ft(row.beam) + ' beam' : ''].filter(String).join(', ')],
+    ['Work order', row.ticket_no || row.job_id],
+    ['Winter quote', row.winter_qn]
+  ];
 }
 
 /** John: a new quote to price. To him, service@ copied. Never the customer. */
 function notifyNewRequest_(row) {
-  const items = detailItems_(row);
-  const subject = (row.created_by === DETAIL_ONLINE_BY_ ? 'New detail quote requested online: ' : 'New detail quote requested: ') +
+  const online = row.created_by === DETAIL_ONLINE_BY_;
+  const subject = (online ? 'New detail quote requested online: ' : 'New detail quote requested: ') +
     row.customer_name + (row.quote_no ? ' (' + row.quote_no + ')' : '');
-  const html = '<div style="' + MAIL_FONT + ';font-size:15px">' + detailContactHtml_(row) +
-    '<p>They are asking for:</p><ul>' + items.map(function (x) {
-      return '<li>' + esc_(x.label) + (x.qty > 1 ? ' \u00d7 ' + x.qty : '') + '</li>'; }).join('') + '</ul>' +
-    (row.loa ? '<p>Length ' + esc_(row.loa) + ' ft' + (row.beam ? ', beam ' + esc_(row.beam) + ' ft' : '') + '</p>' : '') +
-    (row.notes ? '<p>Notes: ' + esc_(row.notes) + '</p>' : '') +
-    '<p><a href="' + esc_(detailUrl_(row.id)) + '">Open it, put your numbers in and send it to the customer</a></p></div>';
-  send_({ to: DETAIL_ALERT_EMAIL, cc: SERVICE_EMAIL, subject: subject, html: html, text: subject + ' \u2014 ' + detailUrl_(row.id),
+  const html = staffMailHtml_({
+    tone: 'gold', quoteNo: row.quote_no,
+    heading: 'New quote to price' + (online ? ' — requested online' : ''),
+    sub: online ? 'The customer filled in the Request a detail page.' : 'Taken in by ' + (row.created_by || 'the desk') + '.',
+    rows: detailCustomerRows_(row),
+    lines: detailItems_(row).map(function (x) { return { label: x.label, qty: x.qty, price: x.price }; }),
+    notes: row.notes,
+    button: { url: detailUrl_(row.id), label: 'Price it and send the quote' }
+  });
+  send_({ to: DETAIL_ALERT_EMAIL, cc: SERVICE_EMAIL, subject: subject, html: html, text: subject + ' — ' + detailUrl_(row.id),
           jobId: row.id, kind: 'detail_request' });
 }
 
@@ -8139,16 +8223,24 @@ function notifyDetailDone_(row) {
   const items = detailItems_(row).filter(detailDoable_);
   const total = items.reduce(function (t, x) { return t + (Number(x.price) || 0); }, 0);
   const winter = !!row.winter_qn;
-  const subject = 'Detail done \u2014 contact ' + row.customer_name + (winter ? '' : ' and collect payment') +
+  const subject = 'Detail done — contact ' + row.customer_name + (winter ? '' : ' and collect payment') +
     (row.quote_no ? ' (' + row.quote_no + ')' : '');
-  const html = '<div style="' + MAIL_FONT + ';font-size:15px">' + detailContactHtml_(row) +
-    '<p>' + esc_(row.done_by || 'The detailer') + ' marked it done.</p><ul>' + items.map(function (x) {
-      return '<li>' + esc_(x.label) + (x.qty > 1 ? ' \u00d7 ' + x.qty : '') + ' \u2014 ' + esc_(x.price === null ? 'no price' : money_(x.price)) + '</li>';
-    }).join('') + '</ul><p><b>Approved total: ' + esc_(money_(total)) + '</b> (before tax)</p>' +
-    '<p>' + (winter ? 'This is on winter quote ' + esc_(row.winter_qn) + ' \u2014 it is billed there.'
-      : row.job_id ? 'Close out job ' + esc_(row.job_id) + ' in the portal as usual.'
-      : 'Contact the customer and collect payment' + (row.ticket_no ? ' on work order ' + esc_(row.ticket_no) : ' \u2014 there is no work order number on it yet') + '.') + '</p>' +
-    '<p><a href="' + esc_(detailUrl_(row.id)) + '">Open it in the Detail Tracker</a></p></div>';
+  const next = winter ? 'This is on winter quote <b>' + esc_(row.winter_qn) + '</b> — it is billed there.'
+    : row.job_id ? 'Close out job <b>' + esc_(row.job_id) + '</b> in the portal as usual: invoice, payment, send.'
+    : 'Contact the customer and collect payment' + (row.ticket_no ? ' on work order <b>' + esc_(row.ticket_no) + '</b>.'
+      : ' — there is no work order number on it yet.');
+  const html = staffMailHtml_({
+    tone: 'green', quoteNo: row.quote_no,
+    heading: winter ? 'Detail done' : 'Detail done — time to collect',
+    sub: (row.done_by || 'The detailer') + ' marked it done.',
+    rows: detailCustomerRows_(row),
+    linesTitle: 'What was done',
+    lines: items.map(function (x) { return { label: x.label, qty: x.qty, price: x.price }; }),
+    total: total, totalLabel: 'Approved total (before tax)',
+    next: next,
+    button: row.job_id ? { url: SITE_URL + '/admin/?job=' + encodeURIComponent(row.job_id), label: 'Open job ' + row.job_id }
+      : { url: detailUrl_(row.id), label: 'Open it in the Detail Tracker' }
+  });
   send_({ to: SERVICE_EMAIL, subject: subject, html: html, text: subject, jobId: row.job_id || row.id, kind: 'detail_done' });
 }
 
@@ -8717,14 +8809,21 @@ function answerDetailQuote(code, answers, note) {
 /** One email to the office per submission, never per line. */
 function notifyDetailAnswer_(row, changed, ask) {
   const call = changed.filter(function (x) { return x.quote === 'call'; });
-  const subject = (call.length ? '📞 CALL REQUESTED — ' : '') + 'Detail quote answered: ' + row.customer_name + (row.quote_no ? ' (' + row.quote_no + ')' : '');
-  const line = function (x) { return '<li>' + esc_(x.label) + ' — ' + esc_(money_(x.price)) + ' — <b>' +
-    esc_({ accepted: 'accepted', declined: 'declined', call: 'call me' }[x.quote]) + '</b></li>'; };
-  const html = '<div style="' + MAIL_FONT + ';font-size:15px">' +
-    '<p><b>' + esc_(row.customer_name) + '</b>' + (row.unit ? ' · ' + esc_(row.unit) : '') +
-    (row.customer_phone ? ' · ' + esc_(row.customer_phone) : '') + '</p><ul>' + changed.map(line).join('') + '</ul>' +
-    (ask ? '<p>They asked: “' + esc_(ask) + '”</p>' : '') +
-    '<p><a href="' + esc_(SITE_URL + '/d/?detail=' + encodeURIComponent(row.id)) + '">Open it in the Detail Tracker</a></p></div>';
+  const n = function (q) { return changed.filter(function (x) { return x.quote === q; }).length; };
+  const subject = (call.length ? 'CALL REQUESTED — ' : '') + 'Detail quote answered: ' + row.customer_name +
+    (row.quote_no ? ' (' + row.quote_no + ')' : '');
+  const html = staffMailHtml_({
+    tone: call.length ? 'red' : n('accepted') ? 'green' : 'navy', quoteNo: row.quote_no,
+    heading: call.length ? 'They want a call' : n('accepted') ? 'Quote accepted' : 'Quote declined',
+    sub: [n('accepted') ? n('accepted') + ' accepted' : '', n('declined') ? n('declined') + ' declined' : '',
+      call.length ? call.length + ' call me' : ''].filter(String).join(' · '),
+    ask: ask,
+    rows: detailCustomerRows_(row),
+    linesTitle: 'Their answers',
+    lines: changed.map(function (x) { return { label: x.label, qty: x.qty, price: x.price, state: x.quote }; }),
+    next: n('accepted') && !call.length ? 'Next: the desk writes the work order in BiT and puts its number on.' : '',
+    button: { url: detailUrl_(row.id), label: call.length ? 'Open it — then give them a call' : 'Open it in the Detail Tracker' }
+  });
   send_({ to: DETAIL_ALERT_EMAIL, cc: SERVICE_EMAIL, subject: subject, html: html, text: subject,
           jobId: row.job_id || row.id, kind: 'detail_answer' });
 }
