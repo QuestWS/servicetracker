@@ -53,9 +53,9 @@ export const DETAIL_MENU = [
   { key: 'upperDeck',   group: 'Premium detail', label: 'Upper deck only (above rub-rail)',   perFt: { narrow: 0, wide: 45 } },
   { key: 'hullSides',   group: 'Premium detail', label: 'Hull-sides only (below rub-rail)',   perFt: { narrow: 0, wide: 45 } },
   { key: 'premiumInt',  group: 'Premium detail', label: 'Premium detail — interior',          quote: true, from: 400,
-    about: 'Clean cockpit compartments, vacuum carpets, scrub non-carpeted flooring, dress vinyl with UV protector, open & clean canvas and interior glass.' },
-    // "Quoted starting at $400" stays out of `about`: the customer's request page
-    // shows descriptions and no prices. Staff see it in the suggestion (`from`).
+    about: 'Clean cockpit compartments, vacuum carpets, scrub non-carpeted flooring, dress vinyl with UV protector, open & clean canvas and interior glass. Quoted starting at $400.' },
+    // "Starting at $400" is shown to customers on purpose (Chris, Nov 7 2026):
+    // it is something they should know before they ask for the quote.
   { key: 'flybridge',   group: 'Premium detail', label: 'Add fly-bridge',                     flat: 150 },
 
   // Basic wash (2)

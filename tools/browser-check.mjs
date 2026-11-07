@@ -3320,7 +3320,11 @@ const detailErrors = [];
   pub.on('pageerror', (e) => detailErrors.push('r: ' + e.message));
   await pub.goto(`${BASE}/r/`, { waitUntil: 'networkidle' });
   const pubText = await pub.evaluate(() => document.body.innerText);
-  check('the public request page shows no prices and never says boat', !/\$\d/.test(pubText) && !/\bboat\b/i.test(pubText), pubText.slice(0, 300));
+  // No price boxes and no prices, except a "starting at" the customer should
+  // know before asking (the interior detail's $400, Chris Nov 7 2026).
+  check('the public request page shows no prices but "starting at", and never says boat',
+    !/\$\d/.test(pubText.replace(/starting at \$\d+/gi, '')) && /starting at \$400/i.test(pubText)
+      && !(await pub.locator('.dp-price').first().isVisible()) && !/\bboat\b/i.test(pubText), pubText.slice(0, 300));
   await pub.fill('#nm', 'Online Checkperson');
   await pub.fill('#ph', '815-555-0188');
   await pub.fill('#un', '2020 Sea-Doo GTX');
