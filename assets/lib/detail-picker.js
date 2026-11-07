@@ -103,7 +103,24 @@ export function mountPicker(el, opts = {}) {
     refresh();
   });
   el.addEventListener('change', (ev) => {
-    if (ev.target.type === 'checkbox') ev.target.closest('.dp-line').classList.toggle('on', ev.target.checked);
+    if (ev.target.type === 'checkbox') {
+      const row = ev.target.closest('.dp-line');
+      row.classList.toggle('on', ev.target.checked);
+      // A line that needs another (bottom paint needs paint & supplies) ticks it too.
+      const m = DETAIL_MENU.find((x) => x.key === row.dataset.key);
+      if (ev.target.checked && m && m.needs) {
+        m.needs.forEach((k) => {
+          const other = el.querySelector(`.dp-line[data-key="${k}"]`);
+          const box = other && other.querySelector('input[type=checkbox]');
+          if (box && !box.checked) {
+            box.checked = true;
+            other.classList.add('on');
+            const group = other.closest('details');
+            if (group) group.open = true;
+          }
+        });
+      }
+    }
     if (opts.onChange) opts.onChange();
   });
   refresh();

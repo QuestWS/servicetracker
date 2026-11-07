@@ -79,8 +79,9 @@ style.textContent = PICKER_CSS;
 document.head.appendChild(style);
 const $ = (id) => document.getElementById(id);
 
-// No prices: John sends them. The shop's own lines (materials, "other") are left off.
-const picker = mountPicker($('picker'), { prices: false, exclude: ['paintSupplies'] });
+// No prices: John sends them. Paint & supplies is on the list: it ticks itself
+// with any bottom paint line, so the customer sees it is part of the quote.
+const picker = mountPicker($('picker'), { prices: false });
 
 $('send').onclick = async () => {
   const items = picker.items();

@@ -813,3 +813,21 @@ describe('scanning in the Detail Tracker', () => {
     expect(backend.fn('detailForCode', detailer(), 'text', 'd1001')).toEqual({ detailId: d.id });
   });
 });
+
+describe('bottom paint brings paint & supplies', () => {
+  it('adds the paint & supplies line when a page did not, once, unpriced', () => {
+    const d = backend.fn('createDetail', admin, { customerName: 'Pat', items: [
+      { key: 'sandblast', label: 'Sandblast & re-paint (off trailer)' }, { key: 'bottomReapply', label: 'Bottom paint re-application (off trailer)', price: 550 }] }).detail;
+    const supplies = d.items.filter((x) => x.key === 'paintSupplies');
+    expect(supplies).toHaveLength(1);
+    expect(supplies[0]).toMatchObject({ label: 'Paint & supplies (estimate)', price: null });
+  });
+
+  it('leaves it alone when it is already there, and adds nothing without bottom paint', () => {
+    const d = backend.fn('createDetail', admin, { customerName: 'Pat', items: [
+      { key: 'bottomPaint', label: 'Initial bottom paint (off trailer)' }, { key: 'paintSupplies', label: 'Paint & supplies (estimate)', price: 300 }] }).detail;
+    expect(d.items.filter((x) => x.key === 'paintSupplies').map((x) => x.price)).toEqual([300]);
+    const w = backend.fn('createDetail', admin, { customerName: 'Sam', items: [{ key: 'washWax', label: 'Wash & wax' }] }).detail;
+    expect(w.items.map((x) => x.key)).toEqual(['washWax']);
+  });
+});

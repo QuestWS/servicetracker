@@ -3353,6 +3353,10 @@ const detailErrors = [];
   await pub.fill('#un', '2020 Sea-Doo GTX');
   await pub.click('summary:has-text("Basic wash")');
   await pub.check('.dp-line[data-key=washWax] input[type=checkbox]');
+  await pub.click('summary:has-text("Bottom cleaning")');
+  await pub.check('.dp-line[data-key=sandblast] input[type=checkbox]');
+  check('ticking a bottom paint line ticks paint & supplies with it',
+    await pub.isChecked('.dp-line[data-key=paintSupplies] input[type=checkbox]'));
   await pub.click('#send');
   await pub.waitForFunction(() => /Thank you/i.test(document.body.innerText), null, { timeout: 20000 });
   check('a customer can ask for a detail quote, and is given its D-number',

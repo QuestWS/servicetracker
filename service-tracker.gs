@@ -7693,6 +7693,14 @@ const DETAIL_WINTER_WORDS_ = [
   [/^strip bottom paint/i, 'bottomPaint']
 ];
 
+/*
+ * Lines that bring another with them — bottom paint needs paint & supplies.
+ * Kept in step with `needs` in assets/lib/detail-menu.js: the picker ticks
+ * the second line, and sanitizeDetailItems_ adds it if a page did not.
+ */
+const DETAIL_NEEDS_ = { bottomPaint: ['paintSupplies'], bottomReapply: ['paintSupplies'], sandblast: ['paintSupplies'] };
+const DETAIL_NEEDS_LABELS_ = { paintSupplies: ['Paint & supplies (estimate)', 'Bottom cleaning & painting'] };
+
 function detailKeyForLabel_(label) {
   const words = String(label || '').trim();
   const hit = DETAIL_WINTER_WORDS_.filter(function (w) { return w[0].test(words); })[0];
@@ -7773,7 +7781,7 @@ function sanitizeDetailItems_(input, prev) {
   const before = {};
   (prev || []).forEach(function (x) { before[x.id] = x; });
   const seen = {};
-  return (input || []).slice(0, DETAIL_ITEM_MAX_).map(function (x) {
+  const out = (input || []).slice(0, DETAIL_ITEM_MAX_).map(function (x) {
     let id = str(x.id, 40);
     if (!id || seen[id]) id = newId_('dl');
     seen[id] = true;
@@ -7796,6 +7804,19 @@ function sanitizeDetailItems_(input, prev) {
     }
     return item;
   }).filter(function (x) { return x.label; });
+  // Bottom paint never goes out without its paint & supplies line.
+  const keys = {};
+  out.forEach(function (x) { keys[x.key] = true; });
+  Object.keys(DETAIL_NEEDS_).forEach(function (k) {
+    if (!out.some(function (x) { return x.key === k && !x.winter; })) return;
+    DETAIL_NEEDS_[k].forEach(function (need) {
+      if (keys[need] || !DETAIL_NEEDS_LABELS_[need]) return;
+      keys[need] = true;
+      out.push({ id: newId_('dl'), key: need, label: DETAIL_NEEDS_LABELS_[need][0], group: DETAIL_NEEDS_LABELS_[need][1],
+        qty: 1, price: null, how: '', quote: '', answeredAt: '', answeredBy: '', note: '', winter: '', done: null });
+    });
+  });
+  return out;
 }
 
 /** A line that is work to do: not declined, not waiting on an answer. */

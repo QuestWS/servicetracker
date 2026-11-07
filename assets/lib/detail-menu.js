@@ -68,10 +68,15 @@ export const DETAIL_MENU = [
 
   // Bottom cleaning & painting
   { key: 'acidWash',    group: 'Bottom cleaning & painting', label: 'Acid wash (off trailer)', perFt: { narrow: 17, wide: 22 } },
+  // Every bottom paint line brings paint & supplies with it (`needs`): the
+  // picker ticks it, and the backend adds it if a page did not (Chris, Nov 2026).
   { key: 'bottomPaint', group: 'Bottom cleaning & painting', label: 'Initial bottom paint (off trailer)', perFt: { narrow: 40, wide: 52 },
-    about: 'Plus paint & supplies.' },
+    about: 'Plus paint & supplies.', needs: ['paintSupplies'] },
   { key: 'bottomReapply', group: 'Bottom cleaning & painting', label: 'Bottom paint re-application (off trailer)', perFt: { narrow: 25, wide: 32 },
-    about: 'Plus paint & supplies.' },
+    about: 'Plus paint & supplies.', needs: ['paintSupplies'] },
+  // Not on the 2025 sheet (Chris, Nov 2026): priced by quote.
+  { key: 'sandblast', group: 'Bottom cleaning & painting', label: 'Sandblast & re-paint (off trailer)', quote: true,
+    about: 'Strip the old bottom paint by sandblasting, then repaint. Plus paint & supplies.', needs: ['paintSupplies'] },
   { key: 'paintSupplies', group: 'Bottom cleaning & painting', label: 'Paint & supplies (estimate)', quote: true },
   { key: 'relaunchOwn', group: 'Bottom cleaning & painting', label: 'Pull & relaunch — own trailer', flat: 100 },
   { key: 'relaunchOurs', group: 'Bottom cleaning & painting', label: 'Pull & relaunch — our trailer', perFt: { narrow: 11, wide: 11 } },

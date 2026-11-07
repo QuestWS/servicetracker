@@ -15,6 +15,12 @@ describe('the detail menu', () => {
     expect(new Set(DETAIL_MENU.map((m) => m.key)).size).toBe(DETAIL_MENU.length);
   });
 
+  it('has sandblast & re-paint, by quote, and every bottom paint line needs paint & supplies', () => {
+    expect(menuItem('sandblast')).toMatchObject({ group: 'Bottom cleaning & painting', quote: true });
+    expect(suggestPrice('sandblast', { loa: 22 }).amount).toBeNull();
+    for (const k of ['bottomPaint', 'bottomReapply', 'sandblast']) expect(menuItem(k).needs).toEqual(['paintSupplies']);
+  });
+
   it('prices per foot by beam, wide over 8\'6"', () => {
     expect(isWide(8.5)).toBe(false);
     expect(isWide(8.6)).toBe(true);
