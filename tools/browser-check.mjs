@@ -3451,7 +3451,8 @@ const detailErrors = [];
     const supplies = paintPage.locator('.offer', { hasText: 'Paint & supplies' });
     const paint = paintPage.locator('.offer', { hasText: 're-application' });
     await paint.locator('input[value=accepted]').check();
-    await supplies.locator('input[value=declined]').check({ force: true });
+    // A click, not check(): the page is meant to put the box straight back.
+    await supplies.locator('input[value=declined]').click({ force: true });
     check('the customer cannot decline paint & supplies while keeping the bottom paint',
       !(await supplies.locator('input[value=declined]').isChecked()) && /comes with the bottom paint/.test(await paintPage.textContent('#msg')));
     await paint.locator('input[value=declined]').check();
