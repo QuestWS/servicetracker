@@ -122,6 +122,14 @@ const SHOP_ADDRESS = '1800 N 2871st Rd, Ottawa, IL 61350';
 const SERVICE_EMAIL = 'service@questwatersports.com';
 
 /**
+ * Copied on the office's email whenever a customer accepts, declines or asks
+ * for a call about a detail quote — John prices and does the details. Chris,
+ * Nov 2026. Shop mail only: never a customer, never a recipient anybody can
+ * set from a page.
+ */
+const DETAIL_ALERT_EMAIL = 'john@questwatersports.com';
+
+/**
  * Where a statement sends somebody to pay, instead of any one job's own POS+
  * link. A statement can bundle several invoices, and no individual job's
  * link is right for all of them — this is the shop's own payment page, not
@@ -8336,7 +8344,8 @@ function notifyDetailAnswer_(row, changed, ask) {
     (row.customer_phone ? ' · ' + esc_(row.customer_phone) : '') + '</p><ul>' + changed.map(line).join('') + '</ul>' +
     (ask ? '<p>They asked: “' + esc_(ask) + '”</p>' : '') +
     '<p><a href="' + esc_(SITE_URL + '/d/?detail=' + encodeURIComponent(row.id)) + '">Open it in the Detail Tracker</a></p></div>';
-  send_({ to: SERVICE_EMAIL, subject: subject, html: html, text: subject, jobId: row.job_id || row.id, kind: 'detail_answer' });
+  send_({ to: SERVICE_EMAIL, cc: DETAIL_ALERT_EMAIL, subject: subject, html: html, text: subject,
+          jobId: row.job_id || row.id, kind: 'detail_answer' });
 }
 
 /** Staff answering for the customer — they rang, or said yes at the counter. */

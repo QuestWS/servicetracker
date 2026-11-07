@@ -141,6 +141,7 @@ describe('a detail quote, waiting on the customer', () => {
     expect(out.quote.lines.map((x) => x.status)).toEqual(['accepted', 'call']);
     const office = backend.sentMail.filter((m) => m.to === 'service@questwatersports.com');
     expect(office).toHaveLength(1);
+    expect(office[0].opts.cc).toBe('john@questwatersports.com');
     expect(office[0].subject).toMatch(/CALL REQUESTED/);
     expect(office[0].opts.htmlBody).toContain('Does it include the cabin?');
     expect(pushed).toHaveLength(1);
