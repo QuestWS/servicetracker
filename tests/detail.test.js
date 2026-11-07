@@ -662,3 +662,62 @@ describe('the shop\'s own detail emails read well', () => {
     expect(call.opts.htmlBody).toContain('When?');
   });
 });
+
+describe('detail quotes in the writer\'s portal, from the start', () => {
+  function priced() {
+    const d = backend.fn('createDetail', detailer(), { customerName: 'Pat Harbor', customerPhone: '815-555-0142',
+      customerEmail: 'pat@example.com', items: [{ key: 'washWax', label: 'Wash & wax' }, { key: 'carpet', label: 'Carpet cleaning' }] }).detail;
+    return backend.fn('sendDetailQuote', detailer(), d.id, { [d.items[0].id]: 352, [d.items[1].id]: 150 }, 'email').detail;
+  }
+
+  it('is on the jobs list\'s answer from the moment it is taken in', () => {
+    const d = backend.fn('createDetail', detailer(), { customerName: 'Pat Harbor', items: [{ key: 'washWax', label: 'Wash & wax' }] }).detail;
+    const list = backend.fn('listJobs', admin, { status: 'every', fresh: true });
+    expect(list.detailQuotes.map((x) => x.id)).toEqual([d.id]);
+    expect(list.detailQuotes[0].stage).toBe('price');
+    expect(list.detailWaiting).toHaveLength(0);
+  });
+
+  it('leaves it off once it is a job — the job is on the list then', () => {
+    const d = priced();
+    backend.fn('decideDetailLines', admin, d.id, 'all', 'accepted', '');
+    backend.fn('linkDetailJob', admin, d.id, '01-8891');
+    expect(backend.fn('listJobs', admin, { status: 'every', fresh: true }).detailQuotes).toHaveLength(0);
+  });
+
+  it('the writer records the customer\'s yes for everything from a phone call, and John hears it', () => {
+    const d = priced();
+    const before = backend.sentMail.length;
+    const out = backend.fn('decideDetailLines', admin, d.id, 'all', 'accepted', 'Said yes on the phone').detail;
+    expect(out.items.every((x) => x.quote === 'accepted' && x.answeredBy === 'Office')).toBe(true);
+    expect(out.stage).toBe('ticket');
+    const m = backend.sentMail.slice(before).find((x) => /Detail quote answered/.test(x.subject));
+    expect(m.to).toBe(JOHN);
+    expect(m.opts.cc).toBe(SERVICE);
+    expect(m.opts.htmlBody).toContain('recorded by Office');
+    expect(m.opts.htmlBody).toContain('Said yes on the phone');
+  });
+
+  it('"have John call" on one line emails John with what they asked', () => {
+    const d = priced();
+    backend.fn('decideDetailLines', admin, d.id, [d.items[1].id], 'call', 'Wants to know if the cabin is included');
+    const m = backend.sentMail.find((x) => /^CALL REQUESTED/.test(x.subject));
+    expect(m.to).toBe(JOHN);
+    expect(m.opts.htmlBody).toContain('Wants to know if the cabin is included');
+    expect(backend.fn('getDetail', admin, d.id).detail.stage).toBe('call');
+  });
+
+  it('keeps notes from whoever took the call, with their name', () => {
+    const d = priced();
+    backend.fn('addDetailNote', admin, d.id, 'Called back, left a voicemail');
+    const ev = backend.fn('getDetail', admin, d.id).events[0];
+    expect(ev).toMatchObject({ kind: 'note', text: 'Called back, left a voicemail', actor: 'Office' });
+    expect(() => backend.fn('addDetailNote', admin, d.id, '  ')).toThrow(/Write the note/);
+  });
+
+  it('says so when nothing is left to answer', () => {
+    const d = priced();
+    backend.fn('decideDetailLines', admin, d.id, 'all', 'declined', '');
+    expect(() => backend.fn('decideDetailLines', admin, d.id, 'all', 'accepted', '')).toThrow(/Nothing on this quote/);
+  });
+});

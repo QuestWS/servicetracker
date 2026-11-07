@@ -3364,6 +3364,32 @@ const detailErrors = [];
   const online = (await (await fetch(`${BASE}/dev/mail`)).json()).filter((m) => /requested online: Online Checkperson/.test(m.subject));
   check('John is emailed about it, service@ copied', online.length === 1 && online[0].to === 'john@questwatersports.com');
 
+  // Every quote request is in the writer's portal from the start, and the
+  // writer records what the customer said on the phone there.
+  {
+    const o = (await post('adminSignIn', '', [PASSWORD])).token;
+    const dq = (await post('createDetail', o, [{ customerName: 'Phoned Checkperson', customerPhone: '815-555-0155',
+      customerEmail: 'phoned@example.com', items: [{ key: 'washWax', label: 'Wash & wax' }, { key: 'trailer', label: 'Trailer' }] }])).detail;
+    await admin.goto(`${BASE}/admin/?q=Phoned`, { waitUntil: 'networkidle' });
+    await admin.waitForFunction(() => /Detail quotes matching/i.test(document.getElementById('view').innerText)
+      && /Phoned Checkperson/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+    check('a quote is findable from the portal\'s jobs search the moment it is taken in', true);
+    await post('sendDetailQuote', o, [dq.id, { [dq.items[0].id]: 300, [dq.items[1].id]: 40 }, 'email']);
+    await admin.goto(`${BASE}/admin/?detail=${dq.id}`, { waitUntil: 'networkidle' });
+    await admin.waitForSelector('[data-all="call"]', { timeout: 30000 });
+    await admin.fill('#dqsaid', 'Wants to talk about the trailer');
+    const before = (await (await fetch(`${BASE}/dev/mail`)).json()).length;
+    await admin.click('[data-all="call"]');
+    await admin.waitForFunction(() => /John to call/i.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+    const after = (await (await fetch(`${BASE}/dev/mail`)).json()).slice(before);
+    check('the writer can ask John to call from the portal, and John is emailed what they said',
+      after.some((m) => m.to === 'john@questwatersports.com' && /^CALL REQUESTED/.test(m.subject) && /talk about the trailer/.test(m.opts.htmlBody)));
+    await admin.fill('#dqnote', 'Left a voicemail');
+    await admin.click('#dqaddnote');
+    await admin.waitForFunction(() => /Left a voicemail/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+    check('and keeps a note on it', true);
+  }
+
   // A split ticket: the writer sends a work order to detail and the mechanic.
   const office = (await post('adminSignIn', '', [PASSWORD])).token;
   await post('createJob', office, [{ invoiceNumber: '01-6161', customerName: 'Split Checkperson', boatInfo: '2018 Tige 22, Length: 22 ft' }]);

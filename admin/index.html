@@ -38,6 +38,7 @@
     <a class="linkbtn" href="?view=statements" data-nav="statements">Statements</a>
     <a class="linkbtn" href="?view=parts" data-nav="parts">Parts</a>
     <a class="linkbtn" href="?view=props" data-nav="props">Props</a>
+    <a class="linkbtn" href="?view=details" data-nav="details">Detail quotes</a>
     <a class="linkbtn" href="../d/" target="_blank" rel="noreferrer">Detail Tracker</a>
     <a class="linkbtn" href="?view=mechanics" data-nav="mechanics">Mechanics</a>
     <a class="linkbtn" href="?view=setup" data-nav="setup">App setup</a>
@@ -564,6 +565,187 @@ function countJobs(all, kind) {
  * as usual (linkDetailJob). Drawn after the list, never holding it up.
  */
 let detailWaiting = [];
+let detailQuotesAll = [];
+
+/* ------------------------------------------------------- detail quotes --- */
+/*
+ * Every detail quote request is the desk's from the moment it is taken in —
+ * at the counter, by John, or by the customer online (Chris, Nov 7 2026: "if a
+ * customer calls I can look them up and make any notes, and confirmations /
+ * declines / requests for John to call directly in the service writer
+ * page"). They ride on listJobs (detailQuotes) so the Jobs search finds a
+ * caller's quote alongside their jobs, list on ?view=details, and open on
+ * ?detail=<id>. Once one is a job, the job is what the desk works.
+ */
+const DQ_STAGE = {
+  price: ['Needs John\'s price', 'gold'], waiting: ['Waiting on the customer', 'gold'], call: ['John to call them', 'red'],
+  ticket: ['Approved — needs work order', 'green'], todo: ['Approved', 'green'], doing: ['In progress', 'blue'],
+  declined: ['Declined', 'grey'], done: ['Done', 'grey'], cancelled: ['Cancelled', 'grey'],
+};
+const DQ_LINE = { pending: ['Waiting on the customer', 'gold'], call: ['John to call', 'red'], accepted: ['Accepted', 'green'],
+  declined: ['Declined', 'grey'], '': ['Not sent yet', 'grey'] };
+
+function detailQuoteFields(d) {
+  return [[d.quoteNo, d.customerName, d.customerEmail, d.unit, d.items.map((x) => x.label).join(' ')], d.customerPhone];
+}
+
+function detailQuoteRowHtml(d) {
+  const st = DQ_STAGE[d.stage] || [d.stage, 'grey'];
+  // What it is quoted at: every line not declined. "to price" while any has no figure yet.
+  const live = d.items.filter((x) => x.quote !== 'declined');
+  const unpriced = live.some((x) => x.price == null);
+  const quoted = live.reduce((t, x) => t + (Number(x.price) || 0), 0);
+  return `<a class="jobrow" href="?detail=${encodeURIComponent(d.id)}">
+    <div><div class="jobid">${esc(d.quoteNo || 'Detail')}</div>
+      <div class="who">${esc(d.customerName || 'No name')}</div>
+      <div class="sub">${esc([d.unit, d.items.map((x) => x.label).join(', ')].filter(Boolean).join(' · '))}</div></div>
+    <div class="row tight jobmeta">
+      ${d.createdBy === 'Online request' ? '<span class="pill blue">Online</span>' : ''}
+      <span class="pill grey">${unpriced ? 'to price' : formatMoney(quoted)}</span>
+      <span class="pill ${st[1]}">${esc(st[0])}</span>
+      <span class="sub" style="min-width:78px;text-align:right">${relativeDays(d.updatedAt)}</span></div></a>`;
+}
+
+function detailMatchesHtml(search) {
+  const hits = detailQuotesAll.filter((d) => { const [f, ph] = detailQuoteFields(d); return matchesSearch(f, search, ph); });
+  if (!hits.length) return '';
+  return `<section class="card" style="margin-bottom:16px"><h2>Detail quotes matching “${esc(search)}”</h2>
+    <div class="joblist">${hits.slice(0, 10).map(detailQuoteRowHtml).join('')}</div></section>`;
+}
+
+async function renderDetailQuotes() {
+  view.innerHTML = '<p class="loading">Loading detail quotes…</p>';
+  const answer = jobsCache || await api('listJobs', [{ status: 'every' }]);
+  if (!jobsCache) jobsCache = answer;
+  const all = answer.detailQuotes || [];
+  const chip = params.get('stage') || 'open';
+  const q = params.get('q') || '';
+  const CHIPS = [['open', 'Open'], ['price', 'Needs John\'s price'], ['waiting', 'Waiting on customer'], ['call', 'John to call'],
+    ['ticket', 'Needs work order'], ['declined', 'Declined'], ['done', 'Done']];
+  const inChip = (d) => (chip === 'open' ? !['declined', 'done', 'cancelled'].includes(d.stage) : d.stage === chip);
+  const list = all.filter(inChip).filter((d) => { const [f, ph] = detailQuoteFields(d); return matchesSearch(f, q, ph); });
+  const href = (c) => `?view=details${c !== 'open' ? `&stage=${c}` : ''}${q ? `&q=${encodeURIComponent(q)}` : ''}`;
+  view.innerHTML = `
+    <div class="row" style="justify-content:space-between;margin-bottom:14px">
+      <h1 class="page-title">Detail quotes</h1>
+      <a class="btn navy" href="../d/?new" target="_blank" rel="noreferrer">New quote request</a></div>
+    <p class="lead" style="margin-top:-6px">Every detail quote from the moment it is taken in — at the desk, by John, or by the
+      customer online — until it becomes a job. Open one to add notes or record what the customer said.</p>
+    <form class="row" id="dqsearch" style="margin-bottom:14px">
+      <input class="txt" id="dq" placeholder="D-number, name, phone, email or unit" value="${esc(q)}" style="flex:1 1 240px">
+      <button class="btn ghost" type="submit">Search</button></form>
+    <div class="row tight" style="margin-bottom:14px">${CHIPS.map(([c, label]) =>
+      `<a class="chip${c === chip ? ' on' : ''}" href="${href(c)}">${esc(label)} (${all.filter((d) => (c === 'open' ? !['declined', 'done', 'cancelled'].includes(d.stage) : d.stage === c)).length})</a>`).join('')}</div>
+    ${list.length ? `<div class="joblist">${list.map(detailQuoteRowHtml).join('')}</div>`
+      : '<div class="empty">No detail quotes here.</div>'}`;
+  $('dqsearch').onsubmit = (event) => {
+    event.preventDefault();
+    navigate(`?view=details${chip !== 'open' ? `&stage=${chip}` : ''}${$('dq').value.trim() ? `&q=${encodeURIComponent($('dq').value.trim())}` : ''}`);
+  };
+}
+
+async function renderDetailQuote(id) {
+  view.innerHTML = '<p class="loading">Loading the quote…</p>';
+  const { detail: d, events } = await api('getDetail', [id]);
+  const st = DQ_STAGE[d.stage] || [d.stage, 'grey'];
+  const open = d.status !== 'done' && d.status !== 'cancelled';
+  const answerable = (x) => !x.winter && !x.done && (x.quote === 'pending' || x.quote === 'call' || (x.quote === '' && x.price != null));
+  const anyOpen = open && d.items.some(answerable);
+  const tel = (d.customerPhone || '').replace(/\D/g, '');
+  view.innerHTML = `
+    <div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <h1 class="page-title">${esc(d.quoteNo || 'Detail quote')} · ${esc(d.customerName)}</h1>
+      <span class="pill ${st[1]}" style="font-size:14px">${esc(st[0])}</span></div>
+    <p class="hint" style="margin:0 0 14px"><a href="?view=details">← Detail quotes</a> ·
+      ${d.createdBy === 'Online request' ? 'Requested online' : `Taken in by ${esc(d.createdBy || 'the desk')}`}, ${esc(formatDateTime(d.createdAt))} ·
+      <a href="../d/?detail=${encodeURIComponent(d.id)}" target="_blank" rel="noreferrer">Open in the Detail Tracker</a>
+      ${d.quoteUrl ? ` · <a href="${esc(d.quoteUrl)}" target="_blank" rel="noreferrer">The customer's quote page</a>` : ''}</p>
+    <div class="split">
+      <div class="stack">
+        <section class="card"><h2>What they want</h2>
+          ${d.items.map((x) => {
+            const ls = DQ_LINE[x.quote] || ['', 'grey'];
+            return `<div class="filerow" style="flex-wrap:wrap;gap:6px 10px">
+              <span class="grow"><b>${esc(x.label)}</b>${x.qty > 1 ? ` × ${x.qty}` : ''}
+                <span class="pill ${ls[1]}">${esc(x.done ? 'Done' : ls[0])}</span>
+                ${x.note ? `<div class="hint">“${esc(x.note)}”${x.answeredBy ? ` — ${esc(x.answeredBy === 'customer' ? 'the customer, online' : x.answeredBy)}` : ''}</div>` : ''}</span>
+              <span class="mono">${x.price == null ? 'to price' : formatMoney(x.price)}</span>
+              ${open && answerable(x) ? `<span class="row tight" style="flex-basis:100%">
+                <button class="btn sm green" type="button" data-ans="accepted" data-it="${esc(x.id)}">Accepted</button>
+                <button class="btn sm ghost" type="button" data-ans="declined" data-it="${esc(x.id)}">Declined</button>
+                <button class="btn sm red" type="button" data-ans="call" data-it="${esc(x.id)}">Have John call</button></span>` : ''}</div>`;
+          }).join('')}
+          <div class="row" style="justify-content:space-between;font-weight:700;padding-top:10px">
+            <span>Approved so far</span><span class="mono">${formatMoney(d.total || 0)}</span></div>
+          ${d.stage === 'price' ? '<p class="hint">John has not priced and sent this yet — he has been emailed.</p>' : ''}
+        </section>
+        ${anyOpen ? `<section class="card"><h2>The customer called?</h2>
+          <p class="hint" style="margin-top:0">Record what they said. John is emailed (service@ copied) either way.</p>
+          <label class="fld" for="dqsaid">What they said <small>— optional, goes to John</small></label>
+          <textarea class="txt" id="dqsaid" rows="2" placeholder="e.g. Yes to everything, wants it done before May 1"></textarea>
+          <div class="row" style="margin-top:10px">
+            <button class="btn green" type="button" data-all="accepted">They accept everything</button>
+            <button class="btn ghost" type="button" data-all="declined">They decline everything</button>
+            <button class="btn red" type="button" data-all="call">Have John call them</button></div>
+          <p class="hint">The buttons on each line above answer just that line.</p></section>` : ''}
+        ${d.stage === 'ticket' ? `<section class="card gold"><h2>Work order</h2>
+          <p class="hint" style="margin-top:0">Approved. Write it up in BiT and type its number — it becomes a detailer-only job.</p>
+          <div class="row"><input class="txt mono" id="dqticket" placeholder="BiT work order #" style="max-width:200px">
+            <button class="btn navy" type="button" id="dqmake">Make the job</button></div></section>` : ''}
+      </div>
+      <div class="stack">
+        <section class="card"><h2>Customer</h2>
+          ${d.customerPhone ? `<p style="margin:0 0 8px"><a class="btn ghost sm" href="tel:+1${esc(tel.slice(-10))}">Call ${esc(d.customerPhone)}</a></p>` : ''}
+          <label class="fld" for="dqname">Name</label><input class="txt" id="dqname" value="${esc(d.customerName)}">
+          <div class="grid2"><div><label class="fld" for="dqphone">Phone</label><input class="txt" id="dqphone" value="${esc(d.customerPhone)}"></div>
+            <div><label class="fld" for="dqemail">Email</label><input class="txt" id="dqemail" value="${esc(d.customerEmail)}"></div></div>
+          <label class="fld" for="dqunit">Unit</label><input class="txt" id="dqunit" value="${esc(d.unit)}">
+          <button class="btn ghost" type="button" id="dqsave" style="margin-top:10px">Save</button>
+          ${d.notes ? `<div class="subhead">From the request</div><p style="white-space:pre-wrap;margin:4px 0 0">${esc(d.notes)}</p>` : ''}
+        </section>
+        <section class="card"><h2>Notes &amp; history</h2>
+          <textarea class="txt" id="dqnote" rows="2" placeholder="Called back, left a voicemail…"></textarea>
+          <button class="btn ghost" type="button" id="dqaddnote" style="margin-top:8px">Add the note</button>
+          <div style="margin-top:12px">${events.map((e) => `<div style="padding:8px 0;border-top:1px solid var(--ice)">
+            ${e.kind === 'note' ? `<b>${esc(e.actor)}:</b> ` : ''}${esc(e.text)}
+            <div class="hint">${esc(e.kind === 'note' ? '' : e.actor + ' · ')}${esc(formatDateTime(e.at))}</div></div>`).join('') || '<p class="hint">Nothing yet.</p>'}</div>
+        </section>
+      </div>
+    </div>`;
+  const after = (out, msg) => { jobsCache = null; jobsFreshAsked = false; toast(msg); renderDetailQuote(id); return out; };
+  const said = () => ($('dqsaid') ? $('dqsaid').value.trim() : '');
+  const answer = async (ids, choice, button) => {
+    button.disabled = true;
+    try {
+      await api('decideDetailLines', [id, ids, choice, said()]);
+      after(null, choice === 'call' ? 'Recorded — John has been asked to call them.' : 'Recorded — John has been emailed.');
+    } catch (error) { button.disabled = false; toast(error.message); }
+  };
+  view.querySelectorAll('[data-ans]').forEach((b) => { b.onclick = () => answer([b.dataset.it], b.dataset.ans, b); });
+  view.querySelectorAll('[data-all]').forEach((b) => { b.onclick = () => answer('all', b.dataset.all, b); });
+  $('dqaddnote').onclick = async () => {
+    const t = $('dqnote').value.trim();
+    if (!t) return toast('Write the note first.');
+    try { await api('addDetailNote', [id, t]); after(null, 'Note added.'); } catch (error) { toast(error.message); }
+  };
+  $('dqsave').onclick = async () => {
+    try {
+      await api('updateDetail', [id, { customerName: $('dqname').value, customerPhone: $('dqphone').value,
+        customerEmail: $('dqemail').value, unit: $('dqunit').value }]);
+      after(null, 'Saved.');
+    } catch (error) { toast(error.message); }
+  };
+  if ($('dqmake')) $('dqmake').onclick = async () => {
+    const ticket = $('dqticket').value.trim();
+    if (!ticket) return toast('Type the BiT work order number first.');
+    try {
+      const out = await api('linkDetailJob', [id, ticket]);
+      jobsCache = null; jobsFreshAsked = false;
+      toast(out.made ? `Job ${out.job.id} made from ${d.quoteNo || 'the quote'}.` : `Linked to job ${out.job.id}.`);
+      navigate(`?job=${encodeURIComponent(out.job.id)}`);
+    } catch (error) { toast(error.message); }
+  };
+}
 function drawDetailWaiting() {
   const box = $('detailwait');
   if (!box) return;
@@ -574,7 +756,7 @@ function drawDetailWaiting() {
     <p class="hint" style="margin-top:0">Write each one up in BiT and type its number here. It becomes a detailer-only job:
       the detailer marks it done, and you close it out like any other.</p>
     ${detailWaiting.map((d) => `<div class="row" style="padding:8px 0;border-top:1px solid var(--line);align-items:center">
-      <div style="flex:1 1 260px"><b>${esc(d.quoteNo || '')}</b> ${esc(d.customerName)}${d.unit ? ` · ${esc(d.unit)}` : ''}
+      <div style="flex:1 1 260px"><a href="?detail=${encodeURIComponent(d.id)}"><b>${esc(d.quoteNo || '')}</b> ${esc(d.customerName)}</a>${d.unit ? ` · ${esc(d.unit)}` : ''}
         <div class="hint">${esc(d.items.filter((x) => x.quote === '' || x.quote === 'accepted').map((x) => x.label).join(', '))} · ${money(d.total)}
           · ${esc([d.customerPhone, d.customerEmail].filter(Boolean).join(' · '))}</div></div>
       <input class="txt mono" data-dticket="${esc(d.id)}" placeholder="BiT work order #" style="max-width:170px">
@@ -659,9 +841,10 @@ async function renderJobs(kind = 'job') {
     view.insertAdjacentHTML('afterbegin', `<div class="banner ${tone}" id="liststrip" style="margin-bottom:12px">${esc(text)}</div>`);
   }
 
-  function draw({ jobs: everything, counts: jobCounts, testMode: mode, detailWaiting: waiting }, stale) {
+  function draw({ jobs: everything, counts: jobCounts, testMode: mode, detailWaiting: waiting, detailQuotes: quotes }, stale) {
     // On the same answer as the list (listJobs), so the page is still one call.
     detailWaiting = waiting || [];
+    detailQuotesAll = quotes || [];
     const counts = orders ? countJobs(everything, 'parts') : jobCounts;
     // Somebody may already be typing a search into the list drawn from the
     // cache; the fresh copy landing must not take the words out from under them.
@@ -699,6 +882,7 @@ async function renderJobs(kind = 'job') {
       </div>
 
       ${orders ? '' : '<div id="detailwait"></div>'}
+      ${orders || !search ? '' : detailMatchesHtml(search)}
 
       <form class="row" id="searchform" style="margin-bottom:14px">
         <input class="txt" id="q" placeholder="${orders ? 'Invoice #, customer or part' : 'Invoice #, customer or boat'}" value="${esc(search)}" style="flex:1 1 240px">
@@ -4716,11 +4900,13 @@ async function route() {
   const which = params.get('view');
   const job = params.get('job');
   document.querySelectorAll('[data-nav]').forEach((link) => {
-    link.classList.toggle('on', link.dataset.nav === (which === 'neworder' ? 'orders' : which || 'jobs'));
+    link.classList.toggle('on', link.dataset.nav === (which === 'neworder' ? 'orders' : params.get('detail') ? 'details' : which || 'jobs'));
   });
 
   try {
     if (job) return await renderJob(job);
+    if (params.get('detail')) return await renderDetailQuote(params.get('detail'));
+    if (which === 'details') return await renderDetailQuotes();
     if (which === 'intake') return renderIntake();
     if (which === 'orders') return await renderJobs('parts');
     if (which === 'neworder') return renderNewOrder();

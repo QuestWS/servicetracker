@@ -1108,7 +1108,9 @@ function apiFns_(data) {
     detailQuoteText:  function (a) { return detailQuoteText(data.token, a[0]); },
     markDetailQuoteSent: function (a) { return markDetailQuoteSent(data.token, a[0], a[1]); },
     sendDetailQuoteEmail: function (a) { return sendDetailQuoteEmail(data.token, a[0]); },
-    decideDetailLine: function (a) { return decideDetailLine(data.token, a[0], a[1], a[2]); },
+    decideDetailLine: function (a) { return decideDetailLine(data.token, a[0], a[1], a[2], a[3]); },
+    decideDetailLines: function (a) { return decideDetailLines(data.token, a[0], a[1], a[2], a[3]); },
+    addDetailNote:    function (a) { return addDetailNote(data.token, a[0], a[1]); },
     winterDetails:    function (a) { return winterDetails(data.token, a[0] === true); },
     pullWinterDetail: function (a) { return pullWinterDetail(data.token, a[0]); },
     pushKey:          function (a) { return pushKey(); },
@@ -2232,7 +2234,7 @@ function listJobs(token, filter) {
 }
 
 // Bump whenever a job summary gains a field, for the reason OPEN_JOBS_V_ says.
-const JOBS_LIST_V_ = 7;
+const JOBS_LIST_V_ = 8;
 const JOBS_LIST_KEY_ = 'JOBSLIST_v' + JOBS_LIST_V_ + '_';
 
 /**
@@ -2304,7 +2306,12 @@ function jobsListFromSheet_(filter) {
   });
   // Approved detail quotes waiting on the writer's BiT work order — on the
   // same answer, so the jobs page stays one call (linkDetailJob makes them jobs).
-  return { jobs: jobs, counts: byStatus, testMode: testMode_(), detailWaiting: detailsAwaitingTicket_() };
+  // Detail quote requests that are not jobs yet — every one, from the moment
+  // it is taken in — on the same answer, so the jobs page stays one call and
+  // its search finds a caller's quote as well as their jobs.
+  const quotes = detailQuotesForDesk_();
+  return { jobs: jobs, counts: byStatus, testMode: testMode_(), detailQuotes: quotes,
+           detailWaiting: quotes.filter(function (d) { return d.stage === 'ticket'; }) };
 }
 
 /**
@@ -7981,13 +7988,17 @@ function nextDetailQuoteNo_() {
   return 'D-' + n;
 }
 
-/** Approved quote requests with no work order yet, for the writer's jobs page. */
-function detailsAwaitingTicket_() {
+/**
+ * Every quote request the writer's portal shows: taken in, priced, waiting,
+ * approved — everything not yet a job (a job is on the jobs list already) and
+ * not archived. Newest first.
+ */
+function detailQuotesForDesk_() {
   if (!ss_().getSheetByName('Details')) return [];
   return rows_('Details').filter(function (r) {
-    return !r.archived_at && r.status !== 'cancelled' && (r.source || 'request') === 'request' && !r.job_id &&
-      detailStage_(r, detailItems_(r)) === 'ticket';
-  }).map(function (r) { return detailView_(r, null); });
+    return !r.archived_at && (r.source || 'request') === 'request' && !r.job_id;
+  }).map(function (r) { return detailView_(r, null); })
+    .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
 }
 
 /* ------------------------------------------------------- online requests --- */
@@ -8807,7 +8818,7 @@ function answerDetailQuote(code, answers, note) {
 }
 
 /** One email to the office per submission, never per line. */
-function notifyDetailAnswer_(row, changed, ask) {
+function notifyDetailAnswer_(row, changed, ask, recordedBy) {
   const call = changed.filter(function (x) { return x.quote === 'call'; });
   const n = function (q) { return changed.filter(function (x) { return x.quote === q; }).length; };
   const subject = (call.length ? 'CALL REQUESTED — ' : '') + 'Detail quote answered: ' + row.customer_name +
@@ -8816,7 +8827,8 @@ function notifyDetailAnswer_(row, changed, ask) {
     tone: call.length ? 'red' : n('accepted') ? 'green' : 'navy', quoteNo: row.quote_no,
     heading: call.length ? 'They want a call' : n('accepted') ? 'Quote accepted' : 'Quote declined',
     sub: [n('accepted') ? n('accepted') + ' accepted' : '', n('declined') ? n('declined') + ' declined' : '',
-      call.length ? call.length + ' call me' : ''].filter(String).join(' · '),
+      call.length ? call.length + ' call me' : ''].filter(String).join(' · ') +
+      (recordedBy ? ' — recorded by ' + recordedBy + ' from the customer' : ' — answered online'),
     ask: ask,
     rows: detailCustomerRows_(row),
     linesTitle: 'Their answers',
@@ -8829,24 +8841,79 @@ function notifyDetailAnswer_(row, changed, ask) {
 }
 
 /** Staff answering for the customer — they rang, or said yes at the counter. */
-function decideDetailLine(token, id, itemId, choice) {
+function decideDetailLine(token, id, itemId, choice, note) {
+  return decideDetailLines(token, id, [itemId], choice, note);
+}
+
+/**
+ * Staff recording the customer's answer — they rang the desk, or said yes at
+ * the counter. `itemIds` is the lines, or 'all' for every line still open
+ * (waiting on them, or priced and not sent). Accepted, declined or "have John
+ * call" tells John exactly as the customer answering online does, saying who
+ * recorded it; `note` is what the customer said, kept on the line and in the
+ * email. Chris, Nov 7 2026: "confirmations/declines/requests for John to call
+ * directly in the service writer page".
+ */
+function decideDetailLines(token, id, itemIds, choice, note) {
   const who = requireShop_(token);
   if (!DETAIL_QUOTE_STATES_[choice]) throw new Error('That is not an answer.');
-  return withLock_(function () {
+  const by = whoIs_(who);
+  const said = String(note || '').trim().slice(0, 1000);
+  const out = withLock_(function () {
     forget_('Details');
     const row = detailRow_(id);
     if (!row) throw new Error('No such detail.');
     const items = detailItems_(row);
-    const x = items.filter(function (i) { return i.id === String(itemId || ''); })[0];
-    if (!x) throw new Error('That line is not on this detail any more.');
-    if (row.source === 'winter' && x.winter) throw new Error('Answer winter quotes in the winter console.');
-    x.quote = choice;
-    x.answeredAt = nowIso_();
-    x.answeredBy = whoIs_(who);
-    updateRow_('Details', row._row, { items: JSON.stringify(items), updated_at: nowIso_() });
-    detailEvent_(row.id, 'answer', whoIs_(who) + ' marked ' + x.label + ' ' +
-      ({ '': 'not quoted', pending: 'waiting on the customer', call: 'call me', accepted: 'accepted', declined: 'declined' })[choice] +
-      ' for ' + row.customer_name, whoIs_(who));
+    const all = itemIds === 'all';
+    const want = all ? null : (itemIds || []).map(String);
+    const targets = items.filter(function (x) {
+      if (x.winter || x.done) return false;
+      if (all) return x.quote === 'pending' || x.quote === 'call' || (x.quote === '' && x.price !== null);
+      return want.indexOf(x.id) !== -1;
+    });
+    if (!targets.length) {
+      if (!all && items.some(function (x) { return x.winter && want.indexOf(x.id) !== -1; })) {
+        throw new Error('Answer winter quotes in the winter console.');
+      }
+      throw new Error(all ? 'Nothing on this quote is waiting on an answer.' : 'That line is not on this detail any more.');
+    }
+    const at = nowIso_();
+    const changed = [];
+    targets.forEach(function (x) {
+      if (x.quote === choice && !said) return;
+      x.quote = choice;
+      x.answeredAt = at;
+      x.answeredBy = by;
+      if (said) x.note = said;
+      changed.push(x);
+    });
+    if (!changed.length) return { row: row, changed: [] };
+    updateRow_('Details', row._row, { items: JSON.stringify(items), updated_at: at });
+    const words = { '': 'not quoted', pending: 'waiting on the customer', call: 'wants John to call', accepted: 'accepted', declined: 'declined' };
+    detailEvent_(row.id, choice === 'call' ? 'call' : 'answer', by + ' recorded: ' + row.customer_name + ' ' + words[choice] + ' — ' +
+      changed.map(function (x) { return x.label; }).join(', ') + (said ? ' (“' + said + '”)' : ''), by);
+    return { row: detailRow_(id), changed: changed, v: bumpDetailVersion_() };
+  });
+  if (out.changed.length && (choice === 'accepted' || choice === 'declined' || choice === 'call')) {
+    notifyDetailAnswer_(out.row, out.changed, said, by);
+    pushNotify_(choice === 'call' ? 'Call requested' : 'Detail quote answered',
+      out.row.customer_name + ': ' + out.changed.map(function (x) { return x.label; }).join(', ') + ' — ' +
+      ({ accepted: 'accepted', declined: 'declined', call: 'please call them' })[choice], out.row.id);
+  }
+  return { detail: detailView_(out.row, out.row.job_id ? jobRow_(out.row.job_id) : null), v: out.v || detailVersion_() };
+}
+
+/** A note on a quote, from whoever took the call. Goes in its history with their name. */
+function addDetailNote(token, id, text) {
+  const who = requireShop_(token);
+  const t = String(text || '').trim().slice(0, 2000);
+  if (!t) throw new Error('Write the note first.');
+  return withLock_(function () {
+    forget_('Details');
+    const row = detailRow_(id);
+    if (!row) throw new Error('No such detail.');
+    updateRow_('Details', row._row, { updated_at: nowIso_() });
+    detailEvent_(row.id, 'note', t, whoIs_(who));
     return { detail: detailView_(detailRow_(id), row.job_id ? jobRow_(row.job_id) : null), v: bumpDetailVersion_() };
   });
 }
