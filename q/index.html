@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Your detailing quote — Quest Watersports</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" type="image/png" href="../assets/quest-mark.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;600&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<link rel="stylesheet" href="../assets/app.css">
+<style>
+.offer{border:1px solid var(--line);border-left:5px solid var(--gold);border-radius:12px;padding:14px;margin-bottom:12px;background:#fff}
+.offer.accepted{border-left-color:var(--green);background:var(--green-bg)}
+.offer.declined{border-left-color:var(--muted)}
+.offer.call{border-left-color:var(--frost)}
+.offer .top{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
+.offer .what{font-weight:700;color:var(--navy);font-size:17px}
+.offer .amt{font-family:var(--mono);font-weight:600;font-size:17px;white-space:nowrap}
+.offer .state{font-size:13.5px;color:var(--muted);margin-top:4px}
+.pick{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px}
+.pick label{display:flex;align-items:center;justify-content:center;gap:6px;border:1.5px solid var(--line);border-radius:9px;padding:11px 6px;font-weight:600;cursor:pointer;background:#fff;color:var(--navy)}
+.pick input{width:18px;height:18px}
+.pick label:has(input:checked){border-color:var(--navy);background:var(--frost-soft)}
+#bar{position:sticky;bottom:0;background:#fff;padding:10px 0 14px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<!--
+  A customer's detailing quote, opened from the email or text the shop sent.
+  The code in the address is the whole of the credential, as on /i/. The page
+  shows the lines that were sent to them with their prices, and takes Accept,
+  Decline or Call me — by POST only, so a mail scanner that follows the link
+  answers nothing. It is a quote, not a log: no notes, no names, nothing else
+  from the shop's side is handed to it.
+-->
+<header class="tracker-head"><div class="inner"><img src="../assets/quest-mark.png" alt="">
+  <div><div class="co">Quest Watersports</div><div class="sub">Ottawa, IL</div></div></div></header>
+<main class="wrap narrow" id="main"><section class="card" style="margin-top:22px"><p class="lead" style="margin:0">Loading your quote…</p></section></main>
+
+<script type="module">
+import { api } from '../assets/lib/api.js';
+import { esc } from '../assets/lib/ui.js';
+
+const main = document.getElementById('main');
+const FALLBACK = { name: 'Quest Watersports', phone: '(815) 433-2200', email: 'service@questwatersports.com' };
+const money = (n) => (n == null ? '' : '$' + Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','));
+const tel = (p) => `tel:+1${String(p).replace(/[^0-9]/g, '').slice(-10)}`;
+const code = (() => {
+  const raw = (new URLSearchParams(location.search).get('c') || location.hash.replace(/^#/, '') || '').trim().toUpperCase();
+  return /^[0-9A-HJ-NP-TV-Z]{6,12}$/.test(raw) ? raw : '';
+})();
+const WORDS = {
+  pending: 'Waiting on your answer',
+  call: "You asked us to call — we'll be in touch. You can still answer here.",
+  accepted: '✓ Accepted — we will get it done',
+  declined: 'You declined this one. Changed your mind? Tick Accept.',
+};
+let DATA = null;
+const PICK = {};
+
+function missing(shop) {
+  const s = shop || FALLBACK;
+  main.innerHTML = `<section class="card" style="margin-top:22px;text-align:center"><h2>We could not find that quote</h2>
+    <p class="lead" style="margin:12px auto">Give us a call and we will sort it out.</p>
+    <a class="btn navy big" href="${tel(s.phone)}">${esc(s.phone)}</a></section>`;
+}
+
+function changes() {
+  return DATA.quote.lines.filter((l) => l.status !== 'accepted' && PICK[l.id] && PICK[l.id] !== l.status)
+    .map((l) => ({ item: l.id, choice: PICK[l.id], amt: l.price }));
+}
+
+function sync() {
+  const ch = changes();
+  const add = ch.filter((c) => c.choice === 'accepted').reduce((t, c) => t + Number(c.amt || 0), 0);
+  const n = (k) => ch.filter((c) => c.choice === k).length;
+  const bits = [n('accepted') && `${n('accepted')} accepted (${money(add)})`, n('declined') && `${n('declined')} declined`, n('call') && `${n('call')} call me`].filter(Boolean);
+  document.getElementById('sum').textContent = bits.length ? bits.join(' · ') : 'Tick a box for each line.';
+  document.getElementById('send').disabled = !ch.length;
+  document.getElementById('ask').hidden = !n('call');
+}
+
+function render(data, msg) {
+  DATA = data;
+  const q = data.quote;
+  const shop = data.shop || FALLBACK;
+  const open = q.lines.filter((l) => l.status !== 'accepted');
+  q.lines.forEach((l) => { if (l.status === 'declined' || l.status === 'call') PICK[l.id] = l.status; });
+  main.innerHTML = `<section class="card" style="margin-top:22px">
+    <h1 class="page-title" style="font-size:28px">${q.firstName ? esc(q.firstName) + ', here is' : 'Here is'} your detailing quote</h1>
+    ${q.unit ? `<p class="hint" style="margin:4px 0 14px">${esc(q.unit)}</p>` : ''}
+    <p class="lead">Tick <b>Accept</b>, <b>Decline</b> or <b>Call me</b> for each line, then send. Nothing is done until you accept it.</p>
+    ${q.lines.map((l, i) => `<div class="offer ${esc(l.status)}"><div class="top"><span class="what">${esc(l.label)}${l.qty > 1 ? ' × ' + l.qty : ''}</span><span class="amt">${money(l.price)}</span></div>
+      <div class="state">${esc(l.done ? '✓ Done' : WORDS[l.status] || '')}</div>
+      ${l.status === 'accepted' || q.closed ? '' : `<div class="pick" role="radiogroup" aria-label="${esc(l.label)}">
+        ${[['accepted', 'Accept'], ['declined', 'Decline'], ['call', 'Call me']].map(([v, t]) => `<label><input type="radio" name="o${i}" value="${v}" data-id="${esc(l.id)}" ${PICK[l.id] === v ? 'checked' : ''}>${t}</label>`).join('')}
+      </div>`}</div>`).join('')}
+    <div id="ask" hidden><label class="fld" for="note">What would you like to ask? <small>— optional, we'll call you either way</small></label>
+      <textarea class="txt" id="note" maxlength="1000"></textarea></div>
+    ${open.length && !q.closed ? `<div id="bar"><div class="hint" id="sum"></div><button class="btn navy block" id="send" disabled style="margin-top:8px">Send my answers</button></div>` : ''}
+    <div class="hint" id="msg" role="status" aria-live="polite" style="margin-top:10px;font-size:15px">${esc(msg || '')}</div>
+    <p class="hint" style="margin-top:16px">${esc(q.finePrint || '')}</p>
+    <p class="hint">Questions? Call us on <a href="${tel(shop.phone)}">${esc(shop.phone)}</a>.</p></section>`;
+  main.querySelectorAll('input[type=radio]').forEach((r) => { r.onchange = () => { PICK[r.dataset.id] = r.value; sync(); }; });
+  const send = document.getElementById('send');
+  if (send) { sync(); send.onclick = submit; }
+}
+
+async function submit() {
+  const ch = changes();
+  if (!ch.length) return;
+  const send = document.getElementById('send');
+  send.disabled = true;
+  send.textContent = 'Sending…';
+  const note = (document.getElementById('note') || {}).value || '';
+  try {
+    const out = await api('answerDetailQuote', [code, ch.map(({ item, choice }) => ({ item, choice })), note]);
+    if (out.notFound) return missing(out.shop);
+    render(out, 'Saved — thank you. We have your answers.');
+  } catch (e) {
+    // The answer may have landed even though the reply did not: look before saying it failed.
+    try {
+      const now = await api('detailQuote', [code]);
+      const landed = now.quote && ch.every((c) => (now.quote.lines.find((l) => l.id === c.item) || {}).status === c.choice);
+      if (landed) return render(now, 'Saved — thank you. We have your answers.');
+    } catch { /* fall through */ }
+    send.disabled = false;
+    send.textContent = 'Send my answers';
+    document.getElementById('msg').textContent = "We couldn't send that — please try again, or give us a call.";
+  }
+}
+
+(async () => {
+  if (!code) return missing();
+  try {
+    const out = await api('detailQuote', [code]);
+    if (out.notFound) return missing(out.shop);
+    render(out);
+  } catch { missing(); }
+})();
+</script>
+</body>
+</html>

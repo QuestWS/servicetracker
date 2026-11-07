@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Detail Tracker — Quest Watersports</title>
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#14293E">
+<link rel="icon" type="image/png" href="../assets/quest-mark.png">
+<link rel="apple-touch-icon" href="../assets/icons/apple-touch-icon.png">
+<!-- Its own installable app, scoped to d/, like the portal and the mechanic
+     app are to theirs: one phone can have all three on its home screen. -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;600&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<link rel="stylesheet" href="../assets/app.css">
+<style>
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+.stage{margin:18px 0 8px;font-family:var(--disp);text-transform:uppercase;letter-spacing:.05em;color:var(--navy);font-size:18px;display:flex;gap:8px;align-items:center}
+.stage .n{font-family:var(--body);font-size:13px;color:var(--muted)}
+.dcard{display:block;background:#fff;border:1px solid var(--line);border-left:5px solid var(--frost);border-radius:12px;padding:12px 14px;margin:0 0 10px;text-decoration:none;color:inherit;cursor:pointer}
+.dcard:hover{border-color:var(--frost)}
+.dcard.call{border-left-color:var(--alert)}
+.dcard.waiting{border-left-color:var(--gold)}
+.dcard.price{border-left-color:var(--warn)}
+.dcard.doing{border-left-color:var(--green)}
+.dcard.done,.dcard.cancelled{border-left-color:var(--muted);opacity:.8}
+.dcard .who{font-weight:700;color:var(--navy);font-size:16.5px}
+.dcard .what{font-size:14px;color:var(--muted);margin-top:3px}
+.dcard .pills{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+.line{display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;align-items:center;padding:11px 0;border-bottom:1px solid var(--ice)}
+.line:last-child{border-bottom:0}
+.line .tick{width:30px;height:30px;border:2px solid var(--line);border-radius:8px;background:#fff;font-size:18px;color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.line .tick.on{background:var(--green);border-color:var(--green)}
+.line .tick:disabled{opacity:.35;cursor:default}
+.line .nm{font-weight:600}
+.line .amt{font-family:var(--mono);white-space:nowrap}
+.line .sub{grid-column:2/-1;font-size:13px;color:var(--muted)}
+.line .acts{grid-column:2/-1;display:flex;gap:6px;flex-wrap:wrap}
+.feed div{padding:9px 0;border-bottom:1px solid var(--ice);font-size:14.5px}
+.feed small{color:var(--muted);display:block}
+.livebar{font-size:12.5px;color:var(--muted);margin:-4px 0 10px;display:flex;gap:8px;align-items:center}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block}
+.dot.off{background:var(--muted)}
+.splitbox{background:var(--frost-soft);border-radius:10px;padding:10px 12px;margin:0 0 12px;font-size:14.5px}
+.sumrow{display:flex;justify-content:space-between;font-weight:700;padding-top:10px}
+#toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--navy);color:#fff;padding:12px 18px;border-radius:12px;max-width:90vw;z-index:99;box-shadow:0 6px 20px rgba(0,0,0,.25);display:none}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <img class="mark" src="../assets/quest-mark.png" alt="">
+  <div class="ttl">Detail Tracker<small>Quest Watersports</small></div>
+  <div class="spacer"></div>
+  <nav id="nav"></nav>
+</header>
+<main class="wrap narrow" id="main"><section class="card"><p class="lead">Starting up…</p></section></main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script type="module">
+/* ============================================================================
+   THE DETAIL TRACKER — the detailers' board.
+   ----------------------------------------------------------------------------
+   Every detail in one place: requests taken in, work orders the writer sent
+   to detail (alone, or split with the mechanic), and winter units whose quote
+   carries detailing or a wash. Quotes go to the customer from here and their
+   answers come back live: the open board asks every twenty seconds whether
+   anything moved (one property read on the server when nothing has), and a
+   phone with notifications switched on is woken by a push.
+
+   Sign-in is the Harbor Haul Out staff PIN — the same roster, checked by the
+   winter system — and this app keeps its own sign-in apart from the mechanic
+   app's on the same phone.
+============================================================================ */
+import { api, storedToken, storedWho, storeSession, clearSession, useSessionBucket, tokenExpiry } from '../assets/lib/api.js';
+import { API_URL } from '../assets/lib/config.js';
+import { esc, formatDateTime } from '../assets/lib/ui.js';
+import { DETAIL_FINE_PRINT } from '../assets/lib/detail-menu.js';
+import { mountPicker, PICKER_CSS } from '../assets/lib/detail-picker.js';
+import { smsDraftUrl, isApple } from '../assets/lib/sms.js';
+
+useSessionBucket('detail');
+
+const css = document.createElement('style');
+css.textContent = PICKER_CSS;
+document.head.appendChild(css);
+
+const $ = (id) => document.getElementById(id);
+const main = $('main');
+const state = { v: '', board: null, lastEvent: '', view: 'board', timer: null, live: false };
+const money = (n) => (n == null ? '—' : '$' + Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','));
+
+function toast(msg, ms = 4000) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => { t.style.display = 'none'; }, ms);
+}
+
+const STAGES = [
+  ['call', '📞 Call the customer'], ['waiting', 'Waiting on the customer'], ['price', 'Needs a price'],
+  ['doing', 'In progress'], ['todo', 'To do'], ['done', 'Done'], ['cancelled', 'Cancelled'],
+];
+const QUOTE_WORDS = { pending: 'waiting on customer', call: '📞 call me', accepted: 'accepted', declined: 'declined', '': '' };
+const QUOTE_PILL = { pending: 'gold', call: 'red', accepted: 'green', declined: 'grey' };
+
+/* ---------------------------------------------------------------- nav --- */
+function go(view, extra = '') {
+  const url = view === 'board' ? './' : `?${view}${extra ? '=' + encodeURIComponent(extra) : ''}`;
+  history.pushState(null, '', url);
+  route();
+}
+window.addEventListener('popstate', route);
+
+function nav() {
+  const who = storedWho();
+  const on = (v) => (state.view === v ? ' on' : '');
+  $('nav').innerHTML = who ? `
+    <button class="linkbtn${on('board')}" data-go="board">Board</button>
+    <button class="linkbtn${on('new')}" data-go="new">+ New</button>
+    <button class="linkbtn${on('winter')}" data-go="winter">Winter</button>
+    <button class="linkbtn${on('feed')}" data-go="feed">Live</button>
+    <button class="linkbtn${on('me')}" data-go="me">${esc(who.name || 'Office')}</button>` : '';
+  $('nav').querySelectorAll('[data-go]').forEach((b) => { b.onclick = () => go(b.dataset.go); });
+}
+
+function route() {
+  const q = new URLSearchParams(location.search);
+  // Twelve hours, like Harbor Haul Out: an expired PIN sign-in goes back to the PIN.
+  if (storedToken() && tokenExpiry(storedToken()) && tokenExpiry(storedToken()) < Date.now()) clearSession();
+  if (!storedToken()) { state.view = 'signin'; nav(); return renderSignIn(); }
+  if (q.has('detail')) { state.view = 'detail'; nav(); return renderDetail(q.get('detail')); }
+  state.view = ['new', 'winter', 'feed', 'me', 'edit'].find((k) => q.has(k)) || 'board';
+  nav();
+  if (state.view === 'new') return renderNew();
+  if (state.view === 'edit') return renderEdit(q.get('edit'));
+  if (state.view === 'winter') return renderWinter();
+  if (state.view === 'feed') return renderFeed();
+  if (state.view === 'me') return renderMe();
+  return renderBoard();
+}
+
+/* ------------------------------------------------------------ sign in --- */
+function renderSignIn() {
+  main.innerHTML = `<section class="card" style="max-width:420px;margin:30px auto"><h2>Sign in</h2>
+    <p class="lead">Your staff PIN — the same one you use for Harbor Haul Out and the Staff Console.</p>
+    <label class="fld" for="pin">PIN</label>
+    <input class="txt mono" id="pin" type="password" inputmode="numeric" autocomplete="current-password" style="font-size:22px;letter-spacing:.3em">
+    <button class="btn navy block big" id="pinGo" style="margin-top:14px">Sign in</button>
+    <div id="msg" class="hint" role="status" aria-live="polite" style="margin-top:10px"></div></section>`;
+  const go = async () => {
+    const pin = $('pin').value.trim();
+    if (!pin) { $('msg').textContent = 'Enter your PIN.'; return; }
+    $('pinGo').disabled = true; $('pinGo').textContent = 'Checking…';
+    try {
+      const out = await api('detailSignIn', [pin]);
+      storeSession(out.token, out.who, true);
+      route();
+    } catch (e) {
+      $('msg').textContent = e.message;
+      $('pinGo').disabled = false; $('pinGo').textContent = 'Sign in';
+    }
+  };
+  $('pinGo').onclick = go;
+  $('pin').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') go(); });
+  $('pin').focus();
+}
+
+/* -------------------------------------------------------------- board --- */
+function sourcePill(d) {
+  if (d.source === 'job') return `<span class="pill blue">Work order ${esc(d.jobId)}</span>`;
+  if (d.source === 'winter') return `<span class="pill frost">❄ Winter ${esc(d.winterQn)}</span>`;
+  return '<span class="pill grey">Request</span>';
+}
+function splitPill(d) {
+  if (d.split === 'both') return `<span class="pill ${d.mechDone ? 'green' : 'gold'}">Split · mechanic ${d.mechDone ? 'done' : 'still working'}</span>`;
+  if (d.split === 'detail') return '<span class="pill grey">Detail only</span>';
+  return '';
+}
+
+function cardHtml(d) {
+  const lines = d.items.map((x) => x.label).join(', ');
+  return `<a class="dcard ${esc(d.stage)}" href="?detail=${encodeURIComponent(d.id)}" data-id="${esc(d.id)}">
+    <div class="who">${esc(d.customerName || 'No name')}</div>
+    <div class="what">${esc(d.unit || '')}${d.unit ? ' · ' : ''}${esc(lines)}</div>
+    <div class="pills">${sourcePill(d)}${splitPill(d)}
+      ${d.calls ? `<span class="pill red">📞 ${d.calls} call me</span>` : ''}
+      ${d.pending ? `<span class="pill gold">${d.pending} waiting</span>` : ''}
+      ${d.stage === 'doing' || d.stage === 'todo' ? `<span class="pill grey">${d.left} left</span>` : ''}
+      ${d.assignedTo ? `<span class="pill grey">${esc(d.assignedTo)}</span>` : ''}
+      <span class="pill grey">${money(d.total)}</span></div></a>`;
+}
+
+function liveBar() {
+  return `<div class="livebar"><span class="dot${state.live ? '' : ' off'}"></span>
+    ${state.live ? 'Live — updates on its own' : 'Not live — reconnecting'}
+    <button class="btn sm ghost" id="refresh">Refresh</button></div>`;
+}
+
+function drawBoard() {
+  const b = state.board;
+  if (!b) return;
+  const search = ($('q') && $('q').value || '').toLowerCase();
+  const list = b.details.filter((d) => !search || JSON.stringify([d.customerName, d.unit, d.jobId, d.winterQn, d.items.map((x) => x.label)]).toLowerCase().includes(search));
+  $('boardBody').innerHTML = STAGES.map(([stage, title]) => {
+    const these = list.filter((d) => d.stage === stage);
+    if (!these.length) return '';
+    return `<div class="stage">${esc(title)} <span class="n">${these.length}</span></div>${these.map(cardHtml).join('')}`;
+  }).join('') || '<div class="card"><p class="lead" style="margin:0">Nothing on the board. Take in a request with <b>+ New</b>, or bring a unit over from <b>Winter</b>.</p></div>';
+  $('boardBody').querySelectorAll('a.dcard').forEach((a) => { a.onclick = (ev) => { ev.preventDefault(); go('detail', a.dataset.id); }; });
+}
+
+async function renderBoard() {
+  main.innerHTML = `${liveBar()}<input class="txt" id="q" placeholder="Search name, unit, job #, quote #" style="margin-bottom:6px"><div id="boardBody"><p class="hint">Loading…</p></div>`;
+  $('q').oninput = drawBoard;
+  $('refresh').onclick = () => poll(true);
+  if (state.board) drawBoard();
+  await poll(true);
+}
+
+/* --------------------------------------------------------------- live --- */
+/* One cheap question every twenty seconds while the page is in view. The
+   server answers {same:true} off a property read unless something moved. */
+async function poll(force) {
+  try {
+    const out = await api('detailBoard', [force ? '' : state.v]);
+    state.live = true;
+    if (!out.same) {
+      const first = !state.board;
+      state.board = out;
+      state.v = out.v;
+      const top = (out.events || [])[0];
+      if (top && state.lastEvent && top.id !== state.lastEvent && !first) toast(top.text, 7000);
+      if (top) state.lastEvent = top.id;
+      if (state.view === 'board') drawBoard();
+      if (state.view === 'feed') drawFeed();
+      if (state.view === 'detail' && state.openId && !force) renderDetail(state.openId, true);
+    }
+  } catch (e) {
+    state.live = false;
+    if (e && /Sign in/.test(e.message)) { clearSession(); route(); return; }
+  }
+  const dot = document.querySelector('.livebar .dot');
+  if (dot) dot.classList.toggle('off', !state.live);
+}
+function startLive() {
+  clearInterval(state.timer);
+  state.timer = setInterval(() => { if (document.visibilityState === 'visible' && storedToken()) poll(false); }, 20000);
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && storedToken()) poll(false); });
+
+/* ------------------------------------------------------------- detail --- */
+async function renderDetail(id, quiet) {
+  state.openId = id;
+  if (!quiet) main.innerHTML = '<p class="hint">Loading…</p>';
+  let out;
+  try { out = await api('getDetail', [id]); } catch (e) { main.innerHTML = `<div class="card">${esc(e.message)}</div>`; return; }
+  if (state.view !== 'detail' || state.openId !== id) return;
+  const d = out.detail;
+  const open = d.status !== 'done' && d.status !== 'cancelled';
+  const winter = d.source === 'winter';
+  const lines = d.items.map((x) => {
+    const doable = x.quote === '' || x.quote === 'accepted';
+    const sub = [x.qty > 1 ? `× ${x.qty}` : '', x.how, x.done ? `done by ${x.done.by}, ${formatDateTime(x.done.at)}` : '',
+      x.note ? `They asked: “${x.note}”` : '', x.answeredBy && x.answeredBy !== 'customer' && x.answeredBy !== 'winter' ? `marked by ${x.answeredBy}` : ''].filter(Boolean).join(' · ');
+    const acts = open && !winter && (x.quote === 'pending' || x.quote === 'call')
+      ? `<div class="acts"><span class="hint">On their behalf:</span>
+         <button class="btn sm green" data-dec="accepted" data-it="${esc(x.id)}">Accept</button>
+         <button class="btn sm ghost" data-dec="declined" data-it="${esc(x.id)}">Decline</button></div>` : '';
+    return `<div class="line">
+      <button class="tick${x.done ? ' on' : ''}" data-tick="${esc(x.id)}" ${open && doable ? '' : 'disabled'} aria-label="Done: ${esc(x.label)}">${x.done ? '✓' : ''}</button>
+      <div><span class="nm">${esc(x.label)}</span> ${x.quote ? `<span class="pill ${QUOTE_PILL[x.quote] || 'grey'}">${esc(QUOTE_WORDS[x.quote])}</span>` : ''}</div>
+      <span class="amt">${money(x.price)}</span>
+      ${sub ? `<div class="sub">${esc(sub)}</div>` : ''}${acts}</div>`;
+  }).join('');
+  const quotable = !winter && open && d.items.some((x) => !x.done && (x.quote === '' || x.quote === 'pending' || x.quote === 'call'));
+  const tel = d.customerPhone ? `<a href="tel:${esc(d.customerPhone.replace(/[^\d+]/g, ''))}">${esc(d.customerPhone)}</a>` : '';
+  main.innerHTML = `
+    <p><a href="./" id="back">← Board</a></p>
+    <section class="card">
+      <div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(d.customerName)}</h2>${sourcePill(d)}</div>
+      <p class="lead" style="margin:6px 0">${esc(d.unit)}${d.loa ? ` · ${d.loa} ft` : ''}${d.beam ? ` × ${d.beam} ft beam` : ''}</p>
+      <p style="margin:0 0 8px">${tel}${tel && d.customerEmail ? ' · ' : ''}${esc(d.customerEmail)}</p>
+      ${d.split ? `<div class="splitbox"><b>${d.split === 'both' ? 'Split ticket' : 'Detail-only ticket'}</b> — job ${esc(d.jobId)}.
+        ${d.split === 'both' ? (d.mechDone ? 'The mechanic has finished their part.' : 'The mechanic is still on their part; the job is done when you both are.') : 'No mechanic on this one: marking the detail done finishes the job.'}</div>` : ''}
+      ${d.notes ? `<p style="white-space:pre-wrap;background:var(--ice);padding:10px;border-radius:8px">${esc(d.notes)}</p>` : ''}
+      <div class="pills" style="display:flex;gap:6px;flex-wrap:wrap"><span class="pill grey">${esc(d.statusLabel)}</span>
+        ${d.assignedTo ? `<span class="pill grey">${esc(d.assignedTo)}</span>` : ''}</div>
+    </section>
+    <section class="card"><h2>What to do</h2>${lines}
+      <div class="sumrow"><span>To do (not declined, not waiting)</span><span>${money(d.total)}</span></div>
+      ${winter ? '<p class="hint">Winter quote lines are priced and answered in the winter console or Harbor Haul Out; their answers land here on their own.</p>' : ''}
+      <div class="row" style="margin-top:14px">
+        ${d.status === 'requested' ? '<button class="btn navy" id="start">Start</button>' : ''}
+        ${open ? '<button class="btn green" id="finish">Mark detail done</button>' : ''}
+        ${open && !winter ? '<button class="btn ghost" id="edit">Edit lines</button>' : ''}
+      </div></section>
+    ${quotable || d.quoteCode ? `<section class="card"><h2>Quote</h2>
+      ${quotable ? `<p class="hint">Sends the priced lines that are not answered yet for the customer to accept, decline or ask for a call. Nothing goes out until you press Email or Text.</p>
+        <button class="btn gold" id="quote">Quote the priced lines</button>` : ''}
+      ${d.quoteCode ? `<div id="sendBox" style="margin-top:12px">
+        <p class="hint">Their link: <a href="${esc(d.quoteUrl)}" target="_blank">${esc(d.quoteUrl)}</a>${d.quoteSentAt ? ` · last sent ${esc(formatDateTime(d.quoteSentAt))}` : ''}</p>
+        <div class="row"><button class="btn navy" id="email" ${d.customerEmail ? '' : 'disabled'}>Email the quote</button>
+        <button class="btn ghost" id="text" ${d.customerPhone ? '' : 'disabled'}>Write the text</button></div>
+        <div id="textBox"></div></div>` : ''}
+      <p class="hint" style="margin-top:10px">${esc(DETAIL_FINE_PRINT)}</p></section>` : ''}
+    <section class="card"><h2>History</h2><div class="feed">${out.events.map((e) => `<div>${esc(e.text)}<small>${esc(formatDateTime(e.at))}</small></div>`).join('') || '<p class="hint">Nothing yet.</p>'}</div>
+      <div class="row" style="margin-top:10px">
+        ${open ? '<button class="btn sm danger" id="cancel">Cancel this detail</button>' : '<button class="btn sm ghost" id="reopen">Re-open</button>'}
+        ${!open && !d.archivedAt ? '<button class="btn sm ghost" id="archive">Archive</button>' : ''}</div></section>`;
+  $('back').onclick = (ev) => { ev.preventDefault(); go('board'); };
+  const act = async (fn, args, msg) => {
+    try { const r = await api(fn, args); if (msg) toast(r.jobNote ? msg + r.jobNote : msg); state.v = ''; renderDetail(id, true); poll(true); return r; }
+    catch (e) { toast(e.message, 7000); return null; }
+  };
+  main.querySelectorAll('[data-tick]').forEach((b) => {
+    b.onclick = () => {
+      const on = !b.classList.contains('on');
+      b.classList.toggle('on', on); b.textContent = on ? '✓' : '';
+      act('setDetailItemDone', [id, b.dataset.tick, on]);
+    };
+  });
+  main.querySelectorAll('[data-dec]').forEach((b) => { b.onclick = () => act('decideDetailLine', [id, b.dataset.it, b.dataset.dec], 'Saved.'); });
+  if ($('start')) $('start').onclick = () => act('startDetail', [id], 'Started.');
+  if ($('finish')) $('finish').onclick = () => { if (confirm('Mark the whole detail done?')) act('finishDetail', [id], 'Detail done.'); };
+  if ($('edit')) $('edit').onclick = () => go('edit', id);
+  if ($('cancel')) $('cancel').onclick = () => { if (confirm('Cancel this detail?')) act('setDetailStatus', [id, 'cancelled'], 'Cancelled.'); };
+  if ($('reopen')) $('reopen').onclick = () => act('setDetailStatus', [id, 'requested'], 'Re-opened.');
+  if ($('archive')) $('archive').onclick = () => act('setDetailStatus', [id, 'archived'], 'Archived.');
+  if ($('quote')) $('quote').onclick = () => act('quoteDetail', [id, []], 'Quoted — now email or text it.');
+  if ($('email')) $('email').onclick = async () => {
+    if (!confirm(`Email the quote to ${d.customerEmail}?`)) return;
+    const r = await act('sendDetailQuoteEmail', [id]);
+    if (r) toast(r.testMode ? 'Test mode: held and sent to the shop instead.' : 'Emailed.');
+  };
+  if ($('text')) $('text').onclick = async () => {
+    try {
+      const t = await api('detailQuoteText', [id]);
+      $('textBox').innerHTML = `<textarea class="txt" id="sms" style="margin-top:10px">${esc(t.text)}</textarea>
+        <div class="row" style="margin-top:8px"><a class="btn ghost" id="openSms" href="${esc(smsDraftUrl(t.phone, t.text, isApple(navigator)))}">Open as a text</a>
+        <button class="btn ghost" id="copy">Copy</button><button class="btn navy" id="sent">I have sent it</button></div>
+        <p class="hint">Opening the text does not send it — you press send, then tell us here.</p>`;
+      $('sms').oninput = () => { $('openSms').href = smsDraftUrl(t.phone, $('sms').value, isApple(navigator)); };
+      $('copy').onclick = () => { navigator.clipboard && navigator.clipboard.writeText($('sms').value); toast('Copied.'); };
+      $('sent').onclick = () => act('markDetailQuoteSent', [id, 'text'], 'Logged as texted.');
+    } catch (e) { toast(e.message, 6000); }
+  };
+}
+
+/* ------------------------------------------------------- new and edit --- */
+function renderNew() {
+  main.innerHTML = `<section class="card"><h2>New detail request</h2>
+    <label class="fld" for="cn">Customer name</label><input class="txt" id="cn" autocomplete="off">
+    <div class="grid2"><div><label class="fld" for="cp">Phone</label><input class="txt" id="cp" inputmode="tel"></div>
+    <div><label class="fld" for="ce">Email</label><input class="txt" id="ce" inputmode="email"></div></div>
+    <label class="fld" for="cu">Unit (year, make, model)</label><input class="txt" id="cu">
+    <div id="picker"></div>
+    <label class="fld" for="cnotes">Notes for the detailer</label><textarea class="txt" id="cnotes"></textarea>
+    <div class="row" style="margin-top:14px"><button class="btn navy big" id="save">Put it on the board</button></div></section>`;
+  const picker = mountPicker($('picker'), {});
+  $('save').onclick = async () => {
+    const dims = picker.dims();
+    $('save').disabled = true;
+    try {
+      const out = await api('createDetail', [{ customerName: $('cn').value, customerPhone: $('cp').value, customerEmail: $('ce').value,
+        unit: $('cu').value, loa: dims.loa, beam: dims.beam, notes: $('cnotes').value, items: picker.items() }]);
+      toast('On the board.');
+      state.v = '';
+      go('detail', out.detail.id);
+    } catch (e) { toast(e.message, 6000); $('save').disabled = false; }
+  };
+}
+
+async function renderEdit(id) {
+  main.innerHTML = '<p class="hint">Loading…</p>';
+  const { detail: d } = await api('getDetail', [id]);
+  main.innerHTML = `<p><a href="?detail=${encodeURIComponent(id)}" id="back">← Back</a></p><section class="card"><h2>${esc(d.customerName)}</h2>
+    ${d.source === 'job' ? '' : `<div class="grid2"><div><label class="fld">Phone</label><input class="txt" id="cp" value="${esc(d.customerPhone)}"></div>
+      <div><label class="fld">Email</label><input class="txt" id="ce" value="${esc(d.customerEmail)}"></div></div>
+      <label class="fld">Unit</label><input class="txt" id="cu" value="${esc(d.unit)}">`}
+    <div id="picker"></div>
+    <label class="fld">Who has it</label><input class="txt" id="as" value="${esc(d.assignedTo)}">
+    <label class="fld">Notes</label><textarea class="txt" id="cnotes">${esc(d.notes)}</textarea>
+    <p class="hint">Changing the price on a line the customer already answered puts it back to waiting on them.</p>
+    <button class="btn navy" id="save">Save</button></section>`;
+  $('back').onclick = (ev) => { ev.preventDefault(); go('detail', id); };
+  const picker = mountPicker($('picker'), { items: d.items, loa: d.loa, beam: d.beam });
+  $('save').onclick = async () => {
+    const dims = picker.dims();
+    const patch = { items: picker.items(), loa: dims.loa, beam: dims.beam, notes: $('cnotes').value, assignedTo: $('as').value };
+    if ($('cp')) Object.assign(patch, { customerPhone: $('cp').value, customerEmail: $('ce').value, unit: $('cu').value });
+    try { await api('updateDetail', [id, patch]); toast('Saved.'); state.v = ''; go('detail', id); } catch (e) { toast(e.message, 6000); }
+  };
+}
+
+/* ------------------------------------------------------------- winter --- */
+async function renderWinter(fresh) {
+  main.innerHTML = `<p class="lead">Every winter quote with detailing or a wash on it. Bring a unit onto the board to work it;
+    its customer's answers keep arriving from the winter system.</p><div id="wl"><p class="hint">Asking the winter system…</p></div>`;
+  let out;
+  try { out = await api('winterDetails', [fresh !== false]); } catch (e) { $('wl').innerHTML = `<div class="card">${esc(e.message)}</div>`; return; }
+  if (!out.configured || (!out.units.length && out.error)) { $('wl').innerHTML = `<div class="card">${esc(out.error || 'Not connected.')}</div>`; return; }
+  $('wl').innerHTML = (out.stale ? `<p class="hint">Could not reach the winter system just now — this is the last list it sent.</p>` : '') +
+    (out.units.map((u) => `<div class="card" style="margin-bottom:10px">
+      <div class="row" style="justify-content:space-between"><b>${esc(u.name)}</b><span class="pill frost">${esc(u.qn)}</span></div>
+      <div class="hint">${esc([u.ymm, u.unit, u.dims, u.stateLabel].filter(Boolean).join(' · '))}</div>
+      ${u.items.map((x) => `<div class="line" style="grid-template-columns:1fr auto"><div>${esc(x.label)} ${x.quote ? `<span class="pill ${QUOTE_PILL[x.quote] || 'grey'}">${esc(QUOTE_WORDS[x.quote])}</span>` : '<span class="pill red">needs a price</span>'}</div><span class="amt">${money(x.price)}</span></div>`).join('')}
+      <div class="row" style="margin-top:8px">${u.onBoard ? `<button class="btn sm ghost" data-open="${esc(u.onBoard.id)}">Open on the board</button>`
+        : `<button class="btn sm navy" data-pull="${esc(u.qn)}">Bring onto the board</button>`}</div></div>`).join('') || '<div class="card">No winter quotes carry detailing right now.</div>');
+  $('wl').querySelectorAll('[data-open]').forEach((b) => { b.onclick = () => go('detail', b.dataset.open); });
+  $('wl').querySelectorAll('[data-pull]').forEach((b) => {
+    b.onclick = async () => {
+      b.disabled = true;
+      try { const r = await api('pullWinterDetail', [b.dataset.pull]); state.v = ''; go('detail', r.detail.id); }
+      catch (e) { toast(e.message, 6000); b.disabled = false; }
+    };
+  });
+}
+
+/* --------------------------------------------------------------- feed --- */
+function drawFeed() {
+  const ev = (state.board && state.board.events) || [];
+  $('feedBody').innerHTML = ev.map((e) => `<div ${e.detailId ? `data-id="${esc(e.detailId)}" style="cursor:pointer"` : ''}>${e.kind === 'call' ? '📞 ' : ''}${esc(e.text)}<small>${esc(e.actor)} · ${esc(formatDateTime(e.at))}</small></div>`).join('') || '<p class="hint">Nothing yet.</p>';
+  $('feedBody').querySelectorAll('[data-id]').forEach((el) => { el.onclick = () => go('detail', el.dataset.id); });
+}
+async function renderFeed() {
+  main.innerHTML = `${liveBar()}<section class="card"><h2>What's happening</h2><div class="feed" id="feedBody"></div></section>`;
+  $('refresh').onclick = () => poll(true);
+  drawFeed();
+  await poll(true);
+}
+
+/* ------------------------------------------------- me + notifications --- */
+async function swReg() {
+  if (!('serviceWorker' in navigator)) return null;
+  return navigator.serviceWorker.register('sw.js', { scope: './' });
+}
+/* The service worker answers a push by asking the server what happened, so
+   it needs the sign-in and the address. Kept where it can read them. */
+async function shareWithWorker() {
+  try {
+    const c = await caches.open('detail-auth');
+    await c.put('auth', new Response(JSON.stringify({ token: storedToken(), api: API_URL })));
+  } catch { /* no Cache Storage: the push still shows, just without the words */ }
+}
+function b64ToBytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4));
+  return Uint8Array.from(b, (c) => c.charCodeAt(0));
+}
+async function turnOnPush() {
+  if (!('PushManager' in window) || !('Notification' in window)) {
+    toast(/iPhone|iPad/.test(navigator.userAgent) ? 'On an iPhone: Share → Add to Home Screen first, then open it from there.' : 'This browser cannot do notifications.', 8000);
+    return;
+  }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') { toast('Notifications were not allowed. Turn them on in the phone\'s settings.', 7000); return; }
+  const reg = await swReg();
+  await navigator.serviceWorker.ready;
+  const { key } = await api('pushKey', []);
+  const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+  await shareWithWorker();
+  await api('pushSubscribe', [sub.toJSON(), navigator.userAgent.slice(0, 80)]);
+  toast('Notifications on for this phone.');
+  renderMe();
+}
+async function renderMe() {
+  const who = storedWho() || {};
+  let subscribed = false;
+  try { const reg = await navigator.serviceWorker.getRegistration('./'); subscribed = !!(reg && await reg.pushManager.getSubscription()); } catch { /* none */ }
+  main.innerHTML = `<section class="card"><h2>${esc(who.name || 'Office')}</h2>
+    <h3 style="margin:14px 0 6px">Notifications</h3>
+    <p class="hint">A buzz on this phone when a customer accepts, declines or asks for a call, and when a split ticket's detail is done.
+      On an iPhone, add this page to the home screen first (Share → Add to Home Screen) and turn them on from there.</p>
+    <div class="row">${subscribed ? '<span class="pill green">On for this phone</span><button class="btn sm ghost" id="test">Send a test</button><button class="btn sm ghost" id="off">Turn off</button>'
+      : '<button class="btn gold" id="on">Turn on notifications</button>'}</div>
+    <h3 style="margin:18px 0 6px">Sign out</h3><button class="btn ghost" id="out">Not ${esc(who.name || 'you')}? Sign out</button></section>`;
+  if ($('on')) $('on').onclick = () => turnOnPush().catch((e) => toast(String(e.message || e), 7000));
+  if ($('test')) $('test').onclick = async () => { await shareWithWorker(); const r = await api('pushTest', []); toast(`Sent to ${r.sent} phone${r.sent === 1 ? '' : 's'}.`); };
+  if ($('off')) $('off').onclick = async () => {
+    const reg = await navigator.serviceWorker.getRegistration('./');
+    const sub = reg && await reg.pushManager.getSubscription();
+    if (sub) { await api('pushUnsubscribe', [sub.endpoint]).catch(() => {}); await sub.unsubscribe(); }
+    renderMe();
+  };
+  $('out').onclick = () => { clearSession(); state.board = null; route(); };
+}
+
+/* --------------------------------------------------------------- boot --- */
+swReg().then(() => { if (storedToken()) shareWithWorker(); }).catch(() => {});
+navigator.serviceWorker && navigator.serviceWorker.addEventListener('message', (ev) => {
+  if (ev.data && ev.data.type === 'pushed') poll(false);
+});
+startLive();
+route();
+</script>
+</body>
+</html>

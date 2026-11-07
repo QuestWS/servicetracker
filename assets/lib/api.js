@@ -8,8 +8,20 @@
  */
 import { API_URL } from './config.js';
 
-const TOKEN_KEY = 'qst_token';
-const WHO_KEY = 'qst_who';
+let TOKEN_KEY = 'qst_token';
+let WHO_KEY = 'qst_who';
+
+/**
+ * A sign-in of its own, for an app whose staff sign in a different way. The
+ * Detail Tracker signs in with the Harbor Haul Out staff PIN, so its token
+ * must not be the mechanic's name token on the same phone, or the other way
+ * round: call this once, before anything else, with a short name.
+ */
+export function useSessionBucket(name) {
+  const tag = String(name || '').replace(/[^a-z0-9]/gi, '');
+  TOKEN_KEY = tag ? `qst_token_${tag}` : 'qst_token';
+  WHO_KEY = tag ? `qst_who_${tag}` : 'qst_who';
+}
 
 export function storedToken() {
   try {
@@ -281,6 +293,8 @@ const READS = new Set([
   // the writer's portal
   'listJobs', 'getJob', 'jobHistory', 'listParts', 'listArchivedParts', 'listProps', 'listMechanics',
   'listOpenStatements', 'listSentStatements', 'listStatementDrafts', 'config', 'sheetStatus',
+  // the Detail Tracker, and the customer's detail quote page
+  'detailBoard', 'getDetail', 'detailQuoteText', 'pushInbox', 'detailQuote',
 ]);
 
 /**

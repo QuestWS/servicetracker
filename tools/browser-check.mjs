@@ -1334,7 +1334,8 @@ console.log('\n== a walk-in winterize ==');
   await admin.check('#winterjob');
   await admin.waitForSelector('.winterform', { timeout: 20000 });
   check('ticking Winterize job brings up the winter services menu',
-    await admin.locator('input[name="wf-level"]').count() === 2 && await admin.locator('[data-wf]').count() >= 15);
+    await admin.locator('input[name="wf-level"]').count() === 2 && await admin.locator('[data-wf]').count() >= 12);
+  // (12, not 15: the washes and the jetski detail are the Detail Tracker's now.)
   check('engine type can be left for the mechanic',
     /mechanic will check/.test(await admin.textContent('#wf-engine option[value=""]')));
   await admin.click('#create');
@@ -3224,8 +3225,98 @@ await admin.waitForSelector('.joblist, .empty', { timeout: 30000 });
 check('it is off the open orders list',
   !(await admin.evaluate(() => document.getElementById('view').innerText)).includes(CANCEL_INVOICE));
 
+/* ------------------------------------------------------- the Detail Tracker */
+console.log('\n== the Detail Tracker ==');
+const detailErrors = [];
+{
+  const post = async (fn, token, args) => (await fetch(`${BASE}/exec`, { method: 'POST', body: JSON.stringify({ fn, token, args }) })).json();
+  const ctx = await browser.newContext({ viewport: { width: 400, height: 860 } });
+  const det = await ctx.newPage();
+  det.on('pageerror', (e) => detailErrors.push(e.message));
+  await det.goto(`${BASE}/d/`, { waitUntil: 'networkidle' });
+  await det.fill('#pin', '0000');
+  await det.click('#pinGo');
+  await det.waitForFunction(() => /Wrong PIN/.test(document.getElementById('msg').textContent), null, { timeout: 20000 });
+  check('a wrong staff PIN is refused, in the winter system\'s words', true);
+  await det.fill('#pin', '4821');
+  await det.click('#pinGo');
+  await det.waitForSelector('#boardBody', { timeout: 20000 });
+  check('the Harbor Haul Out PIN signs the detailer in, by name',
+    (await det.textContent('#nav')).includes('John'));
+  check('and keeps its sign-in apart from the mechanic app\'s',
+    await det.evaluate(() => !!localStorage.getItem('qst_token_detail')));
+
+  await det.click('[data-go=new]');
+  await det.fill('#cn', 'Detail Checkperson');
+  await det.fill('#cp', '815-555-0177');
+  await det.fill('#ce', 'detail@example.com');
+  await det.fill('#cu', '2021 Tige 23');
+  await det.fill('[data-d=lf]', '23');
+  await det.fill('[data-d=bf]', '8');
+  await det.fill('[data-d=bi]', '6');
+  await det.click('summary:has-text("Basic wash")');
+  await det.check('.dp-line[data-key=washWax] input[type=checkbox]');
+  check('the detail sheet suggests the price off the length (23 ft × $16)',
+    (await det.inputValue('.dp-line[data-key=washWax] .dp-price')) === '368.00');
+  await det.click('summary:has-text("A la carte")');
+  await det.check('.dp-line[data-key=carpet] input[type=checkbox]');
+  await det.fill('.dp-line[data-key=carpet] .dp-price', '150');
+  await det.click('#save');
+  await det.waitForSelector('#quote', { timeout: 20000 });
+  await det.click('#quote');
+  await det.waitForSelector('#sendBox a', { timeout: 20000 });
+  const quoteCode = new URL(await det.getAttribute('#sendBox a', 'href')).searchParams.get('c');
+  check('quoting mints the customer\'s link and sends nothing', /^[0-9A-Z]{8}$/.test(quoteCode || ''));
+
+  const cust = await (await browser.newContext({ viewport: { width: 390, height: 844 } })).newPage();
+  cust.on('pageerror', (e) => detailErrors.push('q: ' + e.message));
+  await cust.goto(`${BASE}/q/?c=${quoteCode}`, { waitUntil: 'networkidle' });
+  await cust.waitForSelector('.offer', { timeout: 20000 });
+  const custText = await cust.evaluate(() => document.body.innerText);
+  check('the customer sees the two quoted lines and nothing of the shop\'s',
+    /Wash & wax/.test(custText) && /Carpet cleaning/.test(custText) && !/John|detail@example|boat/i.test(custText), custText.slice(0, 300));
+  await cust.locator('.offer').nth(0).locator('input[value=accepted]').check();
+  await cust.locator('.offer').nth(1).locator('input[value=call]').check();
+  await cust.fill('#note', 'Is the cabin included?');
+  await cust.click('#send');
+  await cust.waitForFunction(() => /thank you/.test(document.getElementById('msg').textContent), null, { timeout: 20000 });
+  check('the customer answers Accept and Call me in one send', true);
+
+  await det.click('#back');
+  await det.waitForFunction(() => /call the customer/i.test(document.getElementById('boardBody').innerText)
+    && /Detail Checkperson/.test(document.getElementById('boardBody').innerText), null, { timeout: 30000 });
+  check('the open board puts the call-me at the top without a reload', true);
+  const mail = await (await fetch(`${BASE}/dev/mail`)).json();
+  check('the office is emailed once, with the question', mail.filter((m) => /CALL REQUESTED/.test(m.subject) && /Checkperson/.test(m.subject)).length === 1);
+
+  // A split ticket: the writer sends a work order to detail and the mechanic.
+  const office = (await post('adminSignIn', '', [PASSWORD])).token;
+  await post('createJob', office, [{ invoiceNumber: '01-6161', customerName: 'Split Checkperson', boatInfo: '2018 Tige 22, Length: 22 ft' }]);
+  await admin.goto(`${BASE}/admin/?job=01-6161`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('#detailopen', { timeout: 30000 });
+  await admin.click('#detailopen');
+  await admin.click('#detailcard summary:has-text("Basic wash")');
+  await admin.check('#detailcard .dp-line[data-key=extWash] input[type=checkbox]');
+  await admin.click('#detailsave');
+  await admin.waitForFunction(() => /Neither half/.test(document.getElementById('detailcard').innerText), null, { timeout: 30000 });
+  check('the writer sends a work order to detail, split with the mechanic', true);
+  const mechTok = (await post('signIn', '', ['Dale', true])).token;
+  const page = await post('getJob', office, ['01-6161']);
+  const mf = await post('finishWork', mechTok, [page.job.token]);
+  check('the mechanic finishing their half does not finish the job', mf.status === 'work_underway' && mf.waitingOn === 'detail');
+  await admin.goto(`${BASE}/admin/`, { waitUntil: 'networkidle' });
+  await admin.waitForFunction(() => /Waiting on detail/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
+  check('the writer\'s list says it is waiting on the detail', true);
+  const detTok = await det.evaluate(() => localStorage.getItem('qst_token_detail'));
+  const fin = await post('finishDetail', detTok, [page.detailWork.id]);
+  check('the detailer finishing second finishes the job', /ready to close out/.test(fin.jobNote || '')
+    && (await post('getJob', office, ['01-6161'])).job.status === 'work_finished');
+  await ctx.close();
+}
+
 /* --------------------------------------------------------------------- done */
 console.log('\n== page errors ==');
+check('Detail Tracker and quote page console clean', detailErrors.length === 0, detailErrors.join(' | '));
 check('service writer console clean', adminErrors.length === 0, adminErrors.join(' | '));
 check('mechanic console clean', mechErrors.length === 0, mechErrors.join(' | '));
 check('QR landing console clean', outsiderErrors.length === 0, outsiderErrors.join(' | '));

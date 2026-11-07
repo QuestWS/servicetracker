@@ -71,6 +71,32 @@ These apply everywhere and are not negotiable by any skill.
    keys live in Apps Script → Project Settings → Script properties, and the
    code only ever names them.
 
+## The Detail Tracker (`/d/`)
+
+Detailing, washes and detail quotes have their own board, because a mechanic
+marking a job done while the wash was still to do was the problem it solves.
+Rows on `Details`; lines from `assets/lib/detail-menu.js` (the shop's detail
+sheet, never priced below the winter card). Read the long comment at the top
+of the Detail Tracker section in `service-tracker.gs` before changing it. The
+rules that bite from anywhere:
+
+- **A split ticket is one ticket.** `detail_split` on Jobs: '' mechanic only,
+  'detail', 'both'. On 'both' the job reaches Work finished only when
+  `mech_done_at` AND `detail_done_at` are both stamped; `markDone` asks first
+  (`needsConfirm`) while either half is open.
+- **Sign-in is the Harbor Haul Out staff PIN**, checked by the winter system
+  (`fn:'staffPin'`), sealed here as role `detail`, kept in its own browser
+  bucket (`useSessionBucket('detail')`).
+- **A quote waits on the customer** like the winter system's quoted items.
+  `/q/` answers by POST only; the email and the text are their own buttons,
+  same as rule 4. `detailQuote` names its fields one at a time and
+  `verify.sh` fails if it mentions notes, names or contact details.
+- **Winter details are priced and answered in the winter system.** Its answers
+  arrive by ping (`api:'detailPing'`, same shared key) and hourly catch-up;
+  ticks go back as `winterTicks`.
+- **Push has no payload.** Apps Script cannot encrypt one, so the service
+  worker asks `pushInbox`. VAPID keys live in script properties.
+
 ## Shape of the thing
 
 ```
@@ -79,6 +105,8 @@ admin/index.html      service writer portal (password → token in localStorage)
 m/index.html          mechanic PWA (name → token; manifest + sw.js at the root)
 t/index.html          customer page (?j=token is the only credential)
 i/index.html          the invoice a customer is texted (?c=code is the only credential)
+d/index.html          the Detail Tracker (staff PIN → token; own manifest + sw.js for push)
+q/index.html          a customer's detail quote: Accept / Decline / Call me (?c=code is the only credential)
 assets/lib/           shared browser modules — no framework, plain ESM
 assets/vendor/        pdfjs, pdf-lib, qrcode, zxing, committed on purpose
 service-tracker.gs    the entire backend

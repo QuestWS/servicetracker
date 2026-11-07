@@ -65,6 +65,8 @@ Status never runs backwards.
 | `/admin/` | Service writer | Job list, intake, full log, close-out, mechanics roster |
 | `/m/` | Mechanics | Installable PWA: scan → name → log → finish |
 | `/t/?j=…` | Customer | Public, unguessable URL. Status and customer-facing notes only. **Off by default** — see below |
+| `/d/` | Detailers & the desk | The Detail Tracker: every detail, wash and detail quote, split tickets, live answers, push notifications. Harbor Haul Out staff PIN |
+| `/q/?c=…` | Customer | Their detailing quote: Accept, Decline or Call me, line by line |
 | `/i/?c=…` | Customer | What a texted customer opens: their invoice, their balance, the way to pay. No log of any kind |
 
 ### The customer never sees

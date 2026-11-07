@@ -30,7 +30,7 @@ done
 # and the page rendered nothing — found three minutes into a browser run
 # rather than in the second this takes.
 echo "== page scripts =="
-for f in index.html admin/index.html m/index.html t/index.html i/index.html; do
+for f in index.html admin/index.html m/index.html t/index.html i/index.html d/index.html q/index.html; do
   [ -f "$f" ] || continue
   python3 - "$f" > /tmp/page.mjs <<'PY'
 import re, sys
@@ -98,6 +98,18 @@ for fn in publicJob invoicePage; do
   fi
 done
 note "neither customer page reads the winterize checklist"
+
+# The detail quote page (/q/) is a quote, not a record: the customer's first
+# name, the unit, and the lines sent to them with their prices. Never the
+# detailer's notes, who did what, who has it, or their own phone and email.
+for field in notes assigned_to customer_phone customer_email created_by done_by answeredBy events DetailEvents; do
+  if awk '/^function detailQuote\(/,/^}/' service-tracker.gs | grep -q "$field"; then
+    bad "detailQuote mentions $field — the customer's quote page must never carry it"
+  fi
+done
+awk '/^function detailQuote\(/,/^}/' service-tracker.gs | grep -q "quote: {" \
+  && note "detailQuote names the customer's fields one at a time" \
+  || bad "detailQuote no longer builds the customer payload field by field"
 
 echo "== the one shared URL =="
 # API_URL lives in exactly one file so the four pages cannot drift apart.

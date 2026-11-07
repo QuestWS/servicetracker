@@ -418,7 +418,14 @@ const SHEETS = {
          // A walk-in winterize: the checklist the writer chose at intake and
          // what the mechanic has ticked, as one JSON object. Empty on every
          // other job. See setJobWinter. Shop-side only.
-         'winter_work'],
+         'winter_work',
+         // Who has work on this ticket: '' the mechanic alone (every job
+         // before this column), 'detail' the detailer alone, 'both' each their
+         // own half. See setJobDetail and the Detail Tracker section.
+         'detail_split',
+         // Each half marked done, on a split ticket. The job reaches Work
+         // finished only when both are stamped.
+         'mech_done_at', 'detail_done_at'],
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
                'transcript_id', 'transcript_error', 'notified_at', 'created_at',
@@ -496,7 +503,18 @@ const SHEETS = {
   // services system says is pulled or dropped off. The unit and its list of
   // work live over there (see winterWork); only the ticks live here. One row
   // per quote number + item, rewritten in place when it is un-ticked.
-  WinterWork: ['id', 'quote_no', 'item', 'done', 'done_by', 'done_at', 'created_at']
+  WinterWork: ['id', 'quote_no', 'item', 'done', 'done_by', 'done_at', 'created_at'],
+  // The Detail Tracker's board: one row per detail, from a request, a work
+  // order or a winter unit. `items` is the lines as one JSON cell — see
+  // sanitizeDetailItems_. `quote_code` is the only credential on /q/.
+  Details: ['id', 'source', 'job_id', 'winter_qn', 'customer_name', 'customer_phone', 'customer_email',
+            'unit', 'loa', 'beam', 'items', 'status', 'assigned_to', 'notes', 'quote_code', 'quote_sent_at',
+            'created_by', 'created_at', 'updated_at', 'started_at', 'done_at', 'done_by', 'archived_at'],
+  // What happened on the board, newest last: what the live feed and a push
+  // notification say.
+  DetailEvents: ['id', 'detail_id', 'kind', 'text', 'actor', 'created_at'],
+  // Phones that asked for notifications. See pushNotify_.
+  PushSubs: ['id', 'endpoint', 'who', 'label', 'role', 'failures', 'created_at']
 };
 
 /* ============================== plumbing =============================== */
@@ -898,7 +916,9 @@ function requireMechanic_(token) {
 /** Either credential opens the shop-side views. */
 function requireShop_(token) {
   const payload = unseal_(token);
-  if (!payload || (payload.role !== 'admin' && payload.role !== 'mechanic')) {
+  // 'detail' is a Detail Tracker sign-in: a winter staff PIN, checked by the
+  // winter system (detailSignIn). Same people as the floor, same bar.
+  if (!payload || (payload.role !== 'admin' && payload.role !== 'mechanic' && payload.role !== 'detail')) {
     throw new Error('Sign in first.');
   }
   return payload;
@@ -943,6 +963,13 @@ function doPost(e) {
   } catch (err) {
     return json_(stamp_({ error: 'Unreadable request.' }));
   }
+  // The winter system telling the Detail Tracker a quote was answered. Its own
+  // door with its own key check, like the transcript hook: no token, no fn.
+  if (data && data.api === 'detailPing') {
+    let out;
+    try { out = detailPing_(data); } catch (err) { out = { ok: 0, error: String(err && err.message || err) }; }
+    return json_(stamp_(out));
+  }
   return json_(serve_(data, false));
 }
 
@@ -977,7 +1004,7 @@ function apiFns_(data) {
     getJob:           function (a) { return getJob(data.token, a[0]); },
     saveJobDetails:   function (a) { return saveJobDetails(data.token, a[0], a[1]); },
     saveInvoice:      function (a) { return saveInvoice(data.token, a[0], a[1], a[2], a[3]); },
-    markDone:         function (a) { return markDone(data.token, a[0]); },
+    markDone:         function (a) { return markDone(data.token, a[0], a[1] === true); },
     sendInvoiceEmail: function (a) { return sendInvoiceEmail(data.token, a[0]); },
     invoiceText:      function (a) { return invoiceText(data.token, a[0], a[1]); },
     markInvoiceTexted: function (a) { return markInvoiceTexted(data.token, a[0], a[1]); },
@@ -1049,6 +1076,33 @@ function apiFns_(data) {
     winterMenu:       function (a) { return winterMenu(data.token); },
     setJobWinter:     function (a) { return setJobWinter(data.token, a[0], a[1] || null); },
     winterWork:       function (a) { return winterWork(data.token, a[0] === true); },
+
+    /* the Detail Tracker */
+    detailSignIn:     function (a) { return detailSignIn(a[0]); },
+    detailBoard:      function (a) { return detailBoard(data.token, a[0], a[1]); },
+    getDetail:        function (a) { return getDetail(data.token, a[0]); },
+    createDetail:     function (a) { return createDetail(data.token, a[0]); },
+    updateDetail:     function (a) { return updateDetail(data.token, a[0], a[1]); },
+    setDetailItemDone: function (a) { return setDetailItemDone(data.token, a[0], a[1], a[2] === true); },
+    startDetail:      function (a) { return startDetail(data.token, a[0]); },
+    finishDetail:     function (a) { return finishDetail(data.token, a[0]); },
+    setDetailStatus:  function (a) { return setDetailStatus(data.token, a[0], a[1]); },
+    setJobDetail:     function (a) { return setJobDetail(data.token, a[0], a[1] || null); },
+    quoteDetail:      function (a) { return quoteDetail(data.token, a[0], a[1]); },
+    detailQuoteText:  function (a) { return detailQuoteText(data.token, a[0]); },
+    markDetailQuoteSent: function (a) { return markDetailQuoteSent(data.token, a[0], a[1]); },
+    sendDetailQuoteEmail: function (a) { return sendDetailQuoteEmail(data.token, a[0]); },
+    decideDetailLine: function (a) { return decideDetailLine(data.token, a[0], a[1], a[2]); },
+    winterDetails:    function (a) { return winterDetails(data.token, a[0] === true); },
+    pullWinterDetail: function (a) { return pullWinterDetail(data.token, a[0]); },
+    pushKey:          function (a) { return pushKey(); },
+    pushSubscribe:    function (a) { return pushSubscribe(data.token, a[0], a[1]); },
+    pushUnsubscribe:  function (a) { return pushUnsubscribe(data.token, a[0]); },
+    pushInbox:        function (a) { return pushInbox(data.token); },
+    pushTest:         function (a) { return pushTest(data.token); },
+    /* the customer's detail quote — the code in the URL is the whole of it */
+    detailQuote:      function (a) { return detailQuote(a[0]); },
+    answerDetailQuote: function (a) { return answerDetailQuote(a[0], a[1], a[2]); },
     setWinterItem:    function (a) { return setWinterItem(data.token, a[0], a[1], a[2] === true); },
 
     /* customer page — the token in the URL is the only credential */
@@ -1125,6 +1179,15 @@ const API_GET_FNS_ = {
   transcriptsFor: true,
   winterWork: true,
   winterMenu: true,
+
+  /* the Detail Tracker. winterDetails is NOT here: a fresh read puts the
+     winter system's answers onto the board, which is a write. */
+  detailBoard: true,
+  getDetail: true,
+  detailQuoteText: true,
+  pushInbox: true,
+  /* the customer's detail quote page */
+  detailQuote: true,
 
   /* the writer's portal */
   listJobs: true,
@@ -1584,7 +1647,10 @@ function jobSummary_(job) {
     balance: jobBalance_(job),
     // The winterize checklist, or null. Shop-side: the customer's pages
     // never call this function.
-    winter: winterView_(winterSpecOf_(job))
+    winter: winterView_(winterSpecOf_(job)),
+    // A split ticket: who is on it and who it is waiting on. Null on a job
+    // that is the mechanic's alone.
+    detail: jobDetailSummary_(job)
   };
 }
 
@@ -2143,7 +2209,7 @@ function listJobs(token, filter) {
 }
 
 // Bump whenever a job summary gains a field, for the reason OPEN_JOBS_V_ says.
-const JOBS_LIST_V_ = 5;
+const JOBS_LIST_V_ = 6;
 const JOBS_LIST_KEY_ = 'JOBSLIST_v' + JOBS_LIST_V_ + '_';
 
 /**
@@ -2373,6 +2439,9 @@ function getJob(token, id) {
     testMode: testMode_(),
     customerTracking: customerTracking_(),
     job: jobSummary_(job),
+    // The detailer's half of a split ticket: its lines and where they stand.
+    detailWork: job.detail_split && ss_().getSheetByName('Details')
+      ? (function () { const d = detailForJob_(id); return d ? detailView_(d, job) : null; })() : null,
     entries: entries,
     hours: laborTotals_(entries),
     props: propsForJob_(id),
@@ -2925,6 +2994,32 @@ function finishWork(token, jobToken) {
   const job = jobByToken_(jobToken);
   if (!job) throw new Error('No such job.');
   if (job.status === 'done') throw new Error('This job is already closed out.');
+  const split = String(job.detail_split || '');
+  if (split === 'detail') throw new Error('This one is the detailer\u2019s alone \u2014 they mark it done in the Detail Tracker.');
+  if (split === 'both') {
+    // A split ticket: this is the mechanic's half. The job is finished when
+    // the detailer's half is too, whichever of them gets there second.
+    withLock_(function () {
+      forget_('Jobs');
+      const fresh = jobRow_(job.id);
+      if (!fresh.mech_done_at) updateRow_('Jobs', fresh._row, { mech_done_at: nowIso_(), updated_at: nowIso_() });
+      forget_('Jobs');
+      const now = jobRow_(job.id);
+      if (now.status === 'received') setStatus_(now, 'work_underway', 'mechanic', who.name, 'Mechanical work finished');
+      if (now.detail_done_at) setStatus_(jobRow_(job.id), 'work_finished', 'mechanic', who.name, 'Mechanic finished — detail already done');
+    });
+    try { bumpDetailVersion_(); } catch (err) { /* the board catches up on its next read */ }
+    const after = jobRow_(job.id);
+    const waiting = after.status !== 'work_finished';
+    if (waiting) {
+      try {
+        const d = detailForJob_(job.id);
+        if (d) withLock_(function () { detailEvent_(d.id, 'mech', who.name + ' finished the mechanical work on job ' + job.id + ' — waiting on the detail', who.name); });
+      } catch (err) { /* the event is a courtesy */ }
+    }
+    return { status: after.status, statusLabel: waiting ? 'Mechanical done — waiting on detail' : STATUS_LABEL[after.status],
+             waitingOn: waiting ? 'detail' : '' };
+  }
   setStatus_(job, 'work_finished', 'mechanic', who.name, '');
   const updated = jobRow_(job.id);
   return { status: updated.status, statusLabel: STATUS_LABEL[updated.status] };
@@ -3591,8 +3686,15 @@ const WINTER_ITEM_MAX_ = 200;
  * walk-in winterize. Matched on the menu key or the words, either way round,
  * so a quote line that says "Wash & wax" is caught as surely as the key.
  */
-const HARBOR_ONLY_KEYS_ = { extDetail: true, washWax: true, intDetail: true, intWipe: true };
-const HARBOR_ONLY_LABELS_ = ['exterior detail', 'wash & wax', 'interior detail', 'interior wipe-down'];
+/*
+ * Nov 7 2026: and now the Detail Tracker's — washes and the jetski detail
+ * with them, because a mechanic ticking off "Powerwash hull" while the wash
+ * was still to do is exactly the mix-up it was built to end.
+ */
+const HARBOR_ONLY_KEYS_ = { extDetail: true, washWax: true, intDetail: true, intWipe: true,
+  powerwash: true, acidWash: true, skiDetail: true };
+const HARBOR_ONLY_LABELS_ = ['exterior detail', 'wash & wax', 'interior detail', 'interior wipe-down',
+  'powerwash hull', 'acid wash hull', 'jetski detail'];
 
 function harborOnly_(key, label) {
   if (HARBOR_ONLY_KEYS_[String(key || '')]) return true;
@@ -3608,7 +3710,9 @@ function winterCall_(body) {
   const res = UrlFetchApp.fetch(props_().getProperty('WINTER_URL') || WINTER_EXEC_URL, {
     method: 'post',
     contentType: 'text/plain',
-    payload: JSON.stringify(Object.assign({ api: 'tracker', key: winterKey_() }, body)),
+    // pingUrl: where the winter system can tell the Detail Tracker a quote
+    // was answered. Sent on every keyed call so nobody has to configure it.
+    payload: JSON.stringify(Object.assign({ api: 'tracker', key: winterKey_(), pingUrl: ownExecUrl_() }, body)),
     muteHttpExceptions: true,
     followRedirects: true
   });
@@ -3623,6 +3727,15 @@ function winterCall_(body) {
       : 'The winter system said: ' + String(out.error || 'no.'));
   }
   return out;
+}
+
+/** This web app's own /exec address, or '' when it cannot be told for sure. */
+function ownExecUrl_() {
+  let url = String(props_().getProperty('WEB_APP_URL') || '');
+  if (!/\/exec$/.test(url)) {
+    try { url = String(ScriptApp.getService().getUrl() || ''); } catch (err) { url = ''; }
+  }
+  return /^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(url) ? url : '';
 }
 
 /** Whether the shop has put the shared key in. */
@@ -4394,7 +4507,7 @@ function openJobs(token, fresh) {
  *  - SPLIT ACROSS ENTRIES. CacheService caps a value at 100 KB, and a missing
  *    piece reads as a miss, never as half a list.
  */
-const OPEN_JOBS_V_ = 2;
+const OPEN_JOBS_V_ = 3;
 const OPEN_JOBS_KEY_ = 'OPENJOBS_v' + OPEN_JOBS_V_ + '_';
 // Shared by every cached list: one write drops them all.
 const LISTS_GEN_KEY_ = 'LISTS_GEN';
@@ -4510,7 +4623,11 @@ function openJobsFromSheet_() {
   const jobs = rows_('Jobs')
     // A customer's parts order has nothing on it for the floor to do.
     .filter(function (job) {
-      return job.status !== 'done' && job.status !== 'work_finished' && !isPartsOrder_(job);
+      if (job.status === 'done' || job.status === 'work_finished' || isPartsOrder_(job)) return false;
+      // The detailer's alone, or the mechanic's half already marked done:
+      // nothing left on it for the floor.
+      const split = String(job.detail_split || '');
+      return split !== 'detail' && !(split === 'both' && job.mech_done_at);
     })
     .map(function (job) {
       return {
@@ -4524,6 +4641,8 @@ function openJobsFromSheet_() {
         alert: job.alert || '',
         // A walk-in winterize, and how much of its checklist is left.
         winterLeft: (function () { const w = winterView_(winterSpecOf_(job)); return w ? w.winterizeLeft : -1; })(),
+        // A split ticket: the mechanic has a half, the detailer the other.
+        split: String(job.detail_split || ''),
         status: job.status,
         statusLabel: STATUS_LABEL[job.status]
       };
@@ -5538,12 +5657,20 @@ function sendPaymentEmail_(job, options) {
  * of them are walk-ins who take their invoice at the counter — so an address
  * is a requirement of the email, not of finishing the work.
  */
-function markDone(token, id) {
+function markDone(token, id, force) {
   requireAdmin_(token);
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
   if (job.status === 'done') {
     throw new Error(isPartsOrder_(job) ? 'That order was already marked picked up.' : 'That job was already marked done.');
+  }
+  // A split ticket with half of it still open: say so, and close only when
+  // the writer says to anyway (the customer took it as it is, say).
+  const split = jobDetailSummary_(job);
+  if (split && split.waitingOn && !force) {
+    return { needsConfirm: true, waitingOn: split.waitingOn,
+             message: 'This is a split ticket and ' + ({ mechanic: 'the mechanic has not', detail: 'the detailer has not',
+               both: 'neither the mechanic nor the detailer has' })[split.waitingOn] + ' marked their part done yet.' };
   }
   setStatus_(job, 'done', 'service_writer', '', isPartsOrder_(job) ? 'Picked up' : 'Marked done');
   return { job: jobSummary_(jobRow_(id)) };
@@ -7128,6 +7255,8 @@ function hourly() {
   // Catches Harbor Haul Out up on any tick whose own send failed. The whole
   // state each time, so this is a no-op over there when nothing is behind.
   pushWinterTicks_(null);
+  // The Detail Tracker's winter quotes, for any answer whose ping was lost.
+  catchUpWinterDetails_();
 }
 
 /** Housekeeping, at an hour when slow does not matter. */
@@ -7457,4 +7586,1250 @@ function setAdminPassword(password) {
   if (value.length < 5) throw new Error('Use at least 5 characters.');
   props_().setProperty('ADMIN_PASSWORD', value);
   return 'Portal password set.';
+}
+
+/* ============================ the Detail Tracker ========================== */
+/*
+ * Chris, Nov 2026: "There's been some mixups between the detailer and the
+ * mechanic ... the mechanic marks it done because the mechanical parts are
+ * done, but detail quotes, details, powerwashes, etc. all still need to be
+ * done." So detailing is its own board, with its own app at /d/:
+ *
+ *  - A DETAIL IS A ROW ON `Details`. It comes from one of three places: a
+ *    request taken in at the counter or by phone (`source: request`), a work
+ *    order the writer ticked Detail on (`source: job`, `job_id` set), or a
+ *    winter unit whose quote carries detailing or a wash (`source: winter`,
+ *    `winter_qn` set). Its lines are the detail menu's (assets/lib/
+ *    detail-menu.js), as one JSON cell, because a detail is read and written
+ *    whole and never queried by line.
+ *  - A SPLIT TICKET IS STILL ONE TICKET. `detail_split` on the job says who
+ *    has work on it: '' is the mechanic alone (every job before this), 'detail'
+ *    the detailer alone, 'both' each their own part. On 'both' the job only
+ *    reaches Work finished when the mechanic AND the detailer have each marked
+ *    their half done (`mech_done_at`, `detail_done_at`) — whichever finishes
+ *    second is what moves it. Until then the writer's list says who it is
+ *    waiting on, and Mark done asks before closing a ticket with half of it
+ *    still open.
+ *  - THE QUOTE WAITS ON THE CUSTOMER, the same way the winter system's quoted
+ *    items do: a line sent for a quote is not work to do until they accept
+ *    it. They answer on /q/?c=CODE — Accept, Decline or Call me — by POST
+ *    only, so a mail scanner following the link answers nothing. Sending is a
+ *    person's act, as everywhere in this app: the email has its own button,
+ *    and the text is a draft a person sends.
+ *  - THE OFFICE HEARS AT ONCE. Every answer bumps DETAIL_V (what the open
+ *    board polls, at the cost of one property read), writes a DetailEvents
+ *    row, sends a Web Push to every phone that switched notifications on, and
+ *    emails service@ once per submission. A winter quote's answer is pinged
+ *    across by the winter system (`api: 'detailPing'`) and caught up hourly.
+ *  - WINTER QUOTES STAY THE WINTER SYSTEM'S. A winter unit's detailing is
+ *    priced and answered there, because that is where its invoice and its
+ *    payments are. This board shows what state each line is in, and the
+ *    detailer's ticks go back the same way the mechanics' do (WinterWork →
+ *    winterTicks), so Harbor Haul Out knows the wash is done.
+ *  - SHOP-SIDE, EXCEPT THE QUOTE PAGE. detailQuote names its fields one at a
+ *    time: the customer's first name, the unit, and the lines sent to them
+ *    with their prices. Never a note, never who, never a line not quoted.
+ */
+
+const DETAIL_STATUSES_ = { requested: 'To do', in_progress: 'In progress', done: 'Done', cancelled: 'Cancelled' };
+const DETAIL_SPLITS_ = { '': 'Mechanic only', detail: 'Detailer only', both: 'Mechanic and detailer' };
+const DETAIL_QUOTE_STATES_ = { '': 1, pending: 1, call: 1, accepted: 1, declined: 1 };
+const DETAIL_ITEM_MAX_ = 40;
+const DETAIL_FINE_PRINT_ = 'All figures are estimates and represent “starting” prices. Total does not ' +
+  'include tax, and may not include certain material costs. Units not removed within 10 days of completion are ' +
+  'subject to short-term storage fees of $25 per day.';
+
+/*
+ * The winter system's words for detail and wash lines. Kept in step with
+ * WINTER_WORDS in assets/lib/detail-menu.js — the board maps a winter line to
+ * a menu line with that list, and this decides which winter lines are the
+ * detailers' in the first place.
+ */
+const DETAIL_WINTER_WORDS_ = [
+  [/^exterior detail/i, 'premiumExt'],
+  [/^wash\s*&\s*wax/i, 'washWax'],
+  [/^interior detail/i, 'premiumInt'],
+  [/^interior wipe-?\s*down/i, 'intWipe'],
+  [/^power\s*wash/i, 'powerwash'],
+  [/^acid wash/i, 'acidWash'],
+  [/^jetski detail/i, 'skiDetail']
+];
+
+function detailKeyForLabel_(label) {
+  const words = String(label || '').trim();
+  const hit = DETAIL_WINTER_WORDS_.filter(function (w) { return w[0].test(words); })[0];
+  return hit ? hit[1] : '';
+}
+
+/** The tabs and columns this needs, written the first time anybody needs them. */
+function ensureDetailSchema_() {
+  const ss = ss_();
+  if (ss.getSheetByName('Details') && ss.getSheetByName('DetailEvents') && ss.getSheetByName('PushSubs') &&
+      headerHas_('Jobs', 'detail_done_at')) return;
+  ensureSheets_(ss);
+  _headers = {};
+}
+
+/** What the open board polls. A new value on every write that changes a detail. */
+function detailVersion_() {
+  return String(props_().getProperty('DETAIL_V') || '0');
+}
+
+function bumpDetailVersion_() {
+  const v = String(Date.now()) + '-' + Utilities.getUuid().slice(0, 4);
+  props_().setProperty('DETAIL_V', v);
+  return v;
+}
+
+function detailEvent_(detailId, kind, text, actor) {
+  appendRow_('DetailEvents', { id: newId_('dev'), detail_id: detailId || '', kind: kind,
+    text: String(text || '').slice(0, 500), actor: actor || '', created_at: nowIso_() });
+}
+
+function whoIs_(who) {
+  return who && (who.role === 'mechanic' || who.role === 'detail') ? who.name : 'Office';
+}
+
+/**
+ * The Detail Tracker's sign-in: the same staff PIN as Harbor Haul Out
+ * (Chris, Nov 7 2026: "the sign ins for the detail app to be the same as the
+ * harbor haul out app"). The winter system holds the roster and checks it —
+ * with its own wrong-PIN pause — and this seals a token for the name it
+ * answers with, good for the same twelve hours a Harbor Haul Out sign-in is.
+ */
+const DETAIL_SESSION_HOURS_ = 12;
+function detailSignIn(pin) {
+  const p = String(pin || '').trim();
+  if (!p) throw new Error('Enter your PIN.');
+  if (!winterKey_()) throw new Error('Not connected to the winter system yet. The office needs to add WINTER_KEY.');
+  const out = winterCall_({ fn: 'staffPin', pin: p });
+  if (!out.valid) throw new Error(String(out.error || 'Wrong PIN.'));
+  const name = String(out.name || '').slice(0, 80);
+  const who = { name: name, admin: !!out.admin, quote: !!out.quote };
+  return { token: seal_({ role: 'detail', name: name, admin: who.admin, exp: Date.now() + DETAIL_SESSION_HOURS_ * 3600000 }), who: who };
+}
+
+function detailItems_(row) {
+  try {
+    const items = JSON.parse(row.items || '[]');
+    return Array.isArray(items) ? items : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function money2orNull_(v) {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(v);
+  return isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : null;
+}
+
+/**
+ * Lines from a page, made safe to store. `prev` is what is on the detail now:
+ * a line kept (same id) keeps its tick and its customer's answer, unless its
+ * price changed under an answer, which puts the answer back to unanswered —
+ * a customer agreed to a figure, not to whatever the line says later.
+ */
+function sanitizeDetailItems_(input, prev) {
+  const str = function (v, n) { return String(v === undefined || v === null ? '' : v).trim().slice(0, n || 120); };
+  const before = {};
+  (prev || []).forEach(function (x) { before[x.id] = x; });
+  const seen = {};
+  return (input || []).slice(0, DETAIL_ITEM_MAX_).map(function (x) {
+    let id = str(x.id, 40);
+    if (!id || seen[id]) id = newId_('dl');
+    seen[id] = true;
+    const old = before[id] || null;
+    const price = money2orNull_(x.price);
+    const item = {
+      id: id, key: str(x.key, 40), label: str(x.label), group: str(x.group, 60),
+      qty: Math.max(1, Math.min(99, Math.floor(Number(x.qty) || 1))),
+      price: price, how: str(x.how, 120),
+      // A winter line comes with the winter system's answer; anything new starts unquoted.
+      quote: old ? old.quote || '' : (x.winter && DETAIL_QUOTE_STATES_[x.quote] ? String(x.quote) : ''), answeredAt: old ? old.answeredAt || '' : '',
+      answeredBy: old ? old.answeredBy || '' : '', note: old ? old.note || '' : '',
+      winter: old ? old.winter || '' : str(x.winter, 20),
+      done: old ? old.done || null : null
+    };
+    if (old && old.price !== price && (item.quote === 'accepted' || item.quote === 'pending' || item.quote === 'call')) {
+      item.quote = price === null ? '' : 'pending';
+      item.answeredAt = '';
+      item.answeredBy = '';
+    }
+    return item;
+  }).filter(function (x) { return x.label; });
+}
+
+/** A line that is work to do: not declined, not waiting on an answer. */
+function detailDoable_(x) {
+  return x.quote === '' || x.quote === 'accepted';
+}
+
+/** Where a detail sits on the board. */
+function detailStage_(row, items) {
+  if (row.status === 'cancelled') return 'cancelled';
+  if (row.status === 'done') return 'done';
+  if (row.status === 'in_progress') return 'doing';
+  if (items.some(function (x) { return x.quote === 'call'; })) return 'call';
+  if (items.some(function (x) { return x.quote === 'pending'; })) return 'waiting';
+  if (items.some(function (x) { return x.quote === '' && x.price === null; })) return 'price';
+  return 'todo';
+}
+
+function detailQuoteUrl_(code) {
+  return SITE_URL + '/q/?c=' + encodeURIComponent(code);
+}
+
+function detailView_(row, job) {
+  const items = detailItems_(row);
+  const count = function (q) { return items.filter(function (x) { return x.quote === q; }).length; };
+  const doable = items.filter(detailDoable_);
+  return {
+    id: row.id, source: row.source || 'request', jobId: row.job_id || '', winterQn: row.winter_qn || '',
+    customerName: row.customer_name || '', customerPhone: row.customer_phone || '',
+    customerEmail: row.customer_email || '', unit: row.unit || '',
+    loa: numberOrNull_(row.loa), beam: numberOrNull_(row.beam),
+    items: items, status: row.status || 'requested', statusLabel: DETAIL_STATUSES_[row.status || 'requested'],
+    stage: detailStage_(row, items),
+    pending: count('pending'), calls: count('call'), declined: count('declined'),
+    left: doable.filter(function (x) { return !x.done; }).length,
+    total: Math.round(doable.reduce(function (t, x) { return t + (Number(x.price) || 0); }, 0) * 100) / 100,
+    assignedTo: row.assigned_to || '', notes: row.notes || '',
+    quoteCode: row.quote_code || '', quoteUrl: row.quote_code ? detailQuoteUrl_(row.quote_code) : '',
+    quoteSentAt: row.quote_sent_at || '',
+    createdBy: row.created_by || '', createdAt: row.created_at || '', updatedAt: row.updated_at || '',
+    startedAt: row.started_at || '', doneAt: row.done_at || '', doneBy: row.done_by || '',
+    archivedAt: row.archived_at || '',
+    split: job ? String(job.detail_split || '') : '',
+    mechDone: job ? !!job.mech_done_at : false,
+    jobStatus: job ? job.status : ''
+  };
+}
+
+function detailRow_(id) {
+  return rows_('Details').filter(function (r) { return r.id === String(id || ''); })[0] || null;
+}
+
+function detailForJob_(jobId) {
+  return rows_('Details').filter(function (r) {
+    return r.job_id === String(jobId || '') && r.status !== 'cancelled';
+  })[0] || null;
+}
+
+function jobsById_() {
+  const out = {};
+  rows_('Jobs').forEach(function (j) { out[j.id] = j; });
+  return out;
+}
+
+/**
+ * The board. `since` is the version the page already has: the same version
+ * answers {same: true} off one property read, which is what lets an open
+ * board ask every twenty seconds without costing the shop anything.
+ */
+function detailBoard(token, since, opts) {
+  requireShop_(token);
+  const v = detailVersion_();
+  if (since && String(since) === v) return { same: true, v: v };
+  if (!ss_().getSheetByName('Details')) return { v: v, details: [], events: [], setup: false };
+  prefetch_(['Details', 'Jobs', 'DetailEvents']);
+  const jobs = jobsById_();
+  const archived = !!(opts && opts.archived);
+  const cutoff = new Date(Date.now() - 14 * 86400000).toISOString();
+  const details = rows_('Details').filter(function (r) {
+    if (archived) return !!r.archived_at;
+    if (r.archived_at) return false;
+    // Done and cancelled stay up for a fortnight, then only on Archived.
+    if ((r.status === 'done' || r.status === 'cancelled') && String(r.done_at || r.updated_at) < cutoff) return false;
+    return true;
+  }).map(function (r) { return detailView_(r, jobs[r.job_id]); });
+  const order = { call: 0, waiting: 1, price: 2, doing: 3, todo: 4, done: 5, cancelled: 6 };
+  details.sort(function (a, b) {
+    return (order[a.stage] - order[b.stage]) || String(a.createdAt).localeCompare(String(b.createdAt));
+  });
+  const events = rows_('DetailEvents').slice(-40).reverse().map(function (e) {
+    return { id: e.id, detailId: e.detail_id, kind: e.kind, text: e.text, actor: e.actor, at: e.created_at };
+  });
+  return { v: v, details: details, events: events, setup: true };
+}
+
+function getDetail(token, id) {
+  requireShop_(token);
+  if (!ss_().getSheetByName('Details')) throw new Error('No such detail.');
+  const row = detailRow_(id);
+  if (!row) throw new Error('No such detail.');
+  const job = row.job_id ? jobRow_(row.job_id) : null;
+  const events = rows_('DetailEvents').filter(function (e) { return e.detail_id === row.id; }).reverse()
+    .map(function (e) { return { kind: e.kind, text: e.text, actor: e.actor, at: e.created_at }; });
+  return { detail: detailView_(row, job), events: events, v: detailVersion_() };
+}
+
+function cleanDetailFields_(input) {
+  const str = function (v, n) { return String(v === undefined || v === null ? '' : v).trim().slice(0, n || 200); };
+  const dim = function (v) { const n = Number(v); return isFinite(n) && n > 0 && n < 200 ? String(Math.round(n * 1000) / 1000) : ''; };
+  const out = {};
+  if (input.customerName !== undefined) out.customer_name = str(input.customerName, 120);
+  if (input.customerPhone !== undefined) out.customer_phone = str(input.customerPhone, 40);
+  if (input.customerEmail !== undefined) out.customer_email = str(input.customerEmail, 200);
+  if (input.unit !== undefined) out.unit = str(input.unit, 200);
+  if (input.loa !== undefined) out.loa = dim(input.loa);
+  if (input.beam !== undefined) out.beam = dim(input.beam);
+  if (input.notes !== undefined) out.notes = str(input.notes, 2000);
+  if (input.assignedTo !== undefined) out.assigned_to = str(input.assignedTo, 80);
+  return out;
+}
+
+/** A new request, taken in at the counter, on the phone, or off a winter unit. */
+function createDetail(token, input) {
+  const who = requireShop_(token);
+  ensureDetailSchema_();
+  input = input || {};
+  const fields = cleanDetailFields_(input);
+  if (!fields.customer_name) throw new Error('Whose is it? Put the customer’s name in.');
+  const items = sanitizeDetailItems_(input.items, null);
+  if (!items.length) throw new Error('Pick at least one thing to do from the menu.');
+  const qn = String(input.winterQn || '').trim().toUpperCase().slice(0, 20);
+  return withLock_(function () {
+    if (qn) {
+      const already = rows_('Details').filter(function (r) {
+        return r.winter_qn === qn && r.status !== 'cancelled' && r.status !== 'done' && !r.archived_at;
+      })[0];
+      if (already) return { detail: detailView_(already, null), existed: true, v: detailVersion_() };
+    }
+    const at = nowIso_();
+    const row = Object.assign({
+      id: newId_('det'), source: qn ? 'winter' : 'request', job_id: '', winter_qn: qn,
+      items: JSON.stringify(items), status: 'requested', created_by: whoIs_(who),
+      created_at: at, updated_at: at
+    }, fields);
+    appendRow_('Details', row);
+    detailEvent_(row.id, 'created', 'New detail for ' + row.customer_name + ': ' +
+      items.map(function (x) { return x.label; }).join(', '), whoIs_(who));
+    const v = bumpDetailVersion_();
+    return { detail: detailView_(detailRow_(row.id), null), v: v };
+  });
+}
+
+/** Lines, dimensions, notes, who has it. Ticks and answers ride through on each line. */
+function updateDetail(token, id, input) {
+  const who = requireShop_(token);
+  ensureDetailSchema_();
+  return withLock_(function () {
+    forget_('Details');
+    const row = detailRow_(id);
+    if (!row) throw new Error('No such detail.');
+    const patch = cleanDetailFields_(input || {});
+    if (input && input.items) {
+      const items = sanitizeDetailItems_(input.items, detailItems_(row));
+      if (!items.length) throw new Error('A detail needs at least one line. Cancel it instead.');
+      patch.items = JSON.stringify(items);
+    }
+    patch.updated_at = nowIso_();
+    updateRow_('Details', row._row, patch);
+    const v = bumpDetailVersion_();
+    return { detail: detailView_(detailRow_(id), row.job_id ? jobRow_(row.job_id) : null), v: v };
+  });
+}
+
+/** The job a detail belongs to moves on when its detail does. */
+function startJobForDetail_(row, by) {
+  if (!row.job_id) return;
+  const job = jobRow_(row.job_id);
+  if (job && job.status === 'received') setStatus_(job, 'work_underway', 'detailer', by, 'Detail started');
+}
+
+/** Tick a line off, or put it back. A first tick starts the detail. */
+function setDetailItemDone(token, id, itemId, done) {
+  const who = requireShop_(token);
+  const by = whoIs_(who);
+  const out = withLock_(function () {
+    forget_('Details');
+    const row = detailRow_(id);
+    if (!row) throw new Error('No such detail.');
+    if (row.status === 'done' || row.status === 'cancelled') throw new Error('This detail is closed. Re-open it first.');
+    const items = detailItems_(row);
+    const item = items.filter(function (x) { return x.id === String(itemId || ''); })[0];
+    if (!item) throw new Error('That line is not on this detail any more. Pull it up again.');
+    if (done && !detailDoable_(item)) {
+      throw new Error(item.quote === 'declined' ? 'The customer declined that one.' : 'That one is still waiting on the customer.');
+    }
+    item.done = done ? { by: by, at: nowIso_() } : null;
+    const patch = { items: JSON.stringify(items), updated_at: nowIso_() };
+    if (done && row.status === 'requested') { patch.status = 'in_progress'; patch.started_at = nowIso_(); }
+    updateRow_('Details', row._row, patch);
+    if (done) startJobForDetail_(row, by);
+    const v = bumpDetailVersion_();
+    return { row: detailRow_(id), item: item, v: v };
+  });
+  if (out.row.winter_qn && out.item.winter) syncDetailToWinter_(out.row);
+  return { detail: detailView_(out.row, out.row.job_id ? jobRow_(out.row.job_id) : null), v: out.v };
+}
+
+function startDetail(token, id) {
+  const who = requireShop_(token);
+  return withLock_(function () {
+    forget_('Details');
+    const row = detailRow_(id);
+    if (!row) throw new Error('No such detail.');
+    if (row.status === 'requested') {
+      updateRow_('Details', row._row, { status: 'in_progress', started_at: nowIso_(), updated_at: nowIso_(),
+        assigned_to: row.assigned_to || whoIs_(who) });
+      startJobForDetail_(row, whoIs_(who));
+      detailEvent_(row.id, 'started', whoIs_(who) + ' started the detail for ' + row.customer_name, whoIs_(who));
+    }
+    const v = bumpDetailVersion_();
+    return { detail: detailView_(detailRow_(id), row.job_id ? jobRow_(row.job_id) : null), v: v };
+  });
+}
+
+/**
+ * The detailer's half is done. Every line still to do is ticked by them; a
+ * line still waiting on the customer stops it, because finishing would leave
+ * work the customer may yet say yes to.
+ *
+ * On a work order this is the detailer's mark: a detail-only job moves to
+ * Work finished, and a split job does when the mechanic has finished too.
+ */
+function finishDetail(token, id) {
+  const who = requireShop_(token);
+  const by = whoIs_(who);
+  const out = withLock_(function () {
+    forget_('Details');
+    forget_('Jobs');
+    const row = detailRow_(id);
+    if (!row) throw new Error('No such detail.');
+    if (row.status === 'done') return { row: row, already: true };
+    if (row.status === 'cancelled') throw new Error('That detail was cancelled.');
+    const items = detailItems_(row);
+    const waiting = items.filter(function (x) { return x.quote === 'pending' || x.quote === 'call'; });
+    if (waiting.length) {
+      throw new Error(waiting.length + (waiting.length === 1 ? ' line is' : ' lines are') +
+        ' still waiting on the customer (' + waiting.map(function (x) { return x.label; }).join(', ') +
+        '). Get their answer, or mark it for them, first.');
+    }
+    const at = nowIso_();
+    items.forEach(function (x) { if (detailDoable_(x) && !x.done) x.done = { by: by, at: at }; });
+    updateRow_('Details', row._row, { items: JSON.stringify(items), status: 'done', done_at: at, done_by: by,
+      started_at: row.started_at || at, updated_at: at });
+    let jobNote = '';
+    if (row.job_id) {
+      const job = jobRow_(row.job_id);
+      if (job && job.status !== 'done') {
+        updateRow_('Jobs', job._row, { detail_done_at: at, updated_at: at });
+        forget_('Jobs');
+        const fresh = jobRow_(row.job_id);
+        const split = String(fresh.detail_split || '');
+        if (split === 'detail' || (split === 'both' && fresh.mech_done_at)) {
+          if (fresh.status === 'received') setStatus_(fresh, 'work_underway', 'detailer', by, 'Detail started');
+          setStatus_(jobRow_(row.job_id), 'work_finished', 'detailer', by,
+            split === 'both' ? 'Detail finished — mechanic already done' : 'Detail finished');
+          jobNote = ' Job ' + row.job_id + ' is ready to close out.';
+        } else if (split === 'both') {
+          jobNote = ' Job ' + row.job_id + ' is still waiting on the mechanic.';
+        }
+      }
+    }
+    detailEvent_(row.id, 'done', by + ' finished the detail for ' + row.customer_name + '.' + jobNote, by);
+    return { row: detailRow_(id), jobNote: jobNote, v: bumpDetailVersion_() };
+  });
+  if (out.row.winter_qn) syncDetailToWinter_(out.row);
+  if (out.jobNote && !out.already) pushNotify_('Detail done', out.row.customer_name + ' —' + out.jobNote, out.row.id);
+  return { detail: detailView_(out.row, out.row.job_id ? jobRow_(out.row.job_id) : null),
+           jobNote: out.jobNote, v: out.v || detailVersion_() };
+}
+
+/** Back from Done, or Cancel / un-cancel. Writer or detailer. */
+function setDetailStatus(token, id, to) {
+  const who = requireShop_(token);
+  if (to !== 'requested' && to !== 'cancelled' && to !== 'archived' && to !== 'unarchived') {
+    throw new Error('That status change is not allowed.');
+  }
+  return withLock_(function () {
+    forget_('Details');
+    const row = detailRow_(id);
+    if (!row) throw new Error('No such detail.');
+    const at = nowIso_();
+    const patch = { updated_at: at };
+    if (to === 'archived') patch.archived_at = at;
+    else if (to === 'unarchived') patch.archived_at = '';
+    else {
+      patch.status = to;
+      if (to === 'requested') { patch.done_at = ''; patch.done_by = ''; }
+      if (to === 'cancelled') patch.done_at = at;
+      if (row.job_id) {
+        const job = jobRow_(row.job_id);
+        if (job && job.status !== 'done') updateRow_('Jobs', job._row, { detail_done_at: '', updated_at: at });
+      }
+      detailEvent_(row.id, to, whoIs_(who) + (to === 'cancelled' ? ' cancelled' : ' re-opened') +
+        ' the detail for ' + row.customer_name, whoIs_(who));
+    }
+    updateRow_('Details', row._row, patch);
+    const v = bumpDetailVersion_();
+    return { detail: detailView_(detailRow_(id), row.job_id ? jobRow_(row.job_id) : null), v: v };
+  });
+}
+
+/* --------------------------- split work orders --------------------------- */
+
+/**
+ * The writer ticking Detail on a work order, at intake or on the job page.
+ * `input` is { split: 'detail'|'both', items, loa, beam, notes }; null takes
+ * the detail off (cancels it) and makes the job the mechanic's alone again.
+ */
+function setJobDetail(token, jobId, input) {
+  const who = requireAdmin_(token);
+  ensureDetailSchema_();
+  return withLock_(function () {
+    forget_('Jobs');
+    forget_('Details');
+    const job = jobRow_(jobId);
+    if (!job) throw new Error('No such job.');
+    if (isPartsOrder_(job)) throw new Error('A parts order has nothing to detail.');
+    if (job.status === 'done') throw new Error('That job is closed out already.');
+    const at = nowIso_();
+    let row = detailForJob_(job.id);
+    if (!input) {
+      if (row) {
+        updateRow_('Details', row._row, { status: 'cancelled', done_at: at, updated_at: at });
+        detailEvent_(row.id, 'cancelled', 'Detail taken off job ' + job.id, whoIs_(who));
+      }
+      updateRow_('Jobs', job._row, { detail_split: '', detail_done_at: '', updated_at: at });
+      bumpDetailVersion_();
+      return { job: jobSummary_(jobRow_(job.id)), detail: null };
+    }
+    const split = String(input.split || '');
+    if (split !== 'detail' && split !== 'both') throw new Error('Say who is on it: the detailer alone, or the mechanic and the detailer.');
+    const items = sanitizeDetailItems_(input.items, row ? detailItems_(row) : null);
+    if (!items.length) throw new Error('Tick at least one thing for the detailer.');
+    const fields = cleanDetailFields_({ loa: input.loa, beam: input.beam, notes: input.notes });
+    const jobPatch = { detail_split: split, updated_at: at };
+    if (row) {
+      updateRow_('Details', row._row, Object.assign(fields, { items: JSON.stringify(items), updated_at: at,
+        customer_name: job.customer_name, customer_phone: job.customer_phone, customer_email: job.customer_email,
+        unit: job.boat_info }));
+      if (row.status === 'done') {
+        // A line added to a finished detail re-opens it.
+        if (items.some(function (x) { return detailDoable_(x) && !x.done; })) {
+          updateRow_('Details', row._row, { status: 'in_progress', done_at: '', done_by: '' });
+          jobPatch.detail_done_at = '';
+        }
+      }
+    } else {
+      row = Object.assign({ id: newId_('det'), source: 'job', job_id: job.id, winter_qn: '',
+        customer_name: job.customer_name, customer_phone: job.customer_phone, customer_email: job.customer_email,
+        unit: job.boat_info, items: JSON.stringify(items), status: 'requested', created_by: whoIs_(who),
+        created_at: at, updated_at: at }, fields);
+      appendRow_('Details', row);
+      detailEvent_(row.id, 'created', 'Job ' + job.id + ' (' + (job.customer_name || 'no name') + ') sent to detail: ' +
+        items.map(function (x) { return x.label; }).join(', '), whoIs_(who));
+      jobPatch.detail_done_at = '';
+    }
+    updateRow_('Jobs', job._row, jobPatch);
+    bumpDetailVersion_();
+    forget_('Details');
+    const fresh = jobRow_(job.id);
+    return { job: jobSummary_(fresh), detail: detailView_(detailForJob_(job.id), fresh) };
+  });
+}
+
+/** What the writer's list and job page say about the split. Off the row alone. */
+function jobDetailSummary_(job) {
+  const split = String(job.detail_split || '');
+  if (!split) return null;
+  const mechDone = split === 'detail' || !!job.mech_done_at;
+  const detailDone = !!job.detail_done_at;
+  return {
+    split: split, splitLabel: DETAIL_SPLITS_[split] || split,
+    mechDoneAt: job.mech_done_at || null, detailDoneAt: job.detail_done_at || null,
+    waitingOn: mechDone && detailDone ? '' : (!mechDone && !detailDone ? 'both' : (!mechDone ? 'mechanic' : 'detail'))
+  };
+}
+
+/* ---------------------------- the quote ---------------------------------- */
+
+/**
+ * Send lines for the customer's answer. Mints the code (once — a re-quote keeps
+ * the link already in their inbox) and marks the lines pending. Sends nothing:
+ * the email and the text are their own buttons.
+ */
+function quoteDetail(token, id, itemIds) {
+  const who = requireShop_(token);
+  return withLock_(function () {
+    forget_('Details');
+    const row = detailRow_(id);
+    if (!row) throw new Error('No such detail.');
+    if (row.source === 'winter') throw new Error('Winter quotes are priced and sent from the winter console or Harbor Haul Out.');
+    const want = (itemIds || []).map(String);
+    const items = detailItems_(row);
+    let n = 0;
+    items.forEach(function (x) {
+      if (want.length && want.indexOf(x.id) === -1) return;
+      if (x.quote === 'accepted' || x.quote === 'declined' || x.done) return;
+      if (x.price === null) throw new Error('Put a price on “' + x.label + '” before quoting it.');
+      x.quote = 'pending';
+      n += 1;
+    });
+    if (!n) throw new Error('Nothing to quote: every line is already answered or done.');
+    const patch = { items: JSON.stringify(items), updated_at: nowIso_() };
+    if (!row.quote_code) patch.quote_code = newInvoiceCode_();
+    updateRow_('Details', row._row, patch);
+    detailEvent_(row.id, 'quoted', whoIs_(who) + ' quoted ' + n + (n === 1 ? ' line' : ' lines') + ' for ' + row.customer_name, whoIs_(who));
+    const v = bumpDetailVersion_();
+    const fresh = detailRow_(id);
+    return { detail: detailView_(fresh, null), text: detailQuoteMessage_(fresh), v: v };
+  });
+}
+
+function detailQuoteMessage_(row) {
+  const first = String(row.customer_name || '').split(/[ ,]/).filter(String)[0] || '';
+  const name = first ? first.charAt(0).toUpperCase() + first.slice(1).toLowerCase() : '';
+  return (name ? 'Hi ' + name + ', ' : 'Hi, ') + SHOP_NAME + ' here. Your detailing quote is ready — accept, ' +
+    'decline or ask us to call: ' + detailQuoteUrl_(row.quote_code);
+}
+
+/** The wording and number for a text. Not a send — a person sends it. */
+function detailQuoteText(token, id) {
+  requireShop_(token);
+  const row = detailRow_(id);
+  if (!row) throw new Error('No such detail.');
+  if (!row.quote_code) throw new Error('Quote some lines first.');
+  return { text: detailQuoteMessage_(row), phone: row.customer_phone || '' };
+}
+
+/** "I have sent it" — the only thing that records a text going out. */
+function markDetailQuoteSent(token, id, how) {
+  const who = requireShop_(token);
+  return withLock_(function () {
+    forget_('Details');
+    const row = detailRow_(id);
+    if (!row) throw new Error('No such detail.');
+    updateRow_('Details', row._row, { quote_sent_at: nowIso_(), updated_at: nowIso_() });
+    detailEvent_(row.id, 'sent', whoIs_(who) + ' texted the quote to ' + row.customer_name, whoIs_(who));
+    return { detail: detailView_(detailRow_(id), null), v: bumpDetailVersion_() };
+  });
+}
+
+/** The quote by email: its own button, and the only send in this section. */
+function sendDetailQuoteEmail(token, id) {
+  const who = requireShop_(token);
+  const row = detailRow_(id);
+  if (!row) throw new Error('No such detail.');
+  if (!row.quote_code) throw new Error('Quote some lines first.');
+  const to = normalizeEmails_(row.customer_email);
+  if (!to) throw new Error('There is no email address on this detail. Add one, or text it instead.');
+  const rehearsal = testMode_();
+  const items = detailItems_(row).filter(function (x) { return x.quote === 'pending' || x.quote === 'call'; });
+  if (!items.length) throw new Error('Nothing on this detail is waiting on the customer.');
+  const first = String(row.customer_name || '').split(/[ ,]/).filter(String)[0] || '';
+  const list = '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:0 0 6px">' +
+    items.map(function (x) {
+      return '<tr><td style="' + MAIL_FONT + ';font-size:15px;padding:6px 0;border-bottom:1px solid #EBF1F6">' +
+        esc_(x.label) + (x.qty > 1 ? ' &times; ' + x.qty : '') + '</td><td align="right" style="' + MAIL_FONT +
+        ';font-size:15px;padding:6px 0;border-bottom:1px solid #EBF1F6;white-space:nowrap">' + esc_(money_(x.price)) + '</td></tr>';
+    }).join('') + '</table>';
+  const html = noticeHtml_({
+    banner: rehearsal ? mailBox_('#FFF6E0', '#E2C27A', '<b>Test mode.</b> This would have gone to ' + esc_(to) + '.') : '',
+    greeting: first,
+    intro: '<p style="margin:0 0 12px">Here is your detailing quote' + (row.unit ? ' for your ' + esc_(row.unit) : '') +
+      '. Nothing is done until you accept it — tap below to accept, decline, or ask us to call you.</p>' + list +
+      '<p style="font-size:12.5px;color:#5C7185;line-height:18px;margin:10px 0 0">' + esc_(DETAIL_FINE_PRINT_) + '</p>',
+    buttons: button_(detailQuoteUrl_(row.quote_code), 'Review my quote')
+  });
+  const ok = send_({
+    to: rehearsal ? testEmail_() : to, subject: (rehearsal ? '[TEST] ' : '') + 'Your detailing quote from ' + SHOP_NAME,
+    html: html, text: 'Your detailing quote: ' + detailQuoteUrl_(row.quote_code), jobId: row.job_id || row.id,
+    kind: 'detail_quote', suppressed: rehearsal, intendedFor: to
+  });
+  if (!ok) throw new Error('The email did not go. Try again, or text it instead.');
+  withLock_(function () {
+    forget_('Details');
+    const fresh = detailRow_(id);
+    updateRow_('Details', fresh._row, { quote_sent_at: nowIso_(), updated_at: nowIso_() });
+    detailEvent_(row.id, 'sent', whoIs_(who) + ' emailed the quote to ' + row.customer_name +
+      (rehearsal ? ' (test mode: held)' : ''), whoIs_(who));
+  });
+  return { ok: true, testMode: rehearsal, v: bumpDetailVersion_() };
+}
+
+/** The customer's page. The code is the whole of the credential. */
+function detailQuote(code) {
+  const shop = { name: SHOP_NAME, phone: SHOP_PHONE, email: SERVICE_EMAIL };
+  const c = String(code || '').trim().toUpperCase();
+  if (!c || !ss_().getSheetByName('Details')) return { notFound: true, shop: shop };
+  const row = rows_('Details').filter(function (r) { return r.quote_code && r.quote_code === c; })[0];
+  if (!row || row.status === 'cancelled') return { notFound: true, shop: shop };
+  // Named one field at a time. Only lines that were sent to them.
+  const lines = detailItems_(row).filter(function (x) { return x.quote; }).map(function (x) {
+    return { id: x.id, label: x.label, qty: x.qty, price: x.price, status: x.quote, done: !!x.done };
+  });
+  return {
+    quote: {
+      firstName: String(row.customer_name || '').split(/[ ,]/).filter(String)[0] || '',
+      unit: row.unit || '', lines: lines, finePrint: DETAIL_FINE_PRINT_, closed: row.status === 'done'
+    },
+    shop: shop
+  };
+}
+
+/**
+ * Accept / Decline / Call me, from the customer. One request, however many
+ * lines, and idempotent: the same answer twice changes nothing. An accepted
+ * line is not theirs to un-accept from here (the shop may already be doing
+ * it) — they ring, as on the winter page.
+ */
+function answerDetailQuote(code, answers, note) {
+  const c = String(code || '').trim().toUpperCase();
+  if (!c) throw new Error('That link is not complete.');
+  const out = withLock_(function () {
+    forget_('Details');
+    const row = rows_('Details').filter(function (r) { return r.quote_code && r.quote_code === c; })[0];
+    if (!row || row.status === 'cancelled') throw new Error('We could not find that quote. Please call us.');
+    const items = detailItems_(row);
+    const changed = [];
+    const at = nowIso_();
+    (answers || []).slice(0, DETAIL_ITEM_MAX_).forEach(function (a) {
+      const choice = String(a && a.choice || '');
+      if (choice !== 'accepted' && choice !== 'declined' && choice !== 'call') return;
+      const x = items.filter(function (i) { return i.id === String(a.item || ''); })[0];
+      if (!x || !x.quote || x.quote === 'accepted' || x.quote === choice) return;
+      x.quote = choice;
+      x.answeredAt = at;
+      x.answeredBy = 'customer';
+      changed.push(x);
+    });
+    const ask = String(note || '').trim().slice(0, 1000);
+    if (changed.length) {
+      if (ask) changed.forEach(function (x) { if (x.quote === 'call') x.note = ask; });
+      updateRow_('Details', row._row, { items: JSON.stringify(items), updated_at: at });
+      const words = { accepted: 'accepted', declined: 'declined', call: 'wants a call about' };
+      const text = row.customer_name + ' ' + ['call', 'accepted', 'declined'].map(function (k) {
+        const these = changed.filter(function (x) { return x.quote === k; });
+        return these.length ? words[k] + ' ' + these.map(function (x) { return x.label; }).join(', ') : '';
+      }).filter(String).join('; ') + (ask ? ' — “' + ask + '”' : '');
+      detailEvent_(row.id, changed.some(function (x) { return x.quote === 'call'; }) ? 'call' : 'answer', text, 'Customer');
+      return { row: detailRow_(row.id), changed: changed, text: text, ask: ask, v: bumpDetailVersion_() };
+    }
+    return { row: row, changed: [] };
+  });
+  if (out.changed.length) {
+    const call = out.changed.some(function (x) { return x.quote === 'call'; });
+    pushNotify_(call ? '📞 Call requested' : 'Detail quote answered', out.text, out.row.id);
+    notifyDetailAnswer_(out.row, out.changed, out.ask);
+  }
+  const page = detailQuote(c);
+  page.saved = out.changed.length;
+  return page;
+}
+
+/** One email to the office per submission, never per line. */
+function notifyDetailAnswer_(row, changed, ask) {
+  const call = changed.filter(function (x) { return x.quote === 'call'; });
+  const subject = (call.length ? '📞 CALL REQUESTED — ' : '') + 'Detail quote answered: ' + row.customer_name;
+  const line = function (x) { return '<li>' + esc_(x.label) + ' — ' + esc_(money_(x.price)) + ' — <b>' +
+    esc_({ accepted: 'accepted', declined: 'declined', call: 'call me' }[x.quote]) + '</b></li>'; };
+  const html = '<div style="' + MAIL_FONT + ';font-size:15px">' +
+    '<p><b>' + esc_(row.customer_name) + '</b>' + (row.unit ? ' · ' + esc_(row.unit) : '') +
+    (row.customer_phone ? ' · ' + esc_(row.customer_phone) : '') + '</p><ul>' + changed.map(line).join('') + '</ul>' +
+    (ask ? '<p>They asked: “' + esc_(ask) + '”</p>' : '') +
+    '<p><a href="' + esc_(SITE_URL + '/d/?detail=' + encodeURIComponent(row.id)) + '">Open it in the Detail Tracker</a></p></div>';
+  send_({ to: SERVICE_EMAIL, subject: subject, html: html, text: subject, jobId: row.job_id || row.id, kind: 'detail_answer' });
+}
+
+/** Staff answering for the customer — they rang, or said yes at the counter. */
+function decideDetailLine(token, id, itemId, choice) {
+  const who = requireShop_(token);
+  if (!DETAIL_QUOTE_STATES_[choice]) throw new Error('That is not an answer.');
+  return withLock_(function () {
+    forget_('Details');
+    const row = detailRow_(id);
+    if (!row) throw new Error('No such detail.');
+    const items = detailItems_(row);
+    const x = items.filter(function (i) { return i.id === String(itemId || ''); })[0];
+    if (!x) throw new Error('That line is not on this detail any more.');
+    if (row.source === 'winter' && x.winter) throw new Error('Answer winter quotes in the winter console.');
+    x.quote = choice;
+    x.answeredAt = nowIso_();
+    x.answeredBy = whoIs_(who);
+    updateRow_('Details', row._row, { items: JSON.stringify(items), updated_at: nowIso_() });
+    detailEvent_(row.id, 'answer', whoIs_(who) + ' marked ' + x.label + ' ' +
+      ({ '': 'not quoted', pending: 'waiting on the customer', call: 'call me', accepted: 'accepted', declined: 'declined' })[choice] +
+      ' for ' + row.customer_name, whoIs_(who));
+    return { detail: detailView_(detailRow_(id), row.job_id ? jobRow_(row.job_id) : null), v: bumpDetailVersion_() };
+  });
+}
+
+/* ------------------------------ winter units ----------------------------- */
+
+const WINTER_DETAIL_KEY_ = 'WINTER_DETAILS_v1';
+const WINTER_DETAIL_LAST_ = 'WINTER_DETAILS_LAST_v1';
+const WINTER_DETAIL_SNAP_PROP_ = 'WINTER_DETAIL_SNAP';
+/* The winter system's item states, to this board's. */
+const WINTER_STATE_TO_QUOTE_ = { awaiting: 'pending', call: 'call', declined: 'declined', quoted: 'accepted',
+  open: '', asked: '', dims: '' };
+
+function cleanWinterDetailUnit_(u) {
+  return {
+    qn: String(u.qn || '').slice(0, 20), name: String(u.name || '').slice(0, 120),
+    phone: String(u.phone || '').slice(0, 40), email: String(u.email || '').slice(0, 200),
+    unit: String(u.unit || '').slice(0, 40), ymm: String(u.ymm || '').slice(0, 120),
+    dims: String(u.dims || '').slice(0, 60), loa: numberOrNull_(u.loa), beam: numberOrNull_(u.beam),
+    stateLabel: String(u.stateLabel || '').slice(0, 60),
+    items: (u.items || []).map(function (x) {
+      return { l: String(x.l || '').slice(0, WINTER_ITEM_MAX_), s: String(x.s || ''), a: numberOrNull_(x.a) };
+    }).filter(function (x) { return x.l && detailKeyForLabel_(x.l); })
+  };
+}
+
+/** Every winter quote with detailing or a wash on it, off the winter system. */
+function fetchWinterDetails_() {
+  const body = winterCall_({ fn: 'details' });
+  return { at: String(body.at || nowIso_()), units: (body.units || []).map(cleanWinterDetailUnit_)
+    .filter(function (u) { return u.qn && u.items.length; }) };
+}
+
+function winterDetailFeed_(fresh) {
+  const cached = fresh ? null : cacheGetBig_(WINTER_DETAIL_KEY_);
+  if (cached && Array.isArray(cached.units)) return { feed: cached, stale: false, error: '' };
+  try {
+    const feed = fetchWinterDetails_();
+    cachePutBig_(WINTER_DETAIL_KEY_, feed, WINTER_FEED_TTL_);
+    cachePutBig_(WINTER_DETAIL_LAST_, feed, WINTER_LAST_GOOD_TTL_);
+    return { feed: feed, stale: false, error: '' };
+  } catch (err) {
+    const kept = cacheGetBig_(WINTER_DETAIL_LAST_);
+    return { feed: kept && Array.isArray(kept.units) ? kept : null, stale: true,
+             error: String(err && err.message ? err.message : err) };
+  }
+}
+
+/** The lines a winter unit brings onto the board. Prices are the winter quote's. */
+function winterDetailItems_(u) {
+  return u.items.map(function (x) {
+    const q = WINTER_STATE_TO_QUOTE_[x.s] === undefined ? '' : WINTER_STATE_TO_QUOTE_[x.s];
+    return { id: 'w_' + x.l.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 30), key: detailKeyForLabel_(x.l),
+      label: x.l, qty: 1, price: x.a, winter: x.s || 'asked', quote: q };
+  });
+}
+
+/** The Winter tab of the board: every winter unit with detail work, and whether it is on the board. */
+function winterDetails(token, fresh) {
+  requireShop_(token);
+  if (!winterKey_()) return { configured: false, units: [], error: 'Not connected to the winter system yet. The office needs to add WINTER_KEY.' };
+  const got = winterDetailFeed_(fresh === true);
+  if (!got.feed) return { configured: true, units: [], stale: true, error: got.error };
+  const onBoard = {};
+  if (ss_().getSheetByName('Details')) {
+    rows_('Details').forEach(function (r) {
+      if (r.winter_qn && r.status !== 'cancelled' && !r.archived_at) onBoard[r.winter_qn] = { id: r.id, status: r.status };
+    });
+  }
+  if (fresh === true) applyWinterStates_(got.feed.units, false);
+  return {
+    configured: true, at: got.feed.at, stale: got.stale, error: got.error,
+    units: got.feed.units.map(function (u) {
+      return { qn: u.qn, name: u.name, phone: u.phone, email: u.email, unit: u.unit, ymm: u.ymm, dims: u.dims,
+        loa: u.loa, beam: u.beam, stateLabel: u.stateLabel, items: winterDetailItems_(u),
+        onBoard: onBoard[u.qn] || null };
+    })
+  };
+}
+
+/**
+ * Put the winter system's answers onto the board's winter details, and say
+ * what moved. Called by the ping, by a fresh Winter tab, and hourly. Only the
+ * answer and the price of a winter line change here; its tick is ours.
+ */
+function applyWinterStates_(units, notify) {
+  if (!ss_().getSheetByName('Details')) return [];
+  const byQn = {};
+  units.forEach(function (u) { byQn[u.qn] = u; });
+  const moved = [];
+  withLock_(function () {
+    forget_('Details');
+    rows_('Details').forEach(function (row) {
+      const u = row.winter_qn && byQn[row.winter_qn];
+      if (!u || row.status === 'cancelled' || row.archived_at) return;
+      const fresh = winterDetailItems_(u);
+      const items = detailItems_(row);
+      let dirty = false;
+      fresh.forEach(function (f) {
+        const x = items.filter(function (i) { return i.winter && i.label === f.label; })[0];
+        if (!x) {
+          items.push(Object.assign(f, { group: '', how: '', answeredAt: '', answeredBy: '', note: '', done: null }));
+          moved.push({ row: row, text: row.customer_name + ': ' + f.label + ' added on the winter quote' });
+          dirty = true;
+          return;
+        }
+        if (x.quote !== f.quote || x.price !== f.price) {
+          if (x.quote !== f.quote && (f.quote === 'accepted' || f.quote === 'declined' || f.quote === 'call')) {
+            moved.push({ row: row, call: f.quote === 'call', text: row.customer_name + ' ' +
+              ({ accepted: 'accepted', declined: 'declined', call: 'wants a call about' })[f.quote] + ' ' + f.label + ' (winter quote ' + row.winter_qn + ')' });
+          }
+          x.quote = f.quote; x.price = f.price; x.winter = f.winter;
+          x.answeredAt = nowIso_(); x.answeredBy = 'winter';
+          dirty = true;
+        }
+      });
+      if (dirty) updateRow_('Details', row._row, { items: JSON.stringify(items), updated_at: nowIso_() });
+    });
+    moved.forEach(function (m) { detailEvent_(m.row.id, m.call ? 'call' : 'answer', m.text, 'Winter'); });
+    if (moved.length) bumpDetailVersion_();
+  });
+  if (notify) {
+    moved.forEach(function (m) {
+      pushNotify_(m.call ? '📞 Call requested' : 'Winter detail quote', m.text, m.row.id);
+    });
+  }
+  return moved;
+}
+
+/** Bring a winter unit onto the board. Idempotent per quote number. */
+function pullWinterDetail(token, qn) {
+  requireShop_(token);
+  const got = winterDetailFeed_(false);
+  const u = got.feed && got.feed.units.filter(function (x) { return x.qn === String(qn || '').trim().toUpperCase(); })[0];
+  if (!u) throw new Error('That winter quote has no detailing on it any more, or the winter system could not be reached.');
+  return createDetail(token, { winterQn: u.qn, customerName: u.name, customerPhone: u.phone, customerEmail: u.email,
+    unit: [u.ymm, u.unit].filter(String).join(' · '), loa: u.loa, beam: u.beam, items: winterDetailItems_(u) });
+}
+
+/** The detailer's ticks on a winter unit, home the way the mechanics' go. Never throws. */
+function syncDetailToWinter_(row) {
+  try {
+    if (!ss_().getSheetByName('WinterWork')) return false;
+    const done = row.status === 'done';
+    withLock_(function () {
+      forget_('WinterWork');
+      detailItems_(row).filter(function (x) { return x.winter; }).forEach(function (x) {
+        const tick = !!x.done || (done && detailDoable_(x));
+        const had = rows_('WinterWork').filter(function (r) { return r.quote_no === row.winter_qn && r.item === x.label; })[0];
+        const patch = tick ? { done: 'yes', done_by: (x.done && x.done.by) || row.done_by || 'Detail', done_at: (x.done && x.done.at) || nowIso_() }
+                           : { done: '', done_by: '', done_at: '' };
+        if (had) { if ((had.done === 'yes') !== tick) updateRow_('WinterWork', had._row, patch); }
+        else if (tick) appendRow_('WinterWork', Object.assign({ id: newId_('ww'), quote_no: row.winter_qn, item: x.label, created_at: nowIso_() }, patch));
+      });
+    });
+    return pushWinterTicks_([row.winter_qn]);
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * The winter system telling us a customer answered (or staff priced) a
+ * detail line. Same shared key as the tracker door, the other way round.
+ * Carries that quote's detail lines, so nothing has to re-read the season.
+ */
+function detailPing_(body) {
+  const want = winterKey_();
+  const got = String(body && body.key || '');
+  let diff = want.length >= 24 && got.length === want.length ? 0 : 1;
+  for (let i = 0; i < want.length && i < got.length; i++) diff |= want.charCodeAt(i) ^ got.charCodeAt(i);
+  if (diff) return { ok: 0, error: 'Not authorised.' };
+  const u = cleanWinterDetailUnit_(body.unit || {});
+  if (!u.qn) return { ok: 0, error: 'Which quote?' };
+  // The cached feed is now behind on this quote; the next read goes fresh.
+  try { scriptCache_().remove(WINTER_DETAIL_KEY_); } catch (e) { /* it expires on its own */ }
+  const moved = applyWinterStates_([u], true);
+  if (!moved.length && body.event) {
+    // A unit not on the board yet: still worth a buzz when a customer answered.
+    const text = String(body.event).slice(0, 300);
+    withLock_(function () { detailEvent_('', 'answer', text, 'Winter'); bumpDetailVersion_(); });
+    pushNotify_(/call/i.test(text) ? '📞 Call requested' : 'Winter detail quote', text, '');
+  }
+  return { ok: 1, moved: moved.length };
+}
+
+/** Hourly: catch the board up on any ping that never arrived. */
+function catchUpWinterDetails_() {
+  if (!winterKey_()) return;
+  try {
+    const got = winterDetailFeed_(true);
+    if (got.feed) applyWinterStates_(got.feed.units, true);
+  } catch (err) { /* next hour */ }
+}
+
+/* =============================== web push ================================ */
+/*
+ * Notifications on the detailer's and the writer's phones, from Apps Script,
+ * which has no Web Push library and no elliptic-curve signing. So the two
+ * pieces Web Push needs are here in plain JavaScript:
+ *
+ *  - A VAPID key pair (P-256), made the first time anybody asks for the public
+ *    half and kept in script properties — never in this public repo.
+ *  - An ES256 signature on the VAPID JWT, with the nonce derived the RFC 6979
+ *    way (HMAC-SHA256 over the key and the message), because Apps Script has
+ *    no secure random source and ECDSA with a guessable nonce gives the key
+ *    away.
+ *
+ * The push itself carries NO payload. Encrypting one needs AES-GCM, which
+ * Apps Script also lacks; instead the phone's service worker, woken by the
+ * push, asks pushInbox what happened and shows that. The words never sit on
+ * Google's or Apple's push servers either.
+ *
+ * Subscriptions are rows on PushSubs. One that the push service says is gone
+ * (404/410) is deleted on the spot.
+ */
+const P256_ = (function () {
+  const B = function (h) { return BigInt('0x' + h); };
+  return {
+    p: B('ffffffff00000001000000000000000000000000ffffffffffffffffffffffff'),
+    n: B('ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551'),
+    gx: B('6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296'),
+    gy: B('4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5')
+  };
+})();
+
+function modP_(a, m) { const r = a % m; return r >= BigInt(0) ? r : r + m; }
+
+function invMod_(a, m) {
+  let lo = BigInt(1), hi = BigInt(0), low = modP_(a, m), high = m;
+  while (low > BigInt(1)) {
+    const r = high / low;
+    const nm = hi - lo * r, nw = high - low * r;
+    hi = lo; high = low; lo = nm; low = nw;
+  }
+  return modP_(lo, m);
+}
+
+/* Jacobian coordinates: one inversion per scalar multiply, not one per step. */
+function jDouble_(P) {
+  const p = P256_.p, X = P[0], Y = P[1], Z = P[2], three = BigInt(3), two = BigInt(2);
+  if (Y === BigInt(0)) return [BigInt(0), BigInt(1), BigInt(0)];
+  const YY = modP_(Y * Y, p), S = modP_(BigInt(4) * X * YY, p);
+  const ZZ = modP_(Z * Z, p);
+  const M = modP_(three * (X - ZZ) * (X + ZZ), p);   // a = -3
+  const X3 = modP_(M * M - two * S, p);
+  const Y3 = modP_(M * (S - X3) - BigInt(8) * YY * YY, p);
+  return [X3, Y3, modP_(two * Y * Z, p)];
+}
+
+function jAdd_(P, Q) {
+  const p = P256_.p;
+  if (P[2] === BigInt(0)) return Q;
+  if (Q[2] === BigInt(0)) return P;
+  const Z1Z1 = modP_(P[2] * P[2], p), Z2Z2 = modP_(Q[2] * Q[2], p);
+  const U1 = modP_(P[0] * Z2Z2, p), U2 = modP_(Q[0] * Z1Z1, p);
+  const S1 = modP_(P[1] * Q[2] * Z2Z2, p), S2 = modP_(Q[1] * P[2] * Z1Z1, p);
+  if (U1 === U2) return S1 === S2 ? jDouble_(P) : [BigInt(0), BigInt(1), BigInt(0)];
+  const H = modP_(U2 - U1, p), R = modP_(S2 - S1, p);
+  const HH = modP_(H * H, p), HHH = modP_(H * HH, p), V = modP_(U1 * HH, p);
+  const X3 = modP_(R * R - HHH - BigInt(2) * V, p);
+  const Y3 = modP_(R * (V - X3) - S1 * HHH, p);
+  return [X3, Y3, modP_(H * P[2] * Q[2], p)];
+}
+
+function p256Mul_(k) {
+  let R = [BigInt(0), BigInt(1), BigInt(0)];
+  let A = [P256_.gx, P256_.gy, BigInt(1)];
+  let e = k;
+  while (e > BigInt(0)) {
+    if (e & BigInt(1)) R = jAdd_(R, A);
+    A = jDouble_(A);
+    e >>= BigInt(1);
+  }
+  if (R[2] === BigInt(0)) throw new Error('point at infinity');
+  const zi = invMod_(R[2], P256_.p), zi2 = modP_(zi * zi, P256_.p);
+  return [modP_(R[0] * zi2, P256_.p), modP_(R[1] * zi2 * zi, P256_.p)];
+}
+
+function bytesToBig_(b) { let h = ''; b.forEach(function (x) { h += (x < 16 ? '0' : '') + x.toString(16); }); return BigInt('0x' + (h || '0')); }
+function bigToBytes_(n, len) {
+  let h = n.toString(16);
+  while (h.length < len * 2) h = '0' + h;
+  const out = [];
+  for (let i = 0; i < len * 2; i += 2) out.push(parseInt(h.substr(i, 2), 16));
+  return out;
+}
+
+function sha256_(bytes) {
+  const K = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+  const H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+  const msg = bytes.map(function (b) { return b & 255; });
+  const bitLen = msg.length * 8;
+  msg.push(0x80);
+  while (msg.length % 64 !== 56) msg.push(0);
+  for (let i = 7; i >= 0; i--) msg.push(i >= 4 ? 0 : (bitLen >>> (i * 8)) & 255);
+  const W = new Array(64);
+  const rotr = function (x, n) { return (x >>> n) | (x << (32 - n)); };
+  for (let off = 0; off < msg.length; off += 64) {
+    for (let t = 0; t < 16; t++) W[t] = (msg[off + t * 4] << 24) | (msg[off + t * 4 + 1] << 16) | (msg[off + t * 4 + 2] << 8) | msg[off + t * 4 + 3];
+    for (let t = 16; t < 64; t++) {
+      const s0 = rotr(W[t - 15], 7) ^ rotr(W[t - 15], 18) ^ (W[t - 15] >>> 3);
+      const s1 = rotr(W[t - 2], 17) ^ rotr(W[t - 2], 19) ^ (W[t - 2] >>> 10);
+      W[t] = (W[t - 16] + s0 + W[t - 7] + s1) | 0;
+    }
+    let a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+    for (let t = 0; t < 64; t++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + K[t] + W[t]) | 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const mj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + mj) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+  }
+  const out = [];
+  H.forEach(function (x) { out.push((x >>> 24) & 255, (x >>> 16) & 255, (x >>> 8) & 255, x & 255); });
+  return out;
+}
+
+function hmac256_(key, msg) {
+  let k = key.length > 64 ? sha256_(key) : key.slice();
+  while (k.length < 64) k.push(0);
+  const ipad = k.map(function (b) { return b ^ 0x36; }), opad = k.map(function (b) { return b ^ 0x5c; });
+  return sha256_(opad.concat(sha256_(ipad.concat(msg))));
+}
+
+function asciiBytes_(s) { const out = []; for (let i = 0; i < s.length; i++) out.push(s.charCodeAt(i) & 255); return out; }
+
+function b64url_(bytes) {
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0);
+    out += A[(n >> 18) & 63] + A[(n >> 12) & 63] + (i + 1 < bytes.length ? A[(n >> 6) & 63] : '') + (i + 2 < bytes.length ? A[n & 63] : '');
+  }
+  return out;
+}
+
+/** ECDSA P-256 / SHA-256, r||s, nonce by RFC 6979. */
+function es256Sign_(d, msgBytes) {
+  const n = P256_.n;
+  const h1 = sha256_(msgBytes);
+  const z = bytesToBig_(h1);
+  const x = bigToBytes_(d, 32), h1o = bigToBytes_(modP_(z, n), 32);
+  let V = []; let K = [];
+  for (let i = 0; i < 32; i++) { V.push(1); K.push(0); }
+  K = hmac256_(K, V.concat([0], x, h1o)); V = hmac256_(K, V);
+  K = hmac256_(K, V.concat([1], x, h1o)); V = hmac256_(K, V);
+  for (;;) {
+    V = hmac256_(K, V);
+    const k = bytesToBig_(V);
+    if (k >= BigInt(1) && k < n) {
+      const r = modP_(p256Mul_(k)[0], n);
+      const s = modP_(invMod_(k, n) * (z + r * d), n);
+      if (r !== BigInt(0) && s !== BigInt(0)) return bigToBytes_(r, 32).concat(bigToBytes_(s, 32));
+    }
+    K = hmac256_(K, V.concat([0])); V = hmac256_(K, V);
+  }
+}
+
+/** The VAPID pair, made once. {d: BigInt, pub: base64url of the 65-byte point}. */
+function vapidKeys_() {
+  let dh = props_().getProperty('VAPID_PRIVATE');
+  let pub = props_().getProperty('VAPID_PUBLIC');
+  if (!dh || !pub) {
+    let seed = [];
+    for (let i = 0; i < 8; i++) seed = seed.concat(asciiBytes_(Utilities.getUuid()));
+    seed = seed.concat(asciiBytes_(String(Date.now()) + secret_()));
+    const d = modP_(bytesToBig_(sha256_(seed)), P256_.n - BigInt(1)) + BigInt(1);
+    const Q = p256Mul_(d);
+    dh = d.toString(16);
+    pub = b64url_([4].concat(bigToBytes_(Q[0], 32), bigToBytes_(Q[1], 32)));
+    props_().setProperty('VAPID_PRIVATE', dh);
+    props_().setProperty('VAPID_PUBLIC', pub);
+  }
+  return { d: BigInt('0x' + dh), pub: pub };
+}
+
+function vapidJwt_(endpoint, keys) {
+  const aud = String(endpoint).match(/^https:\/\/[^/]+/);
+  if (!aud) throw new Error('Not a push endpoint.');
+  const head = b64url_(asciiBytes_(JSON.stringify({ typ: 'JWT', alg: 'ES256' })));
+  const body = b64url_(asciiBytes_(JSON.stringify({ aud: aud[0], exp: Math.floor(Date.now() / 1000) + 12 * 3600,
+    sub: 'mailto:' + SERVICE_EMAIL })));
+  return head + '.' + body + '.' + b64url_(es256Sign_(keys.d, asciiBytes_(head + '.' + body)));
+}
+
+/** The public half, for the page's pushManager.subscribe. */
+function pushKey() {
+  return { key: vapidKeys_().pub };
+}
+
+function pushSubscribe(token, sub, label) {
+  const who = requireShop_(token);
+  ensureDetailSchema_();
+  const endpoint = String(sub && sub.endpoint || '');
+  if (!/^https:\/\//.test(endpoint) || endpoint.length > 1000) throw new Error('That is not a push subscription.');
+  return withLock_(function () {
+    forget_('PushSubs');
+    const had = rows_('PushSubs').filter(function (r) { return r.endpoint === endpoint; })[0];
+    const row = { endpoint: endpoint, who: whoIs_(who), label: String(label || '').slice(0, 80), role: who.role, failures: '0' };
+    if (had) updateRow_('PushSubs', had._row, row);
+    else appendRow_('PushSubs', Object.assign({ id: newId_('push'), created_at: nowIso_() }, row));
+    return { ok: true };
+  });
+}
+
+function pushUnsubscribe(token, endpoint) {
+  requireShop_(token);
+  if (!ss_().getSheetByName('PushSubs')) return { ok: true };
+  withLock_(function () {
+    forget_('PushSubs');
+    const had = rows_('PushSubs').filter(function (r) { return r.endpoint === String(endpoint || ''); })[0];
+    if (had) { sheet_('PushSubs').deleteRow(had._row); forget_('PushSubs'); }
+  });
+  return { ok: true };
+}
+
+/**
+ * Wake every subscribed phone. Never throws and never holds the lock: it is
+ * one request per phone, sent together, after the answer is saved.
+ */
+function pushNotify_(title, text, detailId) {
+  try {
+    if (!ss_().getSheetByName('PushSubs')) return 0;
+    const subs = rows_('PushSubs');
+    if (!subs.length) return 0;
+    // What the service worker will show, kept for it to collect.
+    cachePutBig_('PUSH_LAST', { title: String(title || ''), text: String(text || '').slice(0, 300),
+      detailId: detailId || '', at: nowIso_() }, 3600);
+    const keys = vapidKeys_();
+    const requests = subs.map(function (s) {
+      return { url: s.endpoint, method: 'post', muteHttpExceptions: true, contentType: 'application/octet-stream',
+        headers: { Authorization: 'vapid t=' + vapidJwt_(s.endpoint, keys) + ', k=' + keys.pub, TTL: '86400', Urgency: 'high' } };
+    });
+    const replies = UrlFetchApp.fetchAll ? UrlFetchApp.fetchAll(requests) : requests.map(function (r) {
+      const url = r.url; return UrlFetchApp.fetch(url, r);
+    });
+    const gone = [];
+    replies.forEach(function (res, i) {
+      const code = res.getResponseCode();
+      if (code === 404 || code === 410) gone.push(subs[i]._row);
+    });
+    if (gone.length) {
+      withLock_(function () {
+        gone.sort(function (a, b) { return b - a; }).forEach(function (r) { sheet_('PushSubs').deleteRow(r); });
+        forget_('PushSubs');
+      });
+    }
+    return replies.length - gone.length;
+  } catch (err) {
+    return 0;
+  }
+}
+
+/** What the service worker shows when a push wakes it. */
+function pushInbox(token) {
+  requireShop_(token);
+  const last = cacheGetBig_('PUSH_LAST');
+  return { note: last || null, v: detailVersion_() };
+}
+
+/** "Send me a test" on the board, so a phone can prove it is set up. */
+function pushTest(token) {
+  const who = requireShop_(token);
+  const sent = pushNotify_('Detail Tracker', 'Notifications are working on ' + whoIs_(who) + '’s phones.', '');
+  return { sent: sent };
 }

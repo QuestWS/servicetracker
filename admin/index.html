@@ -60,6 +60,8 @@ import { parseWorkOrder, FIELD_LABELS } from '../assets/lib/parse-work-order.js'
 import { parseInvoiceTotals, parseInvoiceItems, describeItems, formatMoney } from '../assets/lib/parse-invoice.js';
 import { stampWorkOrder, qrSvg } from '../assets/lib/stamp.js';
 import { trackingUrl } from '../assets/lib/tracking.js';
+import { mountPicker, PICKER_CSS } from '../assets/lib/detail-picker.js';
+import { dimsFromText } from '../assets/lib/detail-menu.js';
 import { matchesSearch } from '../assets/lib/search.js';
 import { emailList, joinEmails } from '../assets/lib/emails.js';
 import { $, esc, toast, formatDate, formatDateTime, relativeDays, driveImageUrl, driveFileUrl, bytesToBase64, formatBytes, openBytes } from '../assets/lib/ui.js';
@@ -697,6 +699,9 @@ async function renderJobs(kind = 'job') {
                 : job.balance !== null && job.balance !== undefined ? '<span class="pill grey">Paid</span>' : '')
               : `${job.hours ? `<span class="pill frost">${formatHours(job.hours)}</span>` : ''}
             <span class="pill grey">${job.entryCount} log</span>`}
+            ${!orders && job.detail && job.detail.waitingOn && job.status !== 'done' ? `<span class="pill gold" title="${esc(job.detail.splitLabel)}">${
+              job.detail.waitingOn === 'detail' ? 'Waiting on detail' : job.detail.waitingOn === 'mechanic' ? 'Waiting on mechanic'
+              : job.detail.split === 'detail' ? 'Detail only' : 'Split: mechanic + detail'}</span>` : ''}
             <span class="pill ${job.cancelledAt ? 'red' : STATUS_PILL[job.status]}">${
               orders ? statusLabelFor(job) : stageLabel[job.status]}</span>
             <span class="sub" style="min-width:78px;text-align:right">${relativeDays(job.updatedAt)}</span>
@@ -1549,6 +1554,8 @@ ${paymentCard}
           <button class="btn ghost block" type="button" id="addnote" style="margin-top:10px">Add the note</button>
         </section>
 
+        ${order ? '' : detailCardHtml(job, data.detailWork)}
+
         <section class="card" id="wintercard">
           <h2>Winterize checklist</h2>
           ${job.winter ? winterSummaryHtml(job.winter) : `<p class="hint" style="margin-top:0">A walk-in winterize gets
@@ -2189,6 +2196,8 @@ ${emailLogCard}
     }
   };
 
+  wireDetailCard(job, data.detailWork);
+
   const winteropen = $('winteropen');
   if (winteropen) winteropen.onclick = async () => {
     const menu = await mountWinterForm($('winteredit'), job.winter);
@@ -2279,7 +2288,17 @@ ${emailLogCard}
     markdone.disabled = true;
     markdone.textContent = 'Closing…';
     try {
-      const { jobPage } = await api('markDone', [job.id], withPage(job.id));
+      let out = await api('markDone', [job.id], withPage(job.id));
+      // A split ticket with half still open: the backend asks first.
+      if (out.needsConfirm) {
+        if (!confirm(`${out.message}\n\nClose it anyway?`)) {
+          markdone.disabled = false;
+          markdone.textContent = was;
+          return;
+        }
+        out = await api('markDone', [job.id, true], withPage(job.id));
+      }
+      const { jobPage } = out;
       renderJob(job.id, jobPage);
       toast(order ? 'Marked picked up.' : 'Marked done. Nothing has been emailed.');
     } catch (error) {
@@ -2579,6 +2598,13 @@ function renderReview() {
           logs hours and parts for anything beyond it.</small></span>
     </label>
     <div id="winterbox"></div>
+    <label class="checkline">
+      <input type="checkbox" id="detailjob">
+      <span>Detail
+        <small>Send detailing, washes or bottom work to the Detail Tracker. Choose whether the detailer has it
+          alone or splits it with the mechanic — a split job is only finished when both have marked their part done.</small></span>
+    </label>
+    <div id="detailbox"></div>
     <div class="row" style="margin-top:16px">
       <button class="btn navy" type="button" id="create">Create job &amp; stamp the QR code</button>
       <button class="btn ghost" type="button" id="restart">Start over</button>
@@ -2590,6 +2616,11 @@ function renderReview() {
   wireEmailField('intakeemails');
   $('restart').onclick = () => { intake = null; renderIntake(); };
   $('create').onclick = createJob;
+  $('detailjob').onchange = () => {
+    intake.detail = null;
+    if (!$('detailjob').checked) { $('detailbox').innerHTML = ''; return; }
+    intake.detail = mountDetailForm($('detailbox'), null, dimsFromText($('boatInfo').value));
+  };
   $('winterjob').onchange = async () => {
     intake.winterMenu = null;
     if (!$('winterjob').checked) { $('winterbox').innerHTML = ''; return; }
@@ -2619,6 +2650,14 @@ async function createJob() {
       return;
     }
   }
+  let detail = null;
+  if ($('detailjob') && $('detailjob').checked && intake.detail) {
+    try { detail = intake.detail.read(); } catch (error) {
+      message.className = 'msg err';
+      message.textContent = error.message;
+      return;
+    }
+  }
   button.disabled = true;
   message.className = 'msg';
   message.innerHTML = '<span class="spinner"></span> Stamping the QR code…';
@@ -2636,6 +2675,13 @@ async function createJob() {
       winter,
     }]);
     const job = created.job;
+    // The detailer's half, on the board before the paper is even printed. A
+    // failure here leaves an ordinary job, and says so — the job page can add it.
+    let detailError = null;
+    if (detail) {
+      try { await api('setJobDetail', [job.id, detail]); } catch (error) { detailError = error.message; }
+    }
+    if (detailError) toast(`The job is made, but it did not go to detail: ${detailError} Add it from the job page.`);
 
     const stamped = await stampWorkOrder({
       pdfBytes: intake.bytes,
@@ -2758,6 +2804,105 @@ function winterFormHtml(menu, current) {
             </label>`).join('')}
         </div>`).join('')}
     </div>`;
+}
+
+/* ---------------------------------------------------------------- detail --- */
+/*
+ * Detail on a work order: who has it (the detailer alone, or split with the
+ * mechanic) and the lines from the detail menu. The same picker the Detail
+ * Tracker uses for a new request, so the office and the detailers can never
+ * be offered different menus or prices.
+ */
+(function injectPickerCss() {
+  const style = document.createElement('style');
+  style.textContent = PICKER_CSS;
+  document.head.appendChild(style);
+})();
+
+function mountDetailForm(box, current, dims) {
+  const split = current ? current.split : 'both';
+  box.innerHTML = `
+    <div class="card flat" style="margin:8px 0 12px">
+      <label class="fld">Who is on it</label>
+      <label class="checkline"><input type="radio" name="dsplit" value="both" ${split === 'both' ? 'checked' : ''}>
+        <span>Mechanic and detailer — split<small>Each does their part. The job only shows as finished when both have marked theirs done.</small></span></label>
+      <label class="checkline"><input type="radio" name="dsplit" value="detail" ${split === 'detail' ? 'checked' : ''}>
+        <span>Detailer only<small>No mechanical work. It stays off the mechanics' list; the detailer marking it done finishes the job.</small></span></label>
+      <div id="dpick"></div>
+      <label class="fld" for="dnotes">Notes for the detailer</label>
+      <textarea class="txt" id="dnotes" rows="2">${esc((current && current.notes) || '')}</textarea>
+    </div>`;
+  const picker = mountPicker(box.querySelector('#dpick'), {
+    items: current ? current.items : [], loa: current ? current.loa : (dims && dims.loa), beam: current ? current.beam : (dims && dims.beam),
+  });
+  return {
+    read() {
+      const chosen = box.querySelector('input[name="dsplit"]:checked');
+      const items = picker.items();
+      if (!items.length) throw new Error('Tick at least one thing for the detailer, or untick Detail.');
+      const d = picker.dims();
+      return { split: chosen ? chosen.value : 'both', items, loa: d.loa, beam: d.beam, notes: box.querySelector('#dnotes').value.trim() };
+    },
+  };
+}
+
+function detailCardHtml(job, work) {
+  const s = job.detail;
+  const money = (n) => (n == null ? 'to price' : formatMoney(n));
+  const waiting = s && s.waitingOn ? ({ detail: 'Waiting on the detailer.', mechanic: 'Waiting on the mechanic.',
+    both: 'Neither half is marked done yet.' })[s.waitingOn] : (s ? 'Both halves are done.' : '');
+  return `<section class="card" id="detailcard">
+    <h2>Detail</h2>
+    ${s ? `<p style="margin-top:0"><b>${esc(s.splitLabel)}</b>. ${esc(waiting)}</p>
+      ${work ? `<div class="filelist">${work.items.map((x) => `<div class="filerow"><span class="grow">${x.done ? '✓ ' : ''}${esc(x.label)}${x.qty > 1 ? ` × ${x.qty}` : ''}
+        ${x.quote ? `<span class="pill ${x.quote === 'accepted' ? 'green' : x.quote === 'declined' ? 'grey' : 'gold'}">${esc(x.quote === 'call' ? 'call me' : x.quote)}</span>` : ''}</span>
+        <span class="mono">${esc(money(x.price))}</span></div>`).join('')}</div>
+        <p class="hint">${esc(work.statusLabel)}${work.doneBy ? ` — ${esc(work.doneBy)}, ${esc(formatDateTime(work.doneAt))}` : ''} ·
+          <a href="../d/?detail=${encodeURIComponent(work.id)}" target="_blank" rel="noreferrer">Open in the Detail Tracker</a></p>` : ''}`
+      : `<p class="hint" style="margin-top:0">Detailing, washes or bottom work on this ticket go to the Detail Tracker,
+          for the detailer alone or split with the mechanic.</p>`}
+    <div id="detailedit"></div>
+    <div class="row" id="detailbtns" style="margin-top:10px">
+      ${job.status === 'done' ? '' : `<button class="btn ghost" type="button" id="detailopen">${s ? 'Change the detail' : 'Send to detail'}</button>`}
+    </div>
+  </section>`;
+}
+
+function wireDetailCard(job, work) {
+  const open = $('detailopen');
+  if (!open) return;
+  open.onclick = () => {
+    const form = mountDetailForm($('detailedit'), job.detail && work ? Object.assign({ split: job.detail.split }, work) : null,
+      dimsFromText(job.boatInfo));
+    $('detailbtns').innerHTML = `<button class="btn navy" type="button" id="detailsave">Save</button>
+      ${job.detail ? '<button class="btn ghost" type="button" id="detailoff">Take it off this job</button>' : ''}`;
+    $('detailsave').onclick = async () => {
+      let input;
+      try { input = form.read(); } catch (error) { return notice('warn', error.message); }
+      $('detailsave').disabled = true;
+      try {
+        const { jobPage } = await api('setJobDetail', [job.id, input], withPage(job.id));
+        renderJob(job.id, jobPage);
+        toast('On the Detail Tracker.');
+      } catch (error) {
+        $('detailsave').disabled = false;
+        notice('warn', error.message);
+      }
+    };
+    const off = $('detailoff');
+    if (off) off.onclick = async () => {
+      if (!confirm('Take the detail off this job? It is cancelled on the Detail Tracker and the job is the mechanic\'s alone.')) return;
+      off.disabled = true;
+      try {
+        const { jobPage } = await api('setJobDetail', [job.id, null], withPage(job.id));
+        renderJob(job.id, jobPage);
+        toast('Detail taken off.');
+      } catch (error) {
+        off.disabled = false;
+        notice('warn', error.message);
+      }
+    };
+  };
 }
 
 /** What the form says, in the shape createJob / setJobWinter take. Throws in words. */

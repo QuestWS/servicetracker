@@ -42,11 +42,25 @@ const WINTER_UNITS = [
     stateAt: '2026-10-02T15:00:00Z', alert: "owner says don't touch the canvas", cnote: '',
     work: [{ sec: 'Winterization', label: 'Basic — PWC / Jetski', winterize: true }] },
 ];
+/* The winter quotes with detailing on them, for the Detail Tracker's Winter
+   tab, and the staff PINs it signs in with (Harbor Haul Out's roster). */
+const WINTER_DETAILS = [
+  { qn: 'QW-26-9001', name: 'Harbor, Pat', phone: '(815) 555-0101', email: 'pat@example.com', unit: 'Boat',
+    ymm: '2019 Malibu 22 VLX', dims: "22' x 8'6\"", loa: 22, beam: 8.5, stateLabel: 'Pulled',
+    items: [{ l: 'Wash & wax', s: 'awaiting', a: 352 }, { l: "Powerwash hull (22')", s: 'quoted', a: 124.52 }] },
+];
+const STAFF_PINS = { 4821: 'John', 1111: 'Chris' };
 const backend = loadBackend({
   properties: { ADMIN_PASSWORD: PASSWORD, WINTER_KEY: 'preview-winter-key-preview-winter-key' },
   // Ticks sent back are simply accepted, as the real one does.
   fetch: (url, opts) => (/script\.google\.com/.test(url)
-    ? (JSON.parse(opts.payload).fn === 'winterTicks'
+    ? (JSON.parse(opts.payload).fn === 'staffPin'
+      ? { code: 200, body: STAFF_PINS[JSON.parse(opts.payload).pin]
+        ? { ok: 1, _api: 'tracker', valid: true, name: STAFF_PINS[JSON.parse(opts.payload).pin], admin: false, quote: 1 }
+        : { ok: 1, _api: 'tracker', valid: false, error: 'Wrong PIN.' } }
+      : JSON.parse(opts.payload).fn === 'details'
+      ? { code: 200, body: { ok: 1, _api: 'tracker', at: new Date().toISOString(), units: WINTER_DETAILS } }
+      : JSON.parse(opts.payload).fn === 'winterTicks'
       ? { code: 200, body: { ok: 1, _api: 'tracker', changed: 1 } }
       // The real menu, as the winter backend built it from its pricing engine.
       : JSON.parse(opts.payload).fn === 'menu'
@@ -181,4 +195,5 @@ server.listen(PORT, () => {
   console.log(`Quest Service Tracker preview on http://localhost:${PORT}`);
   console.log(`  portal password: ${PASSWORD}`);
   console.log('  backend: service-tracker.gs, in memory');
+  console.log('  detail tracker PINs: 4821 (John), 1111 (Chris)');
 });

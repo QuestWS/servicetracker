@@ -1288,10 +1288,16 @@ function jobHeadHtml(job, hint) {
         <div class="fld" style="margin:0 0 4px">What needs doing</div>
         <div style="font-size:15px;line-height:1.5;color:var(--navy)">${esc(job.workRequested)}</div>
       </div>` : ''}
+      ${job.detail ? `<div class="banner info" style="margin-top:10px">${job.detail.split === 'detail'
+        ? '<b>Detail only.</b> This ticket is the detailer\'s — they mark it done in the Detail Tracker.'
+        : `<b>Split ticket.</b> The detailer has the detailing on this one. <i>Work finished</i> marks your part done; the job is finished when the detail is too.${
+          job.detail.waitingOn === 'detail' ? ' <b>Your part is done — waiting on the detailer.</b>' : ''}`}</div>` : ''}
     </div>`;
 }
 
 function isFinished(job) {
+  // On a split ticket the mechanic's half can be done while the detailer's is not.
+  if (job.detail && job.detail.split === 'both' && job.detail.mechDoneAt) return true;
   return job.status === 'work_finished' || job.status === 'done';
 }
 
@@ -2451,10 +2457,14 @@ async function finishWork() {
     const result = await api('finishWork', [state.job.token]);
     state.job.status = result.status;
     state.job.statusLabel = result.statusLabel;
+    if (result.waitingOn && state.job.detail) {
+      state.job.detail.mechDoneAt = new Date().toISOString();
+      state.job.detail.waitingOn = result.waitingOn;
+    }
     // The server has confirmed it, so the saved screen may say it too.
     if (savedJob(state.job.token)) saveJob(state.job, state.hours);
     renderJob();
-    toast('Marked finished.');
+    toast(result.waitingOn ? 'Your part is done. The job finishes when the detail is.' : 'Marked finished.');
   } catch (error) {
     // A toast, not the #notice banner at the top — the mechanic is standing
     // at the button they just pressed, not scrolled up to look for a reply.

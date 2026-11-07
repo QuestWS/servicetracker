@@ -4444,7 +4444,7 @@ describe('winter work, from the winter services system', () => {
     expect(out.units[0].work[2].requested).toBe(true);
     expect(out.units[0].left).toBe(3);
     // It asked with the shared key, and asked for nothing else.
-    expect(calls[0].body).toEqual({ api: 'tracker', fn: 'winterWork', key: KEY });
+    expect(calls[0].body).toEqual({ api: 'tracker', fn: 'winterWork', key: KEY, pingUrl: '' });
   });
 
   it('is behind a sign-in, like the open-jobs list', () => {
@@ -5124,8 +5124,8 @@ describe('a walk-in winterize, on an ordinary work order', () => {
     const { menu } = backend.fn('winterMenu', adminToken);
     expect(menu.levels.map((l) => l.id)).toEqual(['basic', 'full']);
     expect(menu.engines.map((e) => e.id)).toContain('pwc');
-    // All but the four detailing items, which are Harbor Haul Out's.
-    expect(menu.services.length).toBe(MENU.services.length - 4);
+    // All but the detailing and the washes, which are the Detail Tracker's.
+    expect(menu.services.length).toBe(MENU.services.length - 7);
     expect(calls[0]).toMatchObject({ api: 'tracker', fn: 'menu', key: KEY });
     // Six hours of cache: a second intake does not ask again.
     backend.call('forget_(); _props = null;');
@@ -5145,13 +5145,13 @@ describe('a walk-in winterize, on an ordinary work order', () => {
     expect(out.menu.levels).toHaveLength(2);
   });
 
-  it('leaves the detailing to Harbor Haul Out: not offered at intake, not on an old checklist', () => {
+  it('leaves the detailing and washes to the Detail Tracker: not offered at intake, not on an old checklist', () => {
     shop();
     const { menu } = backend.fn('winterMenu', adminToken);
     const keys = menu.services.map((x) => x.key);
-    for (const k of ['extDetail', 'washWax', 'intDetail', 'intWipe']) expect(keys).not.toContain(k);
+    for (const k of ['extDetail', 'washWax', 'intDetail', 'intWipe', 'powerwash', 'acidWash', 'skiDetail']) expect(keys).not.toContain(k);
     expect(keys).toContain('impeller');
-    expect(keys).toContain('skiDetail');
+    expect(keys).toContain('wrap');
     walkIn('01-7009', chosen({ items: [
       { id: 'wrap', label: 'Shrinkwrap', group: 'Shrinkwrap' },
       { id: 'washWax', label: 'Wash & wax', group: 'Quoted on request' },
