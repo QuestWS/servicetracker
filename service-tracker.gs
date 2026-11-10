@@ -495,7 +495,10 @@ const SHEETS = {
              'note', 'recorded_by', 'created_at'],
   Mechanics: ['id', 'name', 'active', 'created_at'],
   StatusEvents: ['id', 'job_id', 'from_status', 'to_status', 'actor_type', 'actor', 'note', 'created_at'],
-  EmailLog: ['id', 'job_id', 'kind', 'recipient', 'subject', 'status', 'error', 'created_at'],
+  EmailLog: ['id', 'job_id', 'kind', 'recipient', 'subject', 'status', 'error', 'created_at',
+             // The writer's own note, if one went in this email — what the
+             // customer was told in the shop's words. See withStaffNote_.
+             'note'],
   // A statement being built but not yet sent — the whole point is to let a
   // writer stage every invoice, then come back later (with a mechanic, say)
   // and double-check before anything goes to the customer. One row per
@@ -1018,14 +1021,15 @@ function apiFns_(data) {
     saveJobDetails:   function (a) { return saveJobDetails(data.token, a[0], a[1]); },
     saveInvoice:      function (a) { return saveInvoice(data.token, a[0], a[1], a[2], a[3]); },
     markDone:         function (a) { return markDone(data.token, a[0], a[1] === true); },
-    sendInvoiceEmail: function (a) { return sendInvoiceEmail(data.token, a[0]); },
+    sendInvoiceEmail: function (a) { return sendInvoiceEmail(data.token, a[0], a[1]); },
+    previewCustomerEmail: function (a) { return previewCustomerEmail(data.token, a[0], a[1], a[2]); },
     invoiceText:      function (a) { return invoiceText(data.token, a[0], a[1]); },
     markInvoiceTexted: function (a) { return markInvoiceTexted(data.token, a[0], a[1]); },
-    sendOrderReceipt: function (a) { return sendOrderReceipt(data.token, a[0]); },
+    sendOrderReceipt: function (a) { return sendOrderReceipt(data.token, a[0], a[1]); },
     cancelPartsOrder: function (a) { return cancelPartsOrder(data.token, a[0], a[1]); },
     createPartsOrder: function (a) { return createPartsOrder(data.token, a[0]); },
     markOrderArrived: function (a) { return markOrderArrived(data.token, a[0]); },
-    sendArrivalEmail: function (a) { return sendArrivalEmail(data.token, a[0]); },
+    sendArrivalEmail: function (a) { return sendArrivalEmail(data.token, a[0], a[1]); },
     recordPayment:    function (a) { return recordPayment(data.token, a[0], a[1]); },
     listOpenStatements: function (a) { return listOpenStatements(data.token); },
     sendCustomerStatement: function (a) { return sendCustomerStatement(data.token, a[0], a[1]); },
@@ -1214,6 +1218,8 @@ const API_GET_FNS_ = {
   /* the writer's portal */
   listJobs: true,
   getJob: true,
+  // Builds an email and sends nothing — see previewCustomerEmail.
+  previewCustomerEmail: true,
   jobHistory: true,
   listParts: true,
   listArchivedParts: true,
@@ -4912,7 +4918,7 @@ const MAIL_FONT = 'font-family:Arial,Helvetica,sans-serif';
  *
  * Over the budget the file is not dropped and the customer is not told to
  * ring up: it goes in the body as a Drive link, which is the same file by a
- * different door. See sendInvoiceEmail_.
+ * different door. See invoiceEmailContent_.
  */
 const MAIL_ATTACHMENT_BUDGET = 18 * 1024 * 1024;
 
@@ -4945,12 +4951,19 @@ function driveViewUrl_(id) {
  * Nothing is ever left off silently — everything is in `attached` or `linked`
  * and every send path says which.
  */
-function packAttachments_(budget, candidates) {
+function packAttachments_(budget, candidates, preview) {
   const out = { blobs: [], attached: [], linked: [], budget: budget };
   (candidates || []).forEach(function (file) {
     if (!file || !file.driveFile) return;
     if (!file.size || file.size > out.budget) {
       out.linked.push({ name: file.name, driveFile: file.driveFile });
+      return;
+    }
+    // A preview says what would be attached without downloading any of it:
+    // the decision is made on the recorded size, never on the bytes.
+    if (preview) {
+      out.budget -= file.size;
+      out.attached.push(file.name);
       return;
     }
     try {
@@ -4991,6 +5004,42 @@ function mailBox_(fill, edge, body, extra) {
     '</table></div>';
 }
 
+/**
+ * A note of the writer's own, typed in the preview before the email goes:
+ * "Your spare prop is by the door", "Sorry this took so long". The same
+ * arrangement as the winter console's staff note — it sits right under
+ * "Hi name,", where a personal line reads as one, and the preview and the
+ * send are built with it the same way, so what the writer saw is what goes.
+ *
+ * A table, not a div, for the reason every coloured box in these emails is
+ * one: Outlook drops a background given only in CSS. Escaped, so a note can
+ * never put markup into a customer's email.
+ */
+const NOTE_SLOT_ = '<!--staff-note-->';
+const NOTE_MAX_ = 2000;
+
+function staffNote_(staff) {
+  const raw = staff && typeof staff === 'object' ? staff.note : staff;
+  return String(raw || '').replace(/\r\n?/g, '\n').trim().slice(0, NOTE_MAX_);
+}
+
+function withStaffNote_(content, note) {
+  if (!note) return content;
+  if (content.html.indexOf(NOTE_SLOT_) === -1) {
+    // Every email offered a note is built on noticeHtml_. One that is not
+    // would drop the note without a word, so refuse instead.
+    throw new Error('This email has no place for a note.');
+  }
+  const block = mailBox_('#EBF1F6', '#C7D5E0',
+    '<div style="' + MAIL_FONT + ';font-size:15px;line-height:23px;color:#1D2B38">' +
+      esc_(note).replace(/\n/g, '<br>') + '</div>',
+    ';border-left:4px solid #4A81A6');
+  content.html = content.html.replace(NOTE_SLOT_, block);
+  content.text = note + '\n\n' + (content.text || '');
+  content.note = note;
+  return content;
+}
+
 function noticeHtml_(parts) {
   const logo = logoBlob_()
     ? '<img src="cid:questlogo" alt="' + esc_(SHOP_NAME) + '" width="104" height="56" style="width:104px;height:56px;display:block;border:0">'
@@ -5006,6 +5055,9 @@ function noticeHtml_(parts) {
         (parts.banner || '') +
         (parts.greeting ? '<p style="' + MAIL_FONT + ';font-size:16px;line-height:24px;color:#1D2B38;margin:0 0 6px">Hi ' +
           esc_(parts.greeting) + ',</p>' : '') +
+        // Where a writer's note goes: under "Hi name,", ahead of the system's
+        // own wording. Filled by withStaffNote_, or left as an empty comment.
+        NOTE_SLOT_ +
         '<div style="' + MAIL_FONT + ';font-size:15px;color:#1D2B38;line-height:23px;margin:0 0 14px">' + parts.intro + '</div>' +
         (parts.meta ? '<div style="font-family:Courier New,Courier,monospace;font-size:13px;line-height:19px;' +
           'color:#5C7185;margin-bottom:10px">' + esc_(parts.meta) + '</div>' : '') +
@@ -5036,7 +5088,7 @@ function noticeHtml_(parts) {
       '</td></tr></table>';
 }
 
-function logEmail_(jobId, kind, recipient, subject, status, error, at) {
+function logEmail_(jobId, kind, recipient, subject, status, error, at, note) {
   appendRow_('EmailLog', {
     id: newId_('mail'),
     job_id: jobId || '',
@@ -5045,7 +5097,8 @@ function logEmail_(jobId, kind, recipient, subject, status, error, at) {
     subject: subject,
     status: status,
     error: error ? String(error).substr(0, 400) : '',
-    created_at: at || nowIso_()
+    created_at: at || nowIso_(),
+    note: note || ''
   });
 }
 
@@ -5074,11 +5127,12 @@ function send_(options) {
       options.cc ? options.to + ' (cc ' + options.cc + ')' : options.to,
       options.subject,
       options.suppressed ? 'held (test mode)' : 'sent',
-      options.suppressed ? 'would have gone to ' + options.intendedFor : ''
+      options.suppressed ? 'would have gone to ' + options.intendedFor : '',
+      null, options.note
     );
     return true;
   } catch (err) {
-    logEmail_(options.jobId, options.kind, options.to, options.subject, 'failed', err);
+    logEmail_(options.jobId, options.kind, options.to, options.subject, 'failed', err, null, options.note);
     return false;
   }
 }
@@ -5129,11 +5183,7 @@ function rehearsalStamp_() {
   return Utilities.formatDate(new Date(), 'America/Chicago', 'MMM d HH:mm');
 }
 
-function sendInvoiceEmail_(job) {
-  if (!normalizeEmails_(job.customer_email)) {
-    logEmail_(job.id, 'customer_done', '(none on file)', 'Service complete', 'skipped', 'No customer email on the job');
-    return false;
-  }
+function invoiceEmailContent_(job, preview) {
   const rehearsal = testMode_();
   const attachments = [];
 
@@ -5142,7 +5192,9 @@ function sendInvoiceEmail_(job) {
   // and a customer should never have to follow a link to read their own bill.
   let invoiceAttached = false;
   let budget = MAIL_ATTACHMENT_BUDGET;
-  if (job.invoice_file) {
+  if (job.invoice_file && preview) {
+    invoiceAttached = true;
+  } else if (job.invoice_file) {
     try {
       const invoice = DriveApp.getFileById(job.invoice_file).getBlob().setName('Invoice-' + job.id + '.pdf');
       attachments.push(invoice);
@@ -5167,7 +5219,7 @@ function sendInvoiceEmail_(job) {
   // neighbour.
   const packed = packAttachments_(budget, filesForJob_(job.id).filter(function (file) {
     return file.visibility === 'customer';
-  }));
+  }), preview);
   packed.blobs.forEach(function (blob) { attachments.push(blob); });
   const extras = packed.attached;
   const linked = packed.linked;
@@ -5220,7 +5272,7 @@ function sendInvoiceEmail_(job) {
 
   const to = rehearsal ? testEmail_() : normalizeEmails_(job.customer_email);
 
-  return send_({
+  return {
     to: to,
     // The shop keeps a copy of everything that goes to a customer. Skipped
     // when the service desk IS the recipient, which is what a rehearsal is —
@@ -5271,7 +5323,7 @@ function sendInvoiceEmail_(job) {
       (job.payment_link ? '\nPay your invoice: ' + job.payment_link : '') +
       '\n\nInvoice ' + job.id + '\n' + SHOP_NAME,
     attachments: attachments
-  });
+  };
 }
 
 /* ============================== payments =============================== */
@@ -5422,7 +5474,7 @@ function paymentEmailContent_(job, options) {
   return {
     to: to,
     // The shop keeps its own copy of everything that goes to a customer,
-    // skipped when the desk is already the recipient — see sendInvoiceEmail_.
+    // skipped when the desk is already the recipient — see invoiceEmailContent_.
     cc: shopCc_(to),
     jobId: job.id,
     kind: rehearsal ? kind + '_test' : kind,
@@ -5939,23 +5991,87 @@ function addWriterNote(token, id, text) {
  * the button. Sendable more than once on purpose: an address gets corrected,
  * or Gmail drops a message, and the fix is to send it again.
  */
-function sendInvoiceEmail(token, id) {
+/**
+ * The three customer emails a writer sends from a job or an order page, each
+ * with what has to be true before it may go. One place, because the preview
+ * and the send must agree: a preview of an email the send would refuse, or
+ * one built differently from what goes, is worse than none.
+ *
+ *   invoice  — a finished work order: the work is done, here is the bill.
+ *   arrival  — a parts order that has come in.
+ *   receipt  — a parts order's receipt; on a cancelled one, its settlement.
+ */
+function customerEmailContent_(job, kind, staff, preview) {
+  if (kind === 'invoice') {
+    // "The work you requested has been done" is not something to tell a
+    // customer who bought a part. An order goes out as its arrival notice and
+    // its receipt, which carries the invoice.
+    if (isPartsOrder_(job)) throw new Error('A parts order is not sent the service invoice — use the arrival email or the receipt.');
+    if (job.status !== 'done') throw new Error('That job is not marked done yet.');
+    if (!normalizeEmails_(job.customer_email)) {
+      throw new Error('This job has no customer email address, so there is nobody to send the invoice to.');
+    }
+    return withStaffNote_(invoiceEmailContent_(job, preview), staffNote_(staff));
+  }
+  if (!isPartsOrder_(job)) throw new Error('That is a work order, not a parts order.');
+  if (kind === 'arrival') {
+    if (isCancelledOrder_(job)) throw new Error('That order was cancelled.');
+    if (!orderArrived_(job)) throw new Error('Mark the order arrived first.');
+    if (!normalizeEmails_(job.customer_email)) {
+      throw new Error('This order has no customer email address, so there is nobody to tell.');
+    }
+    return withStaffNote_(arrivalEmailContent_(job), staffNote_(staff));
+  }
+  if (kind === 'receipt') {
+    // A cancelled order still takes a receipt: it is the one that says the
+    // account is settled and carries the refund receipts.
+    if (!normalizeEmails_(job.customer_email)) {
+      throw new Error('This order has no customer email address, so there is nobody to send the receipt to.');
+    }
+    return withStaffNote_(orderReceiptContent_(job, preview), staffNote_(staff));
+  }
+  throw new Error('Unknown email.');
+}
+
+/** Sends one of those, and says where it went. */
+function sendCustomerEmail_(token, id, kind, staff) {
   requireAdmin_(token);
   const job = jobRow_(id);
-  if (!job) throw new Error('No such job.');
-  // "The work you requested has been done" is not something to tell a
-  // customer who bought a part. An order goes out as its arrival notice and
-  // its receipt, which carries the invoice.
-  if (isPartsOrder_(job)) throw new Error('A parts order is not sent the service invoice — use the arrival email or the receipt.');
-  if (job.status !== 'done') throw new Error('That job is not marked done yet.');
-  if (!normalizeEmails_(job.customer_email)) {
-    throw new Error('This job has no customer email address, so there is nobody to send the invoice to.');
-  }
+  if (!job) throw new Error(kind === 'invoice' ? 'No such job.' : 'No such order.');
   return {
-    emailed: sendInvoiceEmail_(job),
+    emailed: send_(customerEmailContent_(job, kind, staff, false)),
     testMode: testMode_(),
     sentTo: testMode_() ? testEmail_() : normalizeEmails_(job.customer_email)
   };
+}
+
+/**
+ * What one of those would look like, sent now, with the writer's note in it.
+ * Builds the same email the send does — same rules, same wording, same
+ * attachment decisions — and sends nothing. Files are not downloaded for it:
+ * what gets attached is decided on their recorded sizes, as the send does.
+ *
+ * The logo travels inside a sent email as an inline image; in a preview it
+ * is the public copy the shop already serves, so the page shows what the
+ * customer will.
+ */
+function previewCustomerEmail(token, id, kind, staff) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such job.');
+  const content = customerEmailContent_(job, kind, staff, true);
+  return {
+    to: content.to,
+    cc: content.cc || '',
+    subject: content.subject,
+    html: content.html.split('cid:questlogo').join(LOGO_URL),
+    testMode: testMode_(),
+    intendedFor: content.intendedFor || ''
+  };
+}
+
+function sendInvoiceEmail(token, id, staff) {
+  return sendCustomerEmail_(token, id, 'invoice', staff);
 }
 
 /**
@@ -5997,24 +6113,11 @@ function orderStageWords_(job) {
  * payment already on the invoice as a deposit. A writer's button, like every
  * other send.
  */
-function sendOrderReceipt(token, id) {
-  requireAdmin_(token);
-  const job = jobRow_(id);
-  if (!job) throw new Error('No such order.');
-  if (!isPartsOrder_(job)) throw new Error('That is a work order, not a parts order.');
-  // A cancelled order still takes a receipt: it is the one that says the
-  // account is settled and carries the refund receipts.
-  if (!normalizeEmails_(job.customer_email)) {
-    throw new Error('This order has no customer email address, so there is nobody to send the receipt to.');
-  }
-  return {
-    emailed: send_(orderReceiptContent_(job)),
-    testMode: testMode_(),
-    sentTo: testMode_() ? testEmail_() : normalizeEmails_(job.customer_email)
-  };
+function sendOrderReceipt(token, id, staff) {
+  return sendCustomerEmail_(token, id, 'receipt', staff);
 }
 
-function orderReceiptContent_(job) {
+function orderReceiptContent_(job, preview) {
   const rehearsal = testMode_();
   const due = jobBalance_(job);
   const owed = due !== null && !settled_(due);
@@ -6076,7 +6179,9 @@ function orderReceiptContent_(job) {
   const attachments = [];
   const attachedNames = [];
   let budget = MAIL_ATTACHMENT_BUDGET;
-  if (job.invoice_file) {
+  if (job.invoice_file && preview) {
+    attachedNames.push('Invoice-' + job.id + '.pdf');
+  } else if (job.invoice_file) {
     try {
       const invoice = DriveApp.getFileById(job.invoice_file).getBlob().setName('Invoice-' + job.id + '.pdf');
       attachments.push(invoice);
@@ -6088,7 +6193,7 @@ function orderReceiptContent_(job) {
   }
   const packed = packAttachments_(budget, filesForJob_(job.id).filter(function (file) {
     return file.visibility === 'customer';
-  }));
+  }), preview);
   packed.blobs.forEach(function (blob) { attachments.push(blob); });
   const named = attachedNames.concat(packed.attached);
   const attachNote = (named.length ? '<div style="' + MAIL_FONT + ';margin-top:8px">Attached: ' +
@@ -6159,21 +6264,8 @@ function orderArrived_(job) {
  * balance, never the grand total, and a Pay button only when something is
  * owed and there is a link to pay it with.
  */
-function sendArrivalEmail(token, id) {
-  requireAdmin_(token);
-  const job = jobRow_(id);
-  if (!job) throw new Error('No such order.');
-  if (!isPartsOrder_(job)) throw new Error('That is a work order, not a parts order.');
-  if (isCancelledOrder_(job)) throw new Error('That order was cancelled.');
-  if (!orderArrived_(job)) throw new Error('Mark the order arrived first.');
-  if (!normalizeEmails_(job.customer_email)) {
-    throw new Error('This order has no customer email address, so there is nobody to tell.');
-  }
-  return {
-    emailed: send_(arrivalEmailContent_(job)),
-    testMode: testMode_(),
-    sentTo: testMode_() ? testEmail_() : normalizeEmails_(job.customer_email)
-  };
+function sendArrivalEmail(token, id, staff) {
+  return sendCustomerEmail_(token, id, 'arrival', staff);
 }
 
 function arrivalEmailContent_(job) {

@@ -1004,6 +1004,12 @@ input.txt.mono { font-family: var(--mono); letter-spacing: 0.04em; }
 }
 .modal-body { background: #EBF1F6; overflow: hidden; }
 .modal-body iframe { width: 100%; height: 62vh; border: 0; display: block; }
+/* The writer's note under the preview, as in the winter console: it goes in
+   the email under "Hi name,", and the preview above redraws to show it. */
+.modal-card.composing .modal-body iframe { height: 46vh; }
+.modal-note { padding: 12px 20px 0; border-top: 1px solid var(--line); }
+.modal-note textarea { width: 100%; }
+.modal-note .hint { min-height: 1.2em; margin: 4px 0 0; }
 .modal-foot {
   padding: 14px 20px;
   border-top: 1px solid var(--line);

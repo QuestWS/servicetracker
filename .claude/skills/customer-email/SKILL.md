@@ -70,6 +70,32 @@ attached. An unknown size is not something to gamble the whole email on.
 Nothing is ever left off silently, and the invoice never rides on whether some
 other file happens to fit.
 
+## Preview, and a note of the writer's own
+
+The three customer emails sent from a job or order page — the invoice, the
+arrival notice, the order receipt (the settlement on a cancelled order) — open
+a preview before they go, with a note box: the winter console's
+preview-before-send, copied on purpose so the desk works one way in both.
+
+- **One builder, two uses.** `customerEmailContent_` holds each email's rules
+  and builds it; `previewCustomerEmail` and the three sends both go through
+  it, so a preview can never show an email the send would refuse or build
+  differently. A preview downloads nothing — attachments are decided on
+  recorded sizes (`packAttachments_(…, preview)`) — and sends and logs
+  nothing. It is on `API_GET_FNS_` for that reason.
+- **The note sits under "Hi name,"**, in `NOTE_SLOT_`, which `noticeHtml_`
+  leaves for it. `withStaffNote_` fills it with a table box (Outlook), escaped,
+  and puts the note at the top of the plain text too. An email with no slot
+  refuses a note rather than dropping it silently.
+- **Send waits for the preview.** Typing redraws it after a pause and Send
+  stays off until the preview on screen is the one with the note in it.
+- **The note is kept** on the EmailLog row (`note`) and shown in the job
+  page's email log, so the record says what the customer was told. A sheet
+  that has not had `setup()` since still sends; it just does not keep it.
+
+The payment receipt keeps its own "Anything to add" box on the payment form;
+statements keep their own preview.
+
 ## Money
 
 The one money figure a customer sees is **their own balance**, and only once

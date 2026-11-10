@@ -29,6 +29,26 @@ function check(label, condition, detail) {
   if (!condition) failures.push(label);
 }
 
+/**
+ * A customer email from a job or order page: the button opens a preview with
+ * a note box, and nothing goes until Send in there. With a note, it is typed
+ * and Send is pressed only once the preview on screen shows it.
+ */
+async function sendFromPreview(page, button, note) {
+  await page.click(button);
+  await page.waitForSelector('#composesend:not([disabled])', { timeout: 30000 });
+  if (note) {
+    await page.fill('#composenote', note);
+    await page.waitForFunction((text) => {
+      const frame = document.getElementById('composeframe');
+      const body = frame && frame.contentDocument && frame.contentDocument.body;
+      return Boolean(body && body.innerText.includes(text)
+        && !document.getElementById('composesend').disabled);
+    }, note, { timeout: 30000 });
+  }
+  await page.click('#composesend');
+}
+
 const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium', args: ['--no-sandbox'] });
 
 /**
@@ -1639,10 +1659,34 @@ const afterDone = await admin.evaluate(() => document.body.innerText);
 check('and sends nothing on its own', /nothing has been emailed/i.test(afterDone));
 check('the invoice email is a separate button', await admin.locator('#sendinvoice').count() > 0);
 
-admin.once('dialog', (dialog) => dialog.accept());
+// Like the winter console: the button opens the email as it will arrive,
+// with a box for a note, and Cancel sends nothing.
 await admin.click('#sendinvoice');
+await admin.waitForSelector('#composesend:not([disabled])', { timeout: 30000 });
+const previewText = await admin.evaluate(() => document.getElementById('composeframe').contentDocument.body.innerText);
+check('the invoice email opens as a preview of what will arrive',
+  /The work you requested has been done/.test(previewText) && /TEST MODE/.test(previewText), previewText.slice(0, 200));
+await admin.click('#composecancel');
+check('and Cancel sends nothing',
+  !/Invoice emailed/.test(await admin.evaluate(() => document.getElementById('view').innerText))
+    && (await admin.locator('#composeframe').count()) === 0);
+
+const INVOICE_NOTE = 'Your spare prop is on the rack by the door.';
+await admin.click('#sendinvoice');
+await admin.waitForSelector('#composesend:not([disabled])', { timeout: 30000 });
+await admin.fill('#composenote', INVOICE_NOTE);
+check('Send waits while the preview catches up with the note', await admin.locator('#composesend[disabled]').count() === 1);
+await admin.waitForFunction((text) => document.getElementById('composeframe').contentDocument.body.innerText.includes(text)
+  && !document.getElementById('composesend').disabled, INVOICE_NOTE, { timeout: 30000 });
+check('the note shows in the preview, under the greeting', await admin.evaluate((text) => {
+  const body = document.getElementById('composeframe').contentDocument.body.innerText;
+  return body.indexOf(text) > body.indexOf('Hi ') && body.indexOf(text) < body.indexOf('The work you requested');
+}, INVOICE_NOTE));
+await admin.click('#composesend');
 await admin.waitForSelector('text=Invoice emailed', { timeout: 30000 });
 const afterSend = await admin.evaluate(() => document.body.innerText);
+check('and what was written goes on the email log', afterSend.includes(`Note: ${INVOICE_NOTE}`),
+  afterSend.slice(afterSend.search(/Email log/i), afterSend.search(/Email log/i) + 300));
 // The mail log is NOT deferred, unlike the timeline: the page reads it to know
 // the invoice has gone, and that is what the send button hangs off. So it has
 // to be there on arrival, with nothing clicked.
@@ -3063,10 +3107,9 @@ admin.once('dialog', (dialog) => dialog.accept());
 await admin.click('#marktexted');
 await admin.waitForFunction(() => /Receipt texted/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
 check('and is logged as a receipt text once the writer says it went', true);
-admin.once('dialog', (dialog) => dialog.accept());
-await admin.click('#sendorderreceipt');
+await sendFromPreview(admin, '#sendorderreceipt', 'We ordered it from the supplier today.');
 await admin.waitForFunction(() => /Receipt emailed/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
-check('the receipt can be emailed too, and the order is still on order',
+check('the receipt can be emailed too, with a note, and the order is still on order',
   /Ordered/i.test(await admin.evaluate(() => document.getElementById('view').innerText))
     && (await admin.locator('#markarrived').count()) === 1);
 
@@ -3074,8 +3117,7 @@ await admin.click('#markarrived');
 await admin.waitForSelector('#sendarrival', { timeout: 30000 });
 check('marking it arrived tells nobody',
   /Nothing has been sent/.test(await admin.evaluate(() => document.getElementById('view').innerText)));
-admin.once('dialog', (dialog) => dialog.accept());
-await admin.click('#sendarrival');
+await sendFromPreview(admin, '#sendarrival');
 await admin.waitForFunction(() => /Arrival emailed/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
 check('the arrival email is its own button, and is logged',
   /customer arrived/.test(await admin.evaluate(() => document.getElementById('view').innerText)));
@@ -3190,8 +3232,7 @@ check('no more money is taken and no arrival goes out',
   (await admin.locator('#payrecord, #markarrived, #sendarrival').count()) === 0);
 check('and nothing is still waiting on the parts list for it', !/To order/.test(cancelledPage));
 
-admin.once('dialog', (dialog) => dialog.accept());
-await admin.click('#sendorderreceipt');
+await sendFromPreview(admin, '#sendorderreceipt', 'Sorry it did not work out this time.');
 await admin.waitForFunction(() => /Receipt emailed/.test(document.getElementById('view').innerText), null, { timeout: 30000 });
 check('the settlement receipt is emailed from the same Send a receipt buttons', true);
 

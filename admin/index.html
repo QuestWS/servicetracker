@@ -1369,7 +1369,8 @@ async function drawJob(id, data, savedAt) {
           ${emails.map((mail) => `<div class="kv">
             <span class="k">${formatDateTime(mail.created_at)} · ${esc(String(mail.kind).replace('_', ' '))}</span>
             <b><span class="pill ${mail.status === 'sent' ? 'green' : mail.status === 'skipped' ? 'grey' : 'red'}">${esc(mail.status)}</span>
-              <div style="font-weight:400;font-size:12px;color:var(--muted)">${esc(mail.recipient)}${mail.error ? ` — ${esc(mail.error)}` : ''}</div></b>
+              <div style="font-weight:400;font-size:12px;color:var(--muted)">${esc(mail.recipient)}${mail.error ? ` — ${esc(mail.error)}` : ''}</div>
+              ${mail.note ? `<div style="font-weight:400;font-size:12px;color:var(--ink);white-space:pre-wrap;margin-top:2px">Note: ${esc(mail.note)}</div>` : ''}</b>
           </div>`).join('')}
         </section>` : '';
 
@@ -2610,12 +2611,13 @@ ${emailLogCard}
 
   const sendarrival = $('sendarrival');
   if (sendarrival) sendarrival.onclick = async () => {
-    if (!confirm(`Email ${job.customerEmail} that order ${job.id} has arrived?`)) return;
+    const note = await composeEmailModal(job.id, 'arrival', 'Send the arrival email');
+    if (note === null) return;
     const was = sendarrival.textContent;
     sendarrival.disabled = true;
     sendarrival.textContent = 'Sending…';
     try {
-      const result = await api('sendArrivalEmail', [job.id], withPage(job.id));
+      const result = await api('sendArrivalEmail', [job.id, { note }], withPage(job.id));
       renderJob(job.id, result.jobPage);
       toast(!result.emailed ? 'That email did not send — check the log.'
         : result.testMode ? `Test mode: it went to ${result.sentTo}, not the customer.`
@@ -2629,12 +2631,12 @@ ${emailLogCard}
 
   const sendinvoice = $('sendinvoice');
   if (sendinvoice) sendinvoice.onclick = async () => {
-    const to = job.customerEmail;
-    if (!confirm(`Email the invoice for ${job.id} to ${to}?`)) return;
+    const note = await composeEmailModal(job.id, 'invoice', 'Send the invoice');
+    if (note === null) return;
     sendinvoice.disabled = true;
     sendinvoice.textContent = 'Sending…';
     try {
-      const result = await api('sendInvoiceEmail', [job.id], withPage(job.id));
+      const result = await api('sendInvoiceEmail', [job.id, { note }], withPage(job.id));
       renderJob(job.id, result.jobPage);
       toast(!result.emailed ? 'That email did not send — check the log.'
         : result.testMode ? `Test mode: it went to ${result.sentTo}, not the customer.`
@@ -2710,12 +2712,13 @@ ${emailLogCard}
   // nothing about the order changes for pressing it.
   const sendorderreceipt = $('sendorderreceipt');
   if (sendorderreceipt) sendorderreceipt.onclick = async () => {
-    if (!confirm(`Email a receipt for order ${job.id} to ${job.customerEmail}?`)) return;
+    const note = await composeEmailModal(job.id, 'receipt', 'Send the receipt');
+    if (note === null) return;
     const was = sendorderreceipt.textContent;
     sendorderreceipt.disabled = true;
     sendorderreceipt.textContent = 'Sending…';
     try {
-      const result = await api('sendOrderReceipt', [job.id], withPage(job.id));
+      const result = await api('sendOrderReceipt', [job.id, { note }], withPage(job.id));
       renderJob(job.id, result.jobPage);
       toast(!result.emailed ? 'That email did not send — check the log.'
         : result.testMode ? `Test mode: it went to ${result.sentTo}, not the customer.`
@@ -3840,6 +3843,100 @@ function previewEmailModal(preview, actionLabel) {
     overlay.querySelector('#modalcancel').onclick = () => close(false);
     overlay.querySelector('#modalgo').onclick = () => close(true);
     overlay.onclick = (event) => { if (event.target === overlay) close(false); };
+  });
+}
+
+/**
+ * The customer email a writer is about to send, shown as it will arrive, with
+ * a box for a note of their own — the winter console's preview-before-send.
+ *
+ * The note goes in the email under "Hi name,". Typing it redraws the preview
+ * after a pause, and Send waits until the preview on screen is the one with
+ * the note in it: the email that goes is never one the writer has not seen.
+ * Resolves with the note (possibly empty) to send, or null for Cancel.
+ *
+ * Written into the frame rather than through srcdoc: the winter console found
+ * srcdoc renders blank on iOS Safari, which is what an iPad at the counter
+ * runs. allow-same-origin lets the page write into it; allow-scripts stays
+ * off, so the email can run nothing.
+ */
+function composeEmailModal(jobId, kind, actionLabel) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal';
+    overlay.innerHTML = `
+      <div class="modal-card composing" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <div>
+            <div style="font-weight:700;color:var(--navy)">Check it, add a note, then send</div>
+            <div class="sub" id="composeto">Building the preview…</div>
+            <div class="sub" id="composesubject"></div>
+          </div>
+          <button type="button" id="composeclose" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body"><iframe id="composeframe" sandbox="allow-same-origin" title="Email preview"></iframe></div>
+        <div class="modal-note">
+          <label class="fld" for="composenote" style="margin-top:0">A note to the customer (optional)</label>
+          <textarea class="txt" id="composenote" rows="2" maxlength="2000"
+            placeholder="Appears under &ldquo;Hi name,&rdquo; — e.g. Your spare prop is on the rack by the door."></textarea>
+          <p class="hint" id="composehint"></p>
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost" type="button" id="composecancel">Cancel</button>
+          <button class="btn gold" type="button" id="composesend" disabled>${esc(actionLabel || 'Send it')}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const $in = (sel) => overlay.querySelector(sel);
+    const noteBox = $in('#composenote');
+    const send = $in('#composesend');
+    const hint = $in('#composehint');
+    let shownFor = null;          // the note the preview on screen was built with
+    let timer = 0;
+
+    const render = (html) => {
+      const frame = $in('#composeframe');
+      try {
+        const doc = frame.contentDocument || frame.contentWindow.document;
+        doc.open(); doc.write(html); doc.close();
+      } catch {
+        frame.srcdoc = html;
+      }
+    };
+    const refresh = async () => {
+      const note = noteBox.value.trim();
+      try {
+        const preview = await api('previewCustomerEmail', [jobId, kind, { note }]);
+        if (noteBox.value.trim() !== note) return;   // typed again; a newer one is coming
+        $in('#composeto').textContent = `To ${preview.to}${preview.cc ? ` · CC ${preview.cc}` : ''}${
+          preview.testMode ? ' — test mode, so that is the shop, not the customer' : ''}`;
+        $in('#composesubject').textContent = `Subject: ${preview.subject}`;
+        render(preview.html);
+        shownFor = note;
+        hint.textContent = '';
+        send.disabled = false;
+      } catch (error) {
+        hint.textContent = shownFor === null ? error.message : `Could not update the preview: ${error.message}`;
+        if (shownFor === null) $in('#composeto').textContent = 'Nothing has been sent.';
+      }
+    };
+    noteBox.oninput = () => {
+      clearTimeout(timer);
+      if (noteBox.value.trim() === shownFor) { send.disabled = false; hint.textContent = ''; return; }
+      send.disabled = true;
+      hint.textContent = 'Updating the preview…';
+      timer = setTimeout(refresh, 900);
+    };
+
+    const close = (result) => { clearTimeout(timer); overlay.remove(); resolve(result); };
+    $in('#composeclose').onclick = () => close(null);
+    $in('#composecancel').onclick = () => close(null);
+    overlay.onclick = (event) => { if (event.target === overlay) close(null); };
+    send.onclick = () => {
+      if (noteBox.value.trim() !== shownFor) { noteBox.oninput(); return; }
+      close(shownFor);
+    };
+    refresh();
   });
 }
 

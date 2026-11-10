@@ -5272,3 +5272,96 @@ describe('a walk-in winterize, on an ordinary work order', () => {
     expect(backend.fn('getJob', adminToken, '01-7001').job.winter.level).toBe('full');
   });
 });
+
+describe('a note from the writer, added before a customer email goes', () => {
+  const finished = (id = '01-8886') => openInvoice(id, 'jane@example.com', 450, { paymentLink: 'https://pos.example.com/pay/x' });
+  const order = (id = '01-9131') => {
+    backend.fn('createPartsOrder', adminToken, {
+      invoiceNumber: id, customerName: 'Pat Example', customerEmail: 'pat@example.com',
+      items: '48000-96J16 TRIM ASSY,POWER', invoicePdf: 'JVBERi0=', grandTotal: 2408.8, deposits: 2408.8, amountDue: 0,
+    });
+    return id;
+  };
+  const NOTE = 'Your spare prop is on the rack by the door.\nThanks for waiting on this one!';
+
+  it('puts the note under "Hi name," in the invoice email, and in the plain text', () => {
+    goLive();
+    const id = finished();
+    backend.fn('sendInvoiceEmail', adminToken, id, { note: NOTE });
+    const mail = backend.sentMail[0];
+    const html = mail.opts.htmlBody;
+    const greeting = html.indexOf('Hi Jane,');
+    const note = html.indexOf('Your spare prop is on the rack by the door.<br>Thanks for waiting on this one!');
+    expect(greeting).toBeGreaterThan(-1);
+    expect(note).toBeGreaterThan(greeting);
+    expect(note).toBeLessThan(html.indexOf('The work you requested has been done'));
+    // A table cell with a bgcolor, like every coloured box Outlook has to keep.
+    expect(html.slice(greeting, note)).toContain('bgcolor="#EBF1F6"');
+    expect(mail.body.startsWith('Your spare prop is on the rack by the door.')).toBe(true);
+    expect(backend.fn('getJob', adminToken, id).emails[0].note).toBe(NOTE);
+  });
+
+  it('escapes a note, so it can never put markup into the email', () => {
+    goLive();
+    const id = finished();
+    backend.fn('sendInvoiceEmail', adminToken, id, { note: '<a href="https://evil.example">click</a> & thanks' });
+    const html = backend.sentMail[0].opts.htmlBody;
+    expect(html).not.toContain('<a href="https://evil.example">');
+    expect(html).toContain('&lt;a href=&quot;https://evil.example&quot;&gt;click&lt;/a&gt; &amp; thanks');
+  });
+
+  it('leaves no box at all when there is no note', () => {
+    goLive();
+    const id = finished();
+    backend.fn('sendInvoiceEmail', adminToken, id);
+    backend.fn('sendInvoiceEmail', adminToken, id, { note: '   ' });
+    for (const mail of backend.sentMail) {
+      expect(mail.opts.htmlBody).not.toContain('border-left:4px solid #4A81A6');
+    }
+    expect(backend.fn('getJob', adminToken, id).emails[0].note).toBe('');
+  });
+
+  it('previews the exact email with the note in it, and sends and logs nothing', () => {
+    const id = finished();
+    const preview = backend.fn('previewCustomerEmail', adminToken, id, 'invoice', { note: NOTE });
+    expect(preview.subject).toContain('service is complete');
+    expect(preview.html).toContain('Your spare prop is on the rack by the door.');
+    // In test mode, the rehearsal banner and the shop's address — as the send would.
+    expect(preview.testMode).toBe(true);
+    expect(preview.to).toBe('service@questwatersports.com');
+    expect(preview.html).toContain('TEST MODE');
+    expect(preview.html).not.toContain('cid:questlogo');
+    expect(backend.sentMail).toHaveLength(0);
+    expect(backend.fn('getJob', adminToken, id).emails).toHaveLength(0);
+  });
+
+  it('refuses a preview the send would refuse', () => {
+    seedJob('01-8886');
+    expect(() => backend.fn('previewCustomerEmail', adminToken, '01-8886', 'invoice', {})).toThrow(/not marked done/);
+    const id = order();
+    expect(() => backend.fn('previewCustomerEmail', adminToken, id, 'arrival', {})).toThrow(/arrived first/);
+    expect(() => backend.fn('previewCustomerEmail', adminToken, id, 'nonsense', {})).toThrow(/Unknown email/);
+    const mech = backend.fn('mechanicSignIn', 'Dale', true).token;
+    expect(() => backend.fn('previewCustomerEmail', mech, id, 'receipt', {})).toThrow(/Sign in/);
+  });
+
+  it('takes a note on the arrival email and the order receipt too', () => {
+    goLive();
+    const id = order();
+    backend.fn('sendOrderReceipt', adminToken, id, { note: 'We ordered it from Yamaha today.' });
+    backend.fn('markOrderArrived', adminToken, id);
+    backend.fn('sendArrivalEmail', adminToken, id, { note: 'It is behind the counter.' });
+    const [receipt, arrival] = backend.sentMail;
+    expect(receipt.opts.htmlBody).toContain('We ordered it from Yamaha today.');
+    expect(arrival.opts.htmlBody).toContain('It is behind the counter.');
+    const preview = backend.fn('previewCustomerEmail', adminToken, id, 'receipt', { note: 'Settled.' });
+    expect(preview.html).toContain('Settled.');
+  });
+
+  it('keeps a note to a sensible length', () => {
+    goLive();
+    const id = finished();
+    backend.fn('sendInvoiceEmail', adminToken, id, { note: 'x'.repeat(5000) });
+    expect(backend.fn('getJob', adminToken, id).emails[0].note).toHaveLength(2000);
+  });
+});
