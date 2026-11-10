@@ -878,3 +878,13 @@ describe('bottom paint is a package', () => {
     expect(backend.fn('getDetail', admin, q.id).detail.items.every((x) => x.quote === 'declined')).toBe(true);
   });
 });
+
+describe('measuring a detail', () => {
+  it('records the size in its history when it is put in', () => {
+    const d = backend.fn('createDetail', admin, { customerName: 'Pat', items: [{ key: 'washWax', label: 'Wash & wax' }] }).detail;
+    backend.fn('updateDetail', detailer(), d.id, { loa: 22.5, beam: 8.5 });
+    const ev = backend.fn('getDetail', admin, d.id).events[0];
+    expect(ev.text).toBe("John measured it: 22' 6\" long, 8' 6\" beam");
+    expect(backend.fn('getDetail', admin, d.id).detail).toMatchObject({ loa: 22.5, beam: 8.5 });
+  });
+});

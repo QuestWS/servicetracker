@@ -3459,6 +3459,22 @@ const detailErrors = [];
     check('declining the bottom paint declines paint & supplies with it', await supplies.locator('input[value=declined]').isChecked());
   }
 
+  // No size from the desk: the detailer is asked for it before quoting.
+  {
+    const o = (await post('adminSignIn', '', [PASSWORD])).token;
+    const nd = (await post('createDetail', o, [{ customerName: 'Measure Checkperson', customerEmail: 'measure@example.com',
+      items: [{ key: 'washWax', label: 'Wash & wax' }] }])).detail;
+    await det.goto(`${BASE}/d/?detail=${nd.id}`, { waitUntil: 'networkidle' });
+    await det.waitForSelector('#measureCard', { timeout: 20000 });
+    check('a per-foot detail with no length asks the detailer to measure it first, and will not send the quote',
+      await det.isDisabled('#sendEmail'));
+    await det.fill('#mlft', '23');
+    await det.click('#saveDims');
+    await det.waitForFunction(() => !document.getElementById('measureCard') && document.querySelector('[data-price]')
+      && document.querySelector('[data-price]').value === '368.00', null, { timeout: 20000 });
+    check('once measured, the sheet price is filled in from the size and the quote can go', !(await det.isDisabled('#sendEmail')));
+  }
+
   // Scan: the same scanner as the mechanic app; a typed number goes the same way.
   await det.goto(`${BASE}/d/?scan`, { waitUntil: 'networkidle' });
   await det.waitForSelector('.scanner video', { timeout: 20000 });

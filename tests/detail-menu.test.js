@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import {
-  DETAIL_MENU, WINTER_CARD, rate, suggestPrice, keyForWinterLabel, dimsFromText, isWide, menuItem,
+  DETAIL_MENU, WINTER_CARD, rate, suggestPrice, keyForWinterLabel, dimsFromText, isWide, menuItem, dimsNeeded,
 } from '../assets/lib/detail-menu.js';
 
 describe('the detail menu', () => {
@@ -78,6 +78,18 @@ describe('the detail menu', () => {
     expect(keyForWinterLabel('Strip bottom paint & reapply')).toBe('bottomPaint');
     expect(keyForWinterLabel('Shrinkwrap')).toBe('');
     expect(menuItem('nope')).toBeNull();
+  });
+
+  it('knows when the length or beam is still needed', () => {
+    const wash = { key: 'washWax', label: 'Wash & wax' };
+    const acid = { key: 'acidWash', label: 'Acid wash (off trailer)' };
+    const carpet = { key: 'carpet', label: 'Carpet cleaning' };
+    expect(dimsNeeded([carpet], 0, 0)).toMatchObject({ loa: false, beam: false });
+    expect(dimsNeeded([wash], 0, 0)).toMatchObject({ loa: true, beam: false });   // same price either beam
+    expect(dimsNeeded([wash, acid], 22, 0)).toMatchObject({ loa: false, beam: true });
+    expect(dimsNeeded([wash, acid], 22, 8.5)).toMatchObject({ loa: false, beam: false });
+    expect(dimsNeeded([{ ...wash, quote: 'declined' }], 0, 0).loa).toBe(false);
+    expect(dimsNeeded([{ ...wash, winter: 'quoted' }], 0, 0).loa).toBe(false);
   });
 
   it('reads dimensions the way they are written', () => {

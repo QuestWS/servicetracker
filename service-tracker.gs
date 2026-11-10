@@ -8322,6 +8322,9 @@ function updateDetail(token, id, input) {
     const row = detailRow_(id);
     if (!row) throw new Error('No such detail.');
     const patch = cleanDetailFields_(input || {});
+    // Measured: say so in its history, the way it was read off the tape.
+    const measured = (patch.loa !== undefined && String(patch.loa) !== String(row.loa || '') && patch.loa) ||
+      (patch.beam !== undefined && String(patch.beam) !== String(row.beam || '') && patch.beam);
     if (input && input.items) {
       const items = sanitizeDetailItems_(input.items, detailItems_(row));
       if (!items.length) throw new Error('A detail needs at least one line. Cancel it instead.');
@@ -8329,6 +8332,11 @@ function updateDetail(token, id, input) {
     }
     patch.updated_at = nowIso_();
     updateRow_('Details', row._row, patch);
+    if (measured) {
+      const L = patch.loa !== undefined ? patch.loa : row.loa, B = patch.beam !== undefined ? patch.beam : row.beam;
+      detailEvent_(row.id, 'note', whoIs_(who) + ' measured it: ' + [L ? fmtFtIn_(Number(L)) + ' long' : '',
+        B ? fmtFtIn_(Number(B)) + ' beam' : ''].filter(String).join(', '), whoIs_(who));
+    }
     const v = bumpDetailVersion_();
     return { detail: detailView_(detailRow_(id), row.job_id ? jobRow_(row.job_id) : null), v: v };
   });

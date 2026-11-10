@@ -157,6 +157,26 @@ export function suggestPrice(key, { loa, beam, qty } = {}) {
 }
 
 /**
+ * What measuring a detail still needs, before it is quoted or worked
+ * (Chris, Nov 2026: prompt the detailer for the dimensions when the desk did
+ * not put them in). `loa`: a per-foot line is on it and there is no length.
+ * `beam`: a line whose price differs over 8'6" is on it and there is no beam.
+ * Winter lines and declined lines are left out — winter prices are the
+ * winter quote's, and a declined line is not work.
+ */
+export function dimsNeeded(items, loa, beam) {
+  const live = (items || []).filter((x) => !x.winter && x.quote !== 'declined');
+  const perFt = live.filter((x) => { const m = menuItem(x.key); return m && m.perFt; });
+  const byBeam = perFt.filter((x) => { const m = menuItem(x.key); return m.perFt.narrow !== m.perFt.wide; });
+  const has = (v) => Number(v) > 0;
+  return {
+    loa: perFt.length > 0 && !has(loa),
+    beam: byBeam.length > 0 && !has(beam),
+    lines: perFt.map((x) => x.label),
+  };
+}
+
+/**
  * The winter system's words for its detail and wash lines, to menu keys, so a
  * unit pulled from winter work lands on the same lines the menu offers.
  * Matched on the start of the label: "Powerwash hull (22')" is a power wash.

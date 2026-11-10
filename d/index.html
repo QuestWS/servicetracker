@@ -76,7 +76,7 @@
 import { api, storedToken, storedWho, storeSession, clearSession, useSessionBucket, tokenExpiry } from '../assets/lib/api.js';
 import { API_URL } from '../assets/lib/config.js';
 import { esc, formatDateTime } from '../assets/lib/ui.js';
-import { DETAIL_FINE_PRINT, suggestPrice } from '../assets/lib/detail-menu.js';
+import { DETAIL_FINE_PRINT, suggestPrice, dimsNeeded, ftIn } from '../assets/lib/detail-menu.js';
 import { mountPicker, PICKER_CSS } from '../assets/lib/detail-picker.js';
 import { smsDraftUrl, isApple } from '../assets/lib/sms.js';
 import { startScanner, scannerHtml } from '../assets/lib/scanner.js';
@@ -342,8 +342,27 @@ async function renderDetail(id, quiet) {
       <label style="display:flex;align-items:center;gap:4px">$<input class="txt" data-price="${esc(x.id)}" inputmode="decimal" value="${esc(v)}" style="width:110px;padding:9px;font-family:var(--mono)"></label></div>`;
   }).join('');
   const tel = d.customerPhone ? `<a href="tel:${esc(d.customerPhone.replace(/[^\d+]/g, ''))}">${esc(d.customerPhone)}</a>` : '';
+  /* The desk may not have had the size. A per-foot line cannot be quoted or
+     worked without it, so the detailer is asked first (Chris, Nov 2026). */
+  const need = open ? dimsNeeded(d.items, d.loa, d.beam) : { loa: false, beam: false, lines: [] };
+  const missing = need.loa || need.beam;
+  const ftBoxes = (pre, v) => {
+    const n = Number(v) || 0; let ft = Math.floor(n); let inch = Math.round((n - ft) * 12);
+    if (inch === 12) { ft += 1; inch = 0; }
+    return `<div class="row tight" style="flex-wrap:nowrap;align-items:center">
+      <input class="txt" id="${pre}ft" inputmode="decimal" placeholder="ft" value="${n ? ft : ''}" style="width:80px"><span class="hint">ft</span>
+      <input class="txt" id="${pre}in" inputmode="numeric" placeholder="in" value="${n && inch ? inch : ''}" style="width:70px"><span class="hint">in</span></div>`;
+  };
+  const measureCard = missing ? `<section class="card" id="measureCard" style="border:2px solid var(--warn);background:var(--warn-bg)">
+      <h2>Measure it first</h2>
+      <p style="margin:0 0 10px">${esc(need.lines.join(', '))} ${need.lines.length === 1 ? 'is' : 'are'} priced by the foot, and there is
+        no ${need.loa && need.beam ? 'length or beam' : need.loa ? 'length' : 'beam'} on it yet. Put it in before quoting or starting.</p>
+      <div class="grid2"><div><label class="fld">Length overall <small>— platform &amp; pulpit included</small></label>${ftBoxes('ml', d.loa)}</div>
+        <div><label class="fld">Beam${need.beam ? '' : ' <small>— if you have it</small>'}</label>${ftBoxes('mb', d.beam)}</div></div>
+      <button class="btn navy" id="saveDims" style="margin-top:12px">Save the size</button></section>` : '';
   main.innerHTML = `
     <p><a href="./" id="back">← Board</a></p>
+    ${measureCard}
     <section class="card">
       ${d.quoteNo ? `<div class="mono" style="color:var(--gold);font-weight:600;font-size:17px">${esc(d.quoteNo)}</div>` : ''}
       <div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(d.customerName)}</h2>${sourcePill(d)}</div>
@@ -365,12 +384,13 @@ async function renderDetail(id, quiet) {
       </div></section>
     ${toPrice.length ? `<section class="card" id="priceCard" style="border:2px solid var(--gold)"><h2>Price it and send it</h2>
       <p class="hint">Put your numbers in. <b>Send quote to customer</b> sends them a link to accept, decline or ask for a call —
-        nothing goes to them before you press it.${d.loa ? '' : ' Add the length with Edit lines to get the sheet\'s figures.'}</p>
+        nothing goes to them before you press it.</p>
+      ${missing ? '<p class="hint" style="color:var(--warn);font-weight:600">Measure it first (top of the page) — the per-foot prices come from the size.</p>' : ''}
       ${priceBox}
       <div class="row" style="margin-top:14px">
-        <button class="btn gold" id="sendEmail" ${d.customerEmail ? '' : 'disabled'}>Send quote to customer — email</button>
-        <button class="btn ghost" id="sendText" ${d.customerPhone ? '' : 'disabled'}>Send by text</button>
-        <button class="btn ghost" id="agreed">Customer already agreed</button></div>
+        <button class="btn gold" id="sendEmail" ${d.customerEmail && !missing ? '' : 'disabled'}>Send quote to customer — email</button>
+        <button class="btn ghost" id="sendText" ${d.customerPhone && !missing ? '' : 'disabled'}>Send by text</button>
+        <button class="btn ghost" id="agreed" ${missing ? 'disabled' : ''}>Customer already agreed</button></div>
       ${d.customerEmail || d.customerPhone ? '' : '<p class="hint">No email or phone on it — add one with Edit lines.</p>'}
       <div id="textBox"></div>
       <p class="hint" style="margin-top:10px">${esc(DETAIL_FINE_PRINT)}</p></section>` : ''}
@@ -403,8 +423,27 @@ async function renderDetail(id, quiet) {
     };
   });
   main.querySelectorAll('[data-dec]').forEach((b) => { b.onclick = () => act('decideDetailLine', [id, b.dataset.it, b.dataset.dec], 'Saved.'); });
-  if ($('start')) $('start').onclick = () => act('startDetail', [id], 'Started.');
-  if ($('finish')) $('finish').onclick = () => { if (confirm('Mark the whole detail done?')) act('finishDetail', [id], 'Detail done.'); };
+  // No size yet: ask for it first. Starting or finishing anyway is still possible.
+  const measureFirst = () => {
+    if (!missing) return false;
+    $('measureCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    $('mlft').focus();
+    // OK stops here to measure; Cancel carries on without it.
+    return confirm('There is no ' + (need.loa ? 'length' : 'beam') + ' on this yet, and the per-foot work is priced from it.\n\n' +
+      'OK to measure it first, Cancel to carry on without it.');
+  };
+  if ($('saveDims')) $('saveDims').onclick = () => {
+    const loa = ftIn($('mlft').value, $('mlin').value);
+    const beam = ftIn($('mbft').value, $('mbin').value);
+    if (need.loa && !loa) { toast('Put the length in.'); return $('mlft').focus(); }
+    if (need.beam && !beam) { toast('Put the beam in — the price is different over 8\' 6".'); return $('mbft').focus(); }
+    act('updateDetail', [id, Object.assign({}, loa ? { loa } : {}, beam ? { beam } : {})], 'Size saved.');
+  };
+  if ($('start')) $('start').onclick = () => { if (!measureFirst()) act('startDetail', [id], 'Started.'); };
+  if ($('finish')) $('finish').onclick = () => {
+    if (measureFirst()) return;
+    if (confirm('Mark the whole detail done?')) act('finishDetail', [id], 'Detail done.');
+  };
   if ($('edit')) $('edit').onclick = () => go('edit', id);
   if ($('cancel')) $('cancel').onclick = () => { if (confirm('Cancel this detail?')) act('setDetailStatus', [id, 'cancelled'], 'Cancelled.'); };
   if ($('reopen')) $('reopen').onclick = () => act('setDetailStatus', [id, 'requested'], 'Re-opened.');
