@@ -814,6 +814,31 @@ describe('scanning in the Detail Tracker', () => {
   });
 });
 
+describe('typing just the number off the end in the Detail Tracker', () => {
+  it('opens a winter quote from the digits after QW-26-', () => {
+    backend.fn('winterDetails', detailer(), true);
+    const d = backend.fn('pullWinterDetail', detailer(), 'QW-26-1255').detail;
+    expect(backend.fn('detailForCode', detailer(), 'text', '1255')).toEqual({ detailId: d.id });
+  });
+
+  it('offers a winter quote not on the board yet', () => {
+    expect(backend.fn('detailForCode', detailer(), 'text', '1255')).toMatchObject({ winterQn: 'QW-26-1255', canPull: true });
+  });
+
+  it('opens a work order from the digits after 01-', () => {
+    backend.fn('createJob', admin, { invoiceNumber: '01-9501', customerName: 'Jane', boatInfo: 'x' });
+    const { detail } = backend.fn('setJobDetail', admin, '01-9501', { split: 'both', items: [{ key: 'washWax', label: 'Wash & wax', price: 1 }] });
+    expect(backend.fn('detailForCode', detailer(), 'text', '9501')).toEqual({ detailId: detail.id });
+  });
+
+  it('asks which when a work order and a winter quote share the digits', () => {
+    backend.fn('createJob', admin, { invoiceNumber: '01-1255', customerName: 'Jane', boatInfo: 'x' });
+    const out = backend.fn('detailForCode', detailer(), 'text', '1255');
+    expect(out.choices.map((c) => c.code)).toEqual(['01-1255', 'QW-26-1255']);
+    expect(backend.fn('detailForCode', detailer(), 'text', out.choices[0].code).none).toBe(true);
+  });
+});
+
 describe('bottom paint brings paint & supplies', () => {
   it('adds the paint & supplies line when a page did not, once, unpriced', () => {
     const d = backend.fn('createDetail', admin, { customerName: 'Pat', items: [

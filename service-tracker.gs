@@ -9157,6 +9157,14 @@ function detailForCode(token, kind, code) {
   if (!c) throw new Error('Scan a code or type a number.');
   const has = !!ss_().getSheetByName('Details');
   const open = function (r) { return r.status !== 'cancelled' && !r.archived_at; };
+  // Just the number off the end — 8891 for 01-8891, 1255 for QW-26-1255,
+  // 1001 for D-1001 — is how it gets read out over the counter. One match
+  // opens as if it had been typed in full; more than one asks which.
+  if (kind === 'text' && /^\d{3,6}$/.test(c)) {
+    const found = codesEndingIn_(c, has);
+    if (found.length === 1) return detailForCode(token, 'text', found[0].code);
+    if (found.length > 1) return { choices: found, message: 'More than one number ends in ' + c + '. Which one?' };
+  }
   const winterQn = kind === 'winter' ? c.toUpperCase() : (/^QW-\d{2}-\d{3,5}$/i.test(c) ? c.toUpperCase() : '');
   if (winterQn) {
     const row = has ? rows_('Details').filter(function (r) { return r.winter_qn === winterQn && open(r); })
@@ -9178,6 +9186,43 @@ function detailForCode(token, kind, code) {
   if (row) return { detailId: row.id };
   return { none: true, job: { id: job.id, customerName: job.customer_name || '', boatInfo: job.boat_info || '' },
     message: 'Work order ' + job.id + ' has no detail on it. The office adds it from the job page (Send to detail).' };
+}
+
+/**
+ * Every work order, winter quote and D-number whose number after the last
+ * dash is exactly `digits`, for detailForCode. A winter quote number repeats
+ * season to season, so only the newest season's counts. The winter feed is
+ * asked only when no detail on the board already carries the quote.
+ */
+function codesEndingIn_(digits, hasDetails) {
+  const tail = function (s) { return String(s || '').toUpperCase().split('-').pop(); };
+  const out = [];
+  rows_('Jobs').forEach(function (job) {
+    if (tail(job.id) === digits && String(job.id).indexOf('-') !== -1) {
+      out.push({ code: String(job.id).toUpperCase(), label: 'Work order ' + job.id + (job.customer_name ? ' \u00b7 ' + job.customer_name : '') });
+    }
+  });
+  const details = hasDetails ? rows_('Details') : [];
+  const qns = {};
+  details.forEach(function (r) {
+    if (r.winter_qn && tail(r.winter_qn) === digits) qns[String(r.winter_qn).toUpperCase()] = r.customer_name || '';
+  });
+  if (!Object.keys(qns).length && winterKey_()) {
+    const got = winterDetailFeed_(false);
+    ((got.feed && got.feed.units) || []).forEach(function (u) {
+      if (u.qn && tail(u.qn) === digits) qns[String(u.qn).toUpperCase()] = u.name || '';
+    });
+  }
+  const season = function (qn) { return Number(String(qn).split('-')[1]) || 0; };
+  const newest = Object.keys(qns).reduce(function (m, qn) { return Math.max(m, season(qn)); }, 0);
+  Object.keys(qns).filter(function (qn) { return /^QW-\d{2}-\d{3,5}$/.test(qn) && season(qn) === newest; })
+    .forEach(function (qn) { out.push({ code: qn, label: 'Winter quote ' + qn + (qns[qn] ? ' \u00b7 ' + qns[qn] : '') }); });
+  details.forEach(function (r) {
+    if (r.quote_no && String(r.quote_no).toUpperCase() === 'D-' + digits) {
+      out.push({ code: 'D-' + digits, label: 'Detail quote D-' + digits + (r.customer_name ? ' \u00b7 ' + r.customer_name : '') });
+    }
+  });
+  return out;
 }
 
 /** A note on a quote, from whoever took the call. Goes in its history with their name. */

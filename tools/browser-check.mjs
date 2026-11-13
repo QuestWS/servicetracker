@@ -3524,6 +3524,31 @@ const detailErrors = [];
   await det.click('#typed button');
   await det.waitForFunction(() => /Split ticket/i.test(document.body.innerText) && /6161/.test(document.body.innerText), null, { timeout: 30000 });
   check('a work order number opens that job\'s detail', true);
+
+  // Just the digits after QW-26-: a winter quote on its own opens (or is offered).
+  await det.goto(`${BASE}/d/?scan`, { waitUntil: 'networkidle' });
+  await det.waitForSelector('#code', { timeout: 20000 });
+  await det.fill('#code', '9001');
+  await det.click('#typed button');
+  await det.waitForFunction(() => /QW-26-9001|Harbor, Pat/.test(document.body.innerText) && !/Looking it up/.test(document.body.innerText), null, { timeout: 30000 });
+  check('the digits after QW-26- find that winter quote', true);
+
+  // A work order and a winter quote ending in the same digits: it asks which.
+  {
+    const o = (await post('adminSignIn', '', [PASSWORD])).token;
+    await post('createJob', o, [{ invoiceNumber: '01-9001', customerName: 'Same Digits', boatInfo: 'x' }]);
+    await det.goto(`${BASE}/d/?scan`, { waitUntil: 'networkidle' });
+    await det.waitForSelector('#code', { timeout: 20000 });
+    await det.fill('#code', '9001');
+    await det.click('#typed button');
+    await det.waitForSelector('[data-pick]', { timeout: 30000 });
+    const picks = await det.locator('[data-pick]').allInnerTexts();
+    check('digits shared by a work order and a winter quote ask which one',
+      picks.length === 2 && /01-9001/.test(picks[0]) && /QW-26-9001/.test(picks[1]), picks.join(' | '));
+    await det.click('[data-pick="0"]');
+    await det.waitForFunction(() => /Work order 01-9001 has no detail/.test(document.body.innerText), null, { timeout: 30000 });
+    check('picking the work order opens it', true);
+  }
   await ctx.close();
 }
 
