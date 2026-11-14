@@ -2280,11 +2280,13 @@ ${emailLogCard}
         ${parsed.invoiceNumber ? '' : '<div style="margin-top:4px">That PDF had no text layer, so the work order number could not be checked against this job.</div>'}
         <div class="stack" style="margin-top:10px">
           <a class="btn navy" href="${url}" target="_blank" rel="noreferrer">Open print-ready work order</a>
+          <button class="btn navy" type="button" id="printstamped">Print now</button>
           ${differs ? `<button class="btn ghost" type="button" id="usedesc">Update what needs doing to match</button>` : ''}
         </div>
         ${differs ? `<p class="hint" style="margin-top:8px">The new copy says:
           &ldquo;${esc(fresh)}&rdquo;</p>` : ''}`);
 
+      $('printstamped').onclick = () => printPdf(url);
       // Offered rather than applied: the writer may have already typed a
       // better version of this by hand, and a silent overwrite of it would be
       // the worst outcome of pressing a button labelled "re-stamp".
@@ -2943,6 +2945,27 @@ async function createJob() {
   }
 }
 
+/**
+ * Print a PDF straight to the print dialog, without opening it in a tab first.
+ * A hidden same-origin iframe on the blob URL; falls back to opening the PDF
+ * if the browser will not print from a frame (some iPad builds).
+ */
+function printPdf(url) {
+  const frame = document.createElement('iframe');
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0';
+  frame.onload = () => {
+    try {
+      frame.contentWindow.focus();
+      frame.contentWindow.print();
+    } catch {
+      window.open(url, '_blank', 'noreferrer');
+    }
+    setTimeout(() => frame.remove(), 60000);
+  };
+  frame.src = url;
+  document.body.appendChild(frame);
+}
+
 function renderCreated(job, stampedBytes, warning) {
   const url = URL.createObjectURL(new Blob([stampedBytes], { type: 'application/pdf' }));
   $('stage-done').innerHTML = `
@@ -2955,6 +2978,7 @@ function renderCreated(job, stampedBytes, warning) {
     </div>
     <div class="stack">
       <a class="btn navy" href="${url}" target="_blank" rel="noreferrer">Open print-ready work order</a>
+      <button class="btn navy" type="button" id="printnew">Print now</button>
       <label class="fld">Work order link (shop only)</label>
       <div class="row tight" style="flex-wrap:nowrap">
         <input class="txt mono" readonly value="${esc(trackingUrl(SITE_URL, job.token))}" id="newlink">
@@ -2966,6 +2990,7 @@ function renderCreated(job, stampedBytes, warning) {
       </div>
     </div>`;
   showStage('done');
+  $('printnew').onclick = () => printPdf(url);
   $('again').onclick = () => { intake = null; renderIntake(); };
   $('copynew').onclick = async () => {
     try { await navigator.clipboard.writeText($('newlink').value); toast('Work order link copied.'); }
