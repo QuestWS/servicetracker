@@ -1404,6 +1404,31 @@ console.log('\n== a walk-in winterize ==');
   check('and then it ticks off, as whoever is signed in', true);
   await mech.screenshot({ path: `${SHOTS}/64-walkin-ticked.png`, fullPage: true });
 
+  // The mechanic changing the writer's choices at the boat.
+  const wcard = () => mech.evaluate(() => document.getElementById('jobwintercard').textContent);
+  // The panel stays open across a change, so only open it when it is shut.
+  const openChange = () => mech.evaluate(() => { document.getElementById('jwchange').open = true; });
+  await openChange();
+  await mech.click('#jwlevel');
+  await mech.waitForFunction(() => /Winterize — Basic/.test(document.getElementById('jobwintercard').textContent), null, { timeout: 20000 });
+  check('the mechanic can switch a full service to basic',
+    /Basic winterize — Inboard/.test(await wcard()) && (await mech.getAttribute('[data-jw="0"]', 'aria-pressed')) === 'false');
+  check('and the change is in the job log on their screen at once',
+    /Winterize changed by Dale: Level changed from Full service to Basic/.test(await mech.textContent('#joblog')));
+  await openChange();
+  await mech.click('#jwlevel');
+  await mech.waitForFunction(() => /Winterize — Full service/.test(document.getElementById('jobwintercard').textContent), null, { timeout: 20000 });
+  check('and back to full service', /Full service winterize — Inboard/.test(await wcard()));
+  await mech.click('[data-jw="0"]');
+  await mech.waitForFunction(() => document.querySelector('[data-jw="0"]').getAttribute('aria-pressed') === 'true', null, { timeout: 20000 });
+  await openChange();
+  await mech.fill('#jwadd', 'Extra oil — 2 qt');
+  await mech.click('#jwaddbtn');
+  await mech.waitForFunction(() => /☐ Extra oil — 2 qt/.test(document.getElementById('jobwintercard').textContent), null, { timeout: 20000 });
+  check('the mechanic can add an item to the checklist',
+    /Added: Extra oil — 2 qt/.test(await mech.textContent('#joblog')) && (await mech.inputValue('#jwadd')) === '');
+  await mech.screenshot({ path: `${SHOTS}/64b-walkin-changed.png`, fullPage: true });
+
   await mech.click('#navhome');
   await mech.click('#openjobs');
   await mech.waitForSelector('.joblist', { timeout: 20000 });
@@ -1415,6 +1440,17 @@ console.log('\n== a walk-in winterize ==');
   await admin.waitForSelector('#wintercard .wf-list', { timeout: 20000 });
   const after = await admin.textContent('#wintercard');
   check('the office sees the tick and who made it', /Full service winterize — Inboard/.test(after) && /Dale/.test(after));
+  check('and the item the mechanic added', /Extra oil — 2 qt/.test(after));
+
+  // A writer re-saving the checklist must not drop what was added at the boat.
+  await admin.click('#winteropen');
+  await admin.waitForSelector('[data-wfx]', { timeout: 20000 });
+  check('the portal form shows what was added at the boat, still ticked',
+    await admin.isChecked('[data-wfx]') && /Added at the boat/.test(await admin.textContent('#winteredit')));
+  await admin.click('#wintersave');
+  await admin.waitForFunction(() => !document.querySelector('.winterform') &&
+    /Extra oil — 2 qt/.test(document.getElementById('wintercard').textContent), null, { timeout: 20000 });
+  check('and a writer\'s save keeps it', true);
 }
 
 console.log('\n== getting around the portal ==');

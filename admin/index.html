@@ -3066,6 +3066,16 @@ function winterFormHtml(menu, current) {
                 value="${esc(chosen[s.key] ? qtyOf(chosen[s.key]) : 1)}" aria-label="How many">` : ''}
             </label>`).join('')}
         </div>`).join('')}
+      ${(cur.items || []).some((x) => x.addedBy) ? `
+        <div class="subhead">Added at the boat</div>
+        <div class="wf-grid">
+          ${cur.items.filter((x) => x.addedBy).map((x) => `
+            <label class="wf-item">
+              <input type="checkbox" checked data-wfx="${esc(x.id)}" data-label="${esc(x.label)}" data-by="${esc(x.addedBy)}">
+              <span>${esc(x.label)} <small>· ${esc(x.addedBy)}</small></span>
+            </label>`).join('')}
+        </div>
+        <p class="hint">Untick one to take it off the checklist.</p>` : ''}
     </div>`;
 }
 
@@ -3182,6 +3192,13 @@ function readWinterForm(root, menu) {
     const qtyBox = root.querySelector(`[data-wfqty="${s.key}"]`);
     return { id: s.key, label: s.label, group: WINTER_GROUP_LABEL[s.group] || s.group, winterize: s.winterize,
              count: s.kind === 'count', qty: qtyBox ? Number(qtyBox.value) || 1 : 1 };
+  });
+  // What a mechanic added at the boat is not on the menu, so it is carried
+  // through from its own boxes — without this a writer's save dropped it.
+  root.querySelectorAll('[data-wfx]').forEach((box) => {
+    if (!box.checked) return;
+    items.push({ id: box.dataset.wfx, label: box.dataset.label, group: `Added by ${box.dataset.by}`,
+                 winterize: false, count: false, qty: 1, addedBy: box.dataset.by });
   });
   return {
     level, steps: levelDef.steps, stepsPwc: levelDef.stepsPwc, engines: menu.engines,

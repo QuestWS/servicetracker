@@ -1239,10 +1239,10 @@ function jobWinterHtml(w) {
     <p class="hint" style="margin-top:10px">Tap an item when it is done. Anything extra goes in the log below as hours or parts.</p>
     <details class="jwchange" id="jwchange" style="margin-top:10px">
       <summary style="font-weight:700;cursor:pointer;padding:6px 0">Change this winterize</summary>
-      <p class="hint" style="margin:6px 0">The office is told in the job's notes. Log the extra hours and parts below as usual.</p>
+      <p class="hint" style="margin:6px 0">Each change is written in the job log for the office. Log the extra hours and parts below as usual.</p>
       <button type="button" class="btn ghost block" id="jwlevel" data-level="${w.level === 'full' ? 'basic' : 'full'}">Switch to ${w.level === 'full' ? 'Basic' : 'Full service'}</button>
       <label for="jwadd" style="display:block;margin-top:10px;font-weight:700">Add an item</label>
-      <input type="text" id="jwadd" maxlength="120" placeholder="e.g. Extra oil — 2 qt" style="width:100%">
+      <input class="txt" type="text" id="jwadd" maxlength="120" placeholder="e.g. Extra oil — 2 qt">
       <button type="button" class="btn ghost block" id="jwaddbtn" style="margin-top:6px">Add to checklist</button>
       ${w.items.filter((x) => x.kind !== 'engine').length ? `<div style="margin-top:10px;font-weight:700">Take off the list</div>
       <div class="stack">${w.items.filter((x) => x.kind !== 'engine').map((x) => `<button type="button" class="btn ghost sm block" data-jwrm="${esc(x.id)}" style="text-align:left">✕ ${esc(x.label)}</button>`).join('')}</div>` : ''}
@@ -1250,22 +1250,34 @@ function jobWinterHtml(w) {
   </section>`;
 }
 
-async function changeJobWinter(change) {
+/*
+ * Not optimistic, unlike a tick: a level switch rewrites the steps from the
+ * winter menu, which only the server has. So the tapped button says Saving…
+ * at once — a tap that shows nothing reads as done — and the card redraws
+ * from the answer. The note it writes goes straight into the feed.
+ */
+async function changeJobWinter(change, tapped) {
   const job = state.job;
   const buttons = view.querySelectorAll('#jwchange button');
   buttons.forEach((b) => { b.disabled = true; });
+  if (tapped) tapped.textContent = 'Saving…';
   try {
     const out = await api('changeJobWinter', [job.token, change]);
     if (state.job && state.job.token === job.token) {
+      if (out.job) state.job = out.job;
       state.job.winter = out.winter;
-      state.job.entryCount = (state.job.entryCount || 0) + 1;
+      if (out.entry) state.entries = state.entries.concat([out.entry]);
       saveJob(state.job, state.hours);
+      if ($('jwadd') && change.add) $('jwadd').value = '';
+      drawJobWinter();
+      drawFeed();
+      const head = $('jobhead');
+      if (head) head.innerHTML = jobHeadHtml(state.job, loggingAs());
     }
-    toast('Changed — the office will see it in the notes.');
-    drawJobWinter();
+    toast('Changed — the office will see it in the job log.');
   } catch (error) {
     toast(`Not saved — ${error.message}`);
-    buttons.forEach((b) => { b.disabled = false; });
+    drawJobWinter();
   }
 }
 
@@ -1303,15 +1315,16 @@ function bindJobWinter() {
     button.onclick = () => pickJobWinterEngine(button.dataset.engine);
   });
   const level = $('jwlevel');
-  if (level) level.onclick = () => changeJobWinter({ level: level.dataset.level });
+  if (level) level.onclick = () => changeJobWinter({ level: level.dataset.level }, level);
   const addBtn = $('jwaddbtn');
   if (addBtn) addBtn.onclick = () => {
     const text = $('jwadd').value.trim();
-    if (!text) { toast('Say what to add first.'); return; }
-    changeJobWinter({ add: [text] });
+    // Said beside the box, not in a dialog: the no-confirm rule.
+    if (!text) { $('jwadd').focus(); toast('Type what to add first.'); return; }
+    changeJobWinter({ add: [text] }, addBtn);
   };
   view.querySelectorAll('[data-jwrm]').forEach((button) => {
-    button.onclick = () => changeJobWinter({ remove: [button.dataset.jwrm] });
+    button.onclick = () => changeJobWinter({ remove: [button.dataset.jwrm] }, button);
   });
 }
 

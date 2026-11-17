@@ -320,6 +320,19 @@ anything beyond the checklist, and a first tick starts the job like a first
 entry. Ticks are written under the lock and re-read inside it. The open-jobs
 list says **❄ Winterize: N left**.
 
+**The mechanic can change what the writer chose** — *Change this winterize*
+at the foot of the card (`changeJobWinter`): switch Basic ↔ Full, add a
+free-text item ("Extra oil — 2 qt"), or take one off. Every change writes an
+`internal_note` in the mechanic's name saying exactly what moved — that note is
+how the office finds out to adjust the invoice — and the answer carries the
+note so it lands in the feed at once. Not optimistic: a level switch takes its
+steps from the winter menu, which only the server has, so the tapped button says
+*Saving…* instead. A switch clears the engine tick (it was for the old level's
+steps). Items added at the boat carry `addedBy`; the portal's checklist form
+shows them under *Added at the boat*, still ticked, and sends them back — the
+form is otherwise built from the menu alone, and without that a writer's save
+silently dropped them.
+
 ## The service worker
 
 There is a watchdog behind the boot and an always-present way to throw the

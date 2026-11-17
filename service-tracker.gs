@@ -4070,8 +4070,11 @@ function sanitizeWinterSpec_(input, prev, by) {
   const seen = { engine: true };
   const items = (input.items || []).map(function (x) {
     const qty = Math.max(1, Math.min(99, Math.floor(Number(x.qty) || 1)));
+    // addedBy marks an item a mechanic put on at the boat (changeJobWinter).
+    // The portal's form shows those and sends them back, so a writer's edit
+    // keeps them unless the writer unticks one.
     return { id: str(x.id, 40), label: str(x.label), group: str(x.group, 60), winterize: !!x.winterize,
-             count: x.count === true, qty: qty };
+             count: x.count === true, qty: qty, addedBy: str(x.addedBy, 40) };
   }).filter(function (x) {
     if (!x.id || !x.label || seen[x.id]) return false;
     seen[x.id] = true;
@@ -4104,7 +4107,7 @@ function winterView_(spec) {
   const items = [engineItem].concat((spec.items || []).filter(function (x) {
     return !harborOnly_(x.id, x.label);
   }).map(function (x) {
-    return { id: x.id, kind: 'service', group: x.group, winterize: !!x.winterize,
+    return { id: x.id, kind: 'service', group: x.group, winterize: !!x.winterize, addedBy: x.addedBy || '',
              label: x.label + (x.count && x.qty > 1 ? ' × ' + x.qty : '') };
   })).map(function (x) {
     const d = done[x.id];
@@ -4228,6 +4231,8 @@ function changeJobWinter(token, jobToken, change) {
     if (!spec) throw new Error('This job has no winterize checklist.');
     const said = [];
     if (wantLevel && wantLevel !== spec.level) {
+      // Changed by somebody else between the look above and the lock.
+      if (!levelDef) throw new Error('The checklist just changed — pull the job up again.');
       said.push('Level changed from ' + WINTER_LEVELS_[spec.level] + ' to ' + WINTER_LEVELS_[wantLevel] + '.');
       spec.level = wantLevel;
       spec.steps = levelDef.steps;
@@ -4254,17 +4259,20 @@ function changeJobWinter(token, jobToken, change) {
     spec.changedBy = who.name;
     spec.changedAt = nowIso_();
     updateRow_('Jobs', job._row, { winter_work: JSON.stringify(spec), updated_at: nowIso_() });
-    appendRow_('LogEntries', {
+    const entry = {
       id: newId_('log'), job_id: job.id, mechanic_id: who.id, mechanic_name: who.name,
       entry_type: 'internal_note',
       text: 'Winterize changed by ' + who.name + ': ' + said.join(' ') + (extra ? ' ' + extra : ''),
       hours: '', part_identifier: '', quantity: '', audio_file: '', photos: '',
       transcript_status: '', transcript_id: '', transcript_error: '', notified_at: '',
       created_at: nowIso_(), client_id: ''
-    });
-    bumpJobEntryTotals_(job.id, 0, true);
+    };
+    appendRow_('LogEntries', entry);
     if (job.status === 'received') setStatus_(job, 'work_underway', 'mechanic', who.name, 'Winterize changed');
-    return { winter: winterView_(spec), said: said };
+    const saved = bumpJobEntryTotals_(job.id, 0, true);
+    // The note goes back so the phone can put it in the feed at once, as it
+    // does with every other save; the job carries the new count and status.
+    return { winter: winterView_(spec), said: said, entry: entryView_(entry), job: jobSummary_(saved) };
   });
 }
 

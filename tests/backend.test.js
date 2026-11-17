@@ -5255,6 +5255,32 @@ describe('a walk-in winterize, on an ordinary work order', () => {
     expect(() => backend.fn('changeJobWinter', adminToken, token, { level: 'full' })).toThrow();
   });
 
+  it('hands the note back so the phone shows it at once, with the new count', () => {
+    const mech = shop();
+    const token = walkIn();
+    const out = backend.fn('changeJobWinter', mech, token, { add: ['Extra oil — 2 qt'] });
+    expect(out.entry).toMatchObject({ entryType: 'internal_note', mechanicName: 'Dale' });
+    expect(out.entry.text).toMatch(/Added: Extra oil/);
+    expect(out.job.entryCount).toBe(1);
+    expect(out.job.status).toBe('work_underway');
+    expect(out.job.winter.items.map((x) => x.label)).toContain('Extra oil — 2 qt');
+  });
+
+  it('keeps what a mechanic added when the writer saves the checklist again', () => {
+    const mech = shop();
+    const token = walkIn();
+    const added = backend.fn('changeJobWinter', mech, token, { add: ['Extra oil — 2 qt'] })
+      .winter.items.find((x) => x.label === 'Extra oil — 2 qt');
+    expect(added.addedBy).toBe('Dale');
+    backend.fn('setJobWinterItem', mech, token, added.id, true, '');
+    // What the portal's form sends back: the menu items plus the boxes for
+    // the ones added at the boat, still ticked.
+    backend.fn('setJobWinter', adminToken, '01-7001', chosen({
+      items: [...chosen().items, { id: added.id, label: added.label, group: 'Added by Dale', addedBy: 'Dale' }] }));
+    const w = backend.fn('getJob', adminToken, '01-7001').job.winter;
+    expect(w.items.find((x) => x.id === added.id)).toMatchObject({ label: 'Extra oil — 2 qt', done: true, addedBy: 'Dale' });
+  });
+
   it('can be taken off a job', () => {
     shop();
     walkIn();
