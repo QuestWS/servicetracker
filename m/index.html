@@ -1237,7 +1237,36 @@ function jobWinterHtml(w) {
       ${w.items.map((item, index) => jobWinterItemHtml(item, index, w)).join('')}
     </div>
     <p class="hint" style="margin-top:10px">Tap an item when it is done. Anything extra goes in the log below as hours or parts.</p>
+    <details class="jwchange" id="jwchange" style="margin-top:10px">
+      <summary style="font-weight:700;cursor:pointer;padding:6px 0">Change this winterize</summary>
+      <p class="hint" style="margin:6px 0">The office is told in the job's notes. Log the extra hours and parts below as usual.</p>
+      <button type="button" class="btn ghost block" id="jwlevel" data-level="${w.level === 'full' ? 'basic' : 'full'}">Switch to ${w.level === 'full' ? 'Basic' : 'Full service'}</button>
+      <label for="jwadd" style="display:block;margin-top:10px;font-weight:700">Add an item</label>
+      <input type="text" id="jwadd" maxlength="120" placeholder="e.g. Extra oil — 2 qt" style="width:100%">
+      <button type="button" class="btn ghost block" id="jwaddbtn" style="margin-top:6px">Add to checklist</button>
+      ${w.items.filter((x) => x.kind !== 'engine').length ? `<div style="margin-top:10px;font-weight:700">Take off the list</div>
+      <div class="stack">${w.items.filter((x) => x.kind !== 'engine').map((x) => `<button type="button" class="btn ghost sm block" data-jwrm="${esc(x.id)}" style="text-align:left">✕ ${esc(x.label)}</button>`).join('')}</div>` : ''}
+    </details>
   </section>`;
+}
+
+async function changeJobWinter(change) {
+  const job = state.job;
+  const buttons = view.querySelectorAll('#jwchange button');
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    const out = await api('changeJobWinter', [job.token, change]);
+    if (state.job && state.job.token === job.token) {
+      state.job.winter = out.winter;
+      state.job.entryCount = (state.job.entryCount || 0) + 1;
+      saveJob(state.job, state.hours);
+    }
+    toast('Changed — the office will see it in the notes.');
+    drawJobWinter();
+  } catch (error) {
+    toast(`Not saved — ${error.message}`);
+    buttons.forEach((b) => { b.disabled = false; });
+  }
 }
 
 function jobWinterItemHtml(item, index, w) {
@@ -1254,7 +1283,13 @@ function jobWinterItemHtml(item, index, w) {
 function drawJobWinter() {
   const box = $('jobwinter');
   if (!box || !state.job) return;
+  // A tick redraws the card; keep the change panel open and what was typed.
+  const panel = $('jwchange');
+  const wasOpen = Boolean(panel && panel.open);
+  const typed = $('jwadd') ? $('jwadd').value : '';
   box.innerHTML = jobWinterHtml(state.job.winter);
+  if (wasOpen && $('jwchange')) $('jwchange').open = true;
+  if (typed && $('jwadd')) $('jwadd').value = typed;
   bindJobWinter();
 }
 
@@ -1266,6 +1301,17 @@ function bindJobWinter() {
   });
   view.querySelectorAll('[data-engine]').forEach((button) => {
     button.onclick = () => pickJobWinterEngine(button.dataset.engine);
+  });
+  const level = $('jwlevel');
+  if (level) level.onclick = () => changeJobWinter({ level: level.dataset.level });
+  const addBtn = $('jwaddbtn');
+  if (addBtn) addBtn.onclick = () => {
+    const text = $('jwadd').value.trim();
+    if (!text) { toast('Say what to add first.'); return; }
+    changeJobWinter({ add: [text] });
+  };
+  view.querySelectorAll('[data-jwrm]').forEach((button) => {
+    button.onclick = () => changeJobWinter({ remove: [button.dataset.jwrm] });
   });
 }
 

@@ -1090,6 +1090,7 @@ function apiFns_(data) {
     addPropRepair:    function (a) { return addPropRepair(data.token, a[0], a[1]); },
     finishWork:       function (a) { return finishWork(data.token, a[0]); },
     setJobWinterItem: function (a) { return setJobWinterItem(data.token, a[0], a[1], a[2] === true, a[3]); },
+    changeJobWinter:  function (a) { return changeJobWinter(data.token, a[0], a[1]); },
     winterMenu:       function (a) { return winterMenu(data.token); },
     setJobWinter:     function (a) { return setJobWinter(data.token, a[0], a[1] || null); },
     winterWork:       function (a) { return winterWork(data.token, a[0] === true); },
@@ -4013,6 +4014,10 @@ function withoutHarborOnly_(menu) {
 /** The winter services menu, for the intake form. */
 function winterMenu(token) {
   requireAdmin_(token);
+  return winterMenuData_();
+}
+
+function winterMenuData_() {
   if (!winterKey_()) throw new Error('Not connected to the winter system yet. The office needs to add WINTER_KEY.');
   const cached = cacheGetBig_(WINTER_MENU_KEY_);
   if (cached && cached.levels) return { menu: withoutHarborOnly_(cached) };
@@ -4180,6 +4185,86 @@ function setJobWinterItem(token, jobToken, itemId, done, engineId) {
     // A tick is work on the boat, the same as a first log entry.
     if (job.status === 'received') setStatus_(job, 'work_underway', 'mechanic', who.name, 'First winterize tick');
     return { winter: winterView_(spec) };
+  });
+}
+
+/**
+ * The mechanic changing what the writer chose, at the boat: Basic <-> Full,
+ * extra items the job turned out to need (more oil, a part of the system the
+ * customer forgot), or an item that does not apply. `change` is
+ * { level?, add: ['Extra oil — 2 qt', ...], remove: [itemId, ...], note? }.
+ *
+ * A change is never silent. It writes a note into the log, in the mechanic's
+ * name, saying exactly what moved — that note is how the writer finds out to
+ * adjust the invoice. Hours and parts for the extra work still go through the
+ * ordinary tabs. Ticks on items that stay are kept.
+ */
+function changeJobWinter(token, jobToken, change) {
+  const who = requireMechanic_(token);
+  change = change || {};
+  const str = function (v, n) { return String(v === undefined || v === null ? '' : v).trim().slice(0, n || 200); };
+  const add = (change.add || []).map(function (l) { return str(l, 120); }).filter(Boolean).slice(0, 10);
+  const remove = (change.remove || []).map(function (id) { return str(id, 40); }).filter(Boolean);
+  const wantLevel = str(change.level, 10);
+  if (wantLevel && !WINTER_LEVELS_[wantLevel]) throw new Error('Choose Full service or Basic.');
+  const extra = str(change.note, 500);
+  if (!wantLevel && !add.length && !remove.length) throw new Error('Nothing to change.');
+
+  // Only a level change needs the winter system's wording of the steps.
+  let levelDef = null;
+  const current0 = winterSpecOf_(jobByToken_(jobToken));
+  if (wantLevel && current0 && wantLevel !== current0.level) {
+    let menu = null;
+    try { menu = winterMenuData_().menu; } catch (err) { menu = null; }
+    levelDef = menu && (menu.levels || []).filter(function (l) { return l.id === wantLevel; })[0];
+    if (!levelDef) throw new Error('Cannot reach the winter menu to switch levels right now. Add a note instead, and the office will change it.');
+  }
+
+  return withLock_(function () {
+    forget_('Jobs');
+    const job = jobByToken_(jobToken);
+    if (!job) throw new Error('No such job.');
+    const spec = winterSpecOf_(job);
+    if (!spec) throw new Error('This job has no winterize checklist.');
+    const said = [];
+    if (wantLevel && wantLevel !== spec.level) {
+      said.push('Level changed from ' + WINTER_LEVELS_[spec.level] + ' to ' + WINTER_LEVELS_[wantLevel] + '.');
+      spec.level = wantLevel;
+      spec.steps = levelDef.steps;
+      spec.stepsPwc = levelDef.stepsPwc || levelDef.steps;
+      // The engine tick belonged to the old level's steps.
+      if (spec.done) delete spec.done.engine;
+    }
+    spec.items = spec.items || [];
+    remove.forEach(function (id) {
+      if (id === 'engine') return;
+      const at = spec.items.map(function (x) { return x.id; }).indexOf(id);
+      if (at < 0) return;
+      said.push('Removed: ' + spec.items[at].label + '.');
+      spec.items.splice(at, 1);
+      if (spec.done) delete spec.done[id];
+    });
+    add.forEach(function (label) {
+      if (spec.items.length >= 40) return;
+      spec.items.push({ id: 'x' + Utilities.getUuid().replace(/-/g, '').substr(0, 10), label: label,
+        group: 'Added by ' + who.name, winterize: false, count: false, qty: 1, addedBy: who.name });
+      said.push('Added: ' + label + '.');
+    });
+    if (!said.length) throw new Error('Nothing changed — pull the job up again.');
+    spec.changedBy = who.name;
+    spec.changedAt = nowIso_();
+    updateRow_('Jobs', job._row, { winter_work: JSON.stringify(spec), updated_at: nowIso_() });
+    appendRow_('LogEntries', {
+      id: newId_('log'), job_id: job.id, mechanic_id: who.id, mechanic_name: who.name,
+      entry_type: 'internal_note',
+      text: 'Winterize changed by ' + who.name + ': ' + said.join(' ') + (extra ? ' ' + extra : ''),
+      hours: '', part_identifier: '', quantity: '', audio_file: '', photos: '',
+      transcript_status: '', transcript_id: '', transcript_error: '', notified_at: '',
+      created_at: nowIso_(), client_id: ''
+    });
+    bumpJobEntryTotals_(job.id, 0, true);
+    if (job.status === 'received') setStatus_(job, 'work_underway', 'mechanic', who.name, 'Winterize changed');
+    return { winter: winterView_(spec), said: said };
   });
 }
 

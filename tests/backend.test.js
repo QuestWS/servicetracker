@@ -5237,6 +5237,24 @@ describe('a walk-in winterize, on an ordinary work order', () => {
     expect(w.items[1].done).toBe(true);
   });
 
+  it('lets the mechanic switch level, add and remove items, and says so in the log', () => {
+    const mech = shop();
+    const token = walkIn();
+    backend.fn('setJobWinterItem', mech, token, 'wrap', true, '');
+    let out = backend.fn('changeJobWinter', mech, token, { level: 'basic' });
+    expect(out.winter.level).toBe('basic');
+    expect(out.winter.steps).toBe(MENU.levels.find((l) => l.id === 'basic').steps);
+    out = backend.fn('changeJobWinter', mech, token, { add: ['Extra oil — 2 qt'], remove: ['ballast'] });
+    expect(out.winter.items.map((x) => x.label)).toEqual([
+      'Basic winterize — engine type to check', 'Shrinkwrap', 'Extra oil — 2 qt']);
+    expect(out.winter.items.find((x) => x.id === 'wrap').done).toBe(true);
+    const notes = backend.fn('getJob', adminToken, '01-7001').entries.filter((e) => e.entryType === 'internal_note');
+    expect(notes).toHaveLength(2);
+    expect(notes[1].text).toMatch(/Dale.*Removed: Ballast drain.*Added: Extra oil — 2 qt\./);
+    expect(() => backend.fn('changeJobWinter', mech, token, {})).toThrow(/Nothing to change/);
+    expect(() => backend.fn('changeJobWinter', adminToken, token, { level: 'full' })).toThrow();
+  });
+
   it('can be taken off a job', () => {
     shop();
     walkIn();
