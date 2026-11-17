@@ -2096,6 +2096,69 @@ const stillFiled = await admin.evaluate(async ({ base }) => {
 check('but the writer\'s open jobs still has it to write up',
   stillFiled.includes(FINISH_JOB), stillFiled.join(', '));
 
+console.log('\n== sending a job back to the floor ==');
+{
+  // Closed, then the customer adds work when called to collect it.
+  await admin.goto(`${BASE}/admin/?job=${encodeURIComponent(FINISH_JOB)}`, { waitUntil: 'networkidle' });
+  await admin.waitForSelector('#markdone', { timeout: 20000 });
+  await admin.click('#markdone');
+  await admin.waitForSelector('#undodone', { timeout: 30000 });
+  check('a closed job offers Undo Mark done and Reopen for more work',
+    await admin.locator('#undodone').count() === 1 && await admin.locator('#reopenform').count() === 1);
+
+  await admin.click('#undodone');
+  await admin.waitForSelector('#markdone', { timeout: 30000 });
+  check('Undo Mark done puts it back to Work finished',
+    (await admin.inputValue('#status')) === 'work_finished', await admin.inputValue('#status'));
+
+  await admin.click('#markdone');
+  await admin.waitForSelector('#reopenform', { timeout: 30000 });
+  await admin.waitForSelector('#undodone', { timeout: 30000 });
+  await admin.click('#reopenjob');
+  check('reopening asks what was added before it will go',
+    await admin.locator('#undodone').count() === 1);
+  const ADDED = 'Customer added a bottom paint when we called.';
+  await admin.fill('#reopennote', ADDED);
+  await admin.click('#reopenjob');
+  await admin.waitForSelector('[data-reopened]', { timeout: 30000 });
+  check('the job page says it is showing on the mechanic\'s screen',
+    (await admin.textContent('[data-reopened]')).includes('bottom paint'));
+  check('and it is back to Work underway', (await admin.inputValue('#status')) === 'work_underway');
+  await admin.screenshot({ path: `${SHOTS}/66-reopened-writer.png`, fullPage: true });
+
+  await mech.click('#navhome');
+  await mech.waitForSelector('#openjobs', { timeout: 20000 });
+  await mech.click('#openjobs');
+  await mech.waitForSelector('#liststrip', { state: 'detached', timeout: 20000 });
+  await mech.waitForSelector('.joblist.reopened', { timeout: 20000 });
+  check('the floor\'s list has it back, flagged as back on purpose',
+    (await mech.locator('.joblist.reopened').first().textContent()).includes(FINISH_JOB));
+  await mech.screenshot({ path: `${SHOTS}/67-reopened-list.png`, fullPage: true });
+
+  await mech.click('#navhome');
+  await mech.click('#manual');
+  await mech.fill('#code', FINISH_JOB);
+  await mech.click('button[type=submit]');
+  await mech.waitForSelector('[data-reopened]', { timeout: 20000 });
+  const reopenBanner = mech.locator('[data-reopened]');
+  check('the mechanic gets the note across the top of the job',
+    (await reopenBanner.textContent()).includes('bottom paint'));
+  const reopenColour = await reopenBanner.evaluate((el) => getComputedStyle(el).backgroundColor);
+  check('in orange, not the alert\'s red', reopenColour === 'rgb(166, 84, 31)', reopenColour);
+  await mech.screenshot({ path: `${SHOTS}/68-reopened-mechanic.png`, fullPage: true });
+
+  // Let the screen's own refresh land first, the way a mechanic who has
+  // just read the banner would.
+  await mech.waitForSelector('[data-refreshing]', { state: 'detached', timeout: 20000 });
+  await mech.waitForSelector('#finish', { timeout: 20000 });
+  await mech.click('#finish');
+  // Not the toast: an earlier "Marked finished." can still be in the page.
+  // The finished banner replaces the button only once this tap is answered.
+  await mech.waitForSelector('#finish', { state: 'detached', timeout: 20000 });
+  check('finishing again takes the banner down', await mech.locator('[data-reopened]').count() === 0,
+    (await mech.locator('#view').innerText().catch(() => '')).slice(0, 600));
+}
+
 console.log('\n== putting a misfiled entry right ==');
 // Two scratch jobs of its own, so nothing here disturbs the counts the rest of
 // this run asserts on. A mechanic scanning the work order next to the one they

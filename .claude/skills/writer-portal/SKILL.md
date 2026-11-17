@@ -198,6 +198,29 @@ have already picked the job is half an alert.
   read back as undefined and never appear — and the writer would have no way to
   tell that from a mechanic ignoring it.
 
+## Sending a job back to the floor
+
+`setStatus_` only ever runs forwards, on purpose — a scan, a first entry or the
+detailer must never drag a job backwards. A person doing it deliberately goes
+through `moveJobBack_` instead, which clears the stamps of the steps undone
+(`done_at`, `archived_at`, `work_finished_at`, and `mech_done_at` on a split
+ticket) so doing them again stamps them afresh. Two doors:
+
+- **The status dropdown, backwards** — a mis-tapped Work finished. Quiet: the
+  timeline records it, the floor is not told.
+- **The Reopen block** in Close out, on a Work finished or Done job.
+  *Undo Mark done* is the quiet one, back to Work finished. *Reopen for more
+  work* (`reopenJob`) needs a note — what the customer added — and moves it to
+  Work underway. The note is `reopen_note`/`reopened_at` on Jobs: an orange
+  **Back on purpose** banner on the mechanic's job screen and a flag on their
+  list (after alerts), plus a line in the shop log. It comes down by itself
+  when `setStatus_` reaches Work finished or Done. Orange, never the alert's
+  red: one says "do not start", the other "this is not a mistake".
+
+Reopening sends nothing (rule 4). The texted invoice page answers not-found
+while the job is not Done, and the writer sends the new invoice once it is.
+Neither customer page may name the note — `verify.sh` fails if one does.
+
 ## Documents on a job
 
 Anything that belongs on a job and is neither the work order nor the invoice:

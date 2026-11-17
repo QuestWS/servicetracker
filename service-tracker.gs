@@ -433,7 +433,12 @@ const SHEETS = {
          'detail_split',
          // Each half marked done, on a split ticket. The job reaches Work
          // finished only when both are stamped.
-         'mech_done_at', 'detail_done_at'],
+         'mech_done_at', 'detail_done_at',
+         // A job the writer sent back to the floor on purpose — the customer
+         // added work when called to collect, say — and what was added. Shown
+         // across the top of the mechanic's job screen until the job reaches
+         // Work finished again. See reopenJob.
+         'reopened_at', 'reopen_note'],
   LogEntries: ['id', 'job_id', 'mechanic_id', 'mechanic_name', 'entry_type', 'text', 'hours',
                'part_identifier', 'quantity', 'audio_file', 'photos', 'transcript_status',
                'transcript_id', 'transcript_error', 'notified_at', 'created_at',
@@ -1041,6 +1046,7 @@ function apiFns_(data) {
     listStatementDrafts: function (a) { return listStatementDrafts(data.token); },
     deleteStatementDraft: function (a) { return deleteStatementDraft(data.token, a[0]); },
     setStatus:        function (a) { return setStatusByWriter(data.token, a[0], a[1]); },
+    reopenJob:        function (a) { return reopenJob(data.token, a[0], a[1], a[2]); },
     markLogged:       function (a) { return markEntriesLogged(data.token, a[0]); },
     addWriterNote:    function (a) { return addWriterNote(data.token, a[0], a[1]); },
     addJobFile:       function (a) { return addJobFile(data.token, a[0], a[1]); },
@@ -1648,6 +1654,10 @@ function jobSummary_(job) {
     // builds the customer's payload field by field and never reads this.
     alert: job.alert || null,
     alertAt: job.alert_at || null,
+    // Sent back to the floor on purpose, and why. Shop-side only, like the
+    // alert: publicJob never reads it.
+    reopenNote: job.reopen_note || null,
+    reopenedAt: job.reopen_note ? (job.reopened_at || null) : null,
     partsOrderedAt: job.parts_ordered_at || null,
     paidAt: job.paid_at || null,
     // When a parts order came in. The same stamp a work order gets when the
@@ -2243,7 +2253,7 @@ function listJobs(token, filter) {
 }
 
 // Bump whenever a job summary gains a field, for the reason OPEN_JOBS_V_ says.
-const JOBS_LIST_V_ = 8;
+const JOBS_LIST_V_ = 9;
 const JOBS_LIST_KEY_ = 'JOBSLIST_v' + JOBS_LIST_V_ + '_';
 
 /**
@@ -2601,18 +2611,118 @@ function setStatus_(job, to, actorType, actor, note) {
   if (to === 'work_underway' && !job.work_started_at) patch.work_started_at = at;
   if (to === 'work_finished' && !job.work_finished_at) patch.work_finished_at = at;
   if (to === 'done' && !job.done_at) patch.done_at = at;
+  // Finished again after being sent back: the banner has done its job. Only
+  // when one is up, so a sheet without the column is never written to.
+  if ((to === 'work_finished' || to === 'done') && (job.reopen_note || job.reopened_at)) {
+    patch.reopen_note = '';
+    patch.reopened_at = '';
+  }
   updateRow_('Jobs', job._row, patch);
   recordStatus_(job.id, job.status, to, actorType, actor, note);
   return true;
 }
 
+/**
+ * The writer's status dropdown. Forwards goes through setStatus_ like every
+ * other change; backwards — a mis-tapped Work finished, a ticket closed by
+ * mistake — goes through moveJobBack_, with no banner on the floor. Done is
+ * still only reached through markDone.
+ */
 function setStatusByWriter(token, id, to) {
   requireAdmin_(token);
   if (STATUSES.indexOf(to) === -1 || to === 'done') throw new Error('That status change is not allowed.');
   const job = jobRow_(id);
   if (!job) throw new Error('No such job.');
-  setStatus_(job, to, 'service_writer', '', 'Set by service writer');
+  if (STATUS_ORDER[to] < STATUS_ORDER[job.status]) {
+    moveJobBack_(job, to, '');
+  } else {
+    setStatus_(job, to, 'service_writer', '', 'Set by service writer');
+  }
   return { job: jobSummary_(jobRow_(id)) };
+}
+
+/**
+ * Sends a job back to the floor on purpose: the customer was called to
+ * collect and added work, or it was closed by mistake.
+ *
+ * `note` is what was added. With one, it goes across the top of the
+ * mechanic's job screen (and flags the job on their list) until the job
+ * reaches Work finished again, and into the shop log so the record outlives
+ * the banner. Without one it is a quiet correction — the status moves and
+ * the timeline says who moved it.
+ *
+ * Sends nothing to anyone (rule 4). An invoice already emailed or texted
+ * stays in the mail log; when the job is done again the writer sends the new
+ * one with the same buttons.
+ */
+function reopenJob(token, id, to, note) {
+  requireAdmin_(token);
+  const job = jobRow_(id);
+  if (!job) throw new Error('No such job.');
+  const target = String(to || 'work_underway');
+  if (STATUSES.indexOf(target) === -1 || target === 'done') throw new Error('That status change is not allowed.');
+  if (!(STATUS_ORDER[target] < STATUS_ORDER[job.status])) {
+    throw new Error('That job is already ' + STATUS_LABEL[job.status] + ' \u2014 there is nothing to move back.');
+  }
+  const body = String(note || '').trim();
+  // The same trap as the alert: a column setup() has not written yet reads
+  // back empty, and the banner would save and never appear.
+  if (body) requireColumn_('Jobs', 'reopen_note');
+  moveJobBack_(job, target, body);
+  if (body) {
+    appendRow_('LogEntries', {
+      id: newId_('log'),
+      job_id: job.id,
+      mechanic_id: '',
+      mechanic_name: SHOP_WRITER_NAME,
+      entry_type: 'writer_note',
+      text: 'Reopened: ' + body,
+      hours: '',
+      part_identifier: '',
+      quantity: '',
+      audio_file: '',
+      photos: '',
+      transcript_status: '',
+      transcript_id: '',
+      transcript_error: '',
+      notified_at: '',
+      created_at: nowIso_()
+    });
+    bumpJobEntryTotals_(job.id, 0);
+  }
+  return { job: jobSummary_(jobRow_(id)) };
+}
+
+/**
+ * The one place the lifecycle runs backwards. setStatus_ refuses to, on
+ * purpose — every automatic change (a scan, a first entry, the detailer)
+ * must only ever move a job forwards — so a person doing it deliberately
+ * comes here instead.
+ *
+ * Clears the stamps of the steps being undone, so doing them again stamps
+ * them afresh, and the archive (only a done job may be archived). On a split
+ * ticket going back to the floor the mechanic's half is open again; the
+ * detailer's half is left alone — the Detail Tracker re-opens its own.
+ */
+function moveJobBack_(job, to, note) {
+  if (isPartsOrder_(job)) throw new Error('A parts order cannot be moved back from here.');
+  const at = nowIso_();
+  const patch = { status: to, updated_at: at };
+  if (STATUS_ORDER[to] < STATUS_ORDER.done) {
+    if (job.done_at) patch.done_at = '';
+    if (job.archived_at) patch.archived_at = '';
+  }
+  if (STATUS_ORDER[to] < STATUS_ORDER.work_finished) {
+    if (job.work_finished_at) patch.work_finished_at = '';
+    if (job.mech_done_at) patch.mech_done_at = '';
+  }
+  if (note) {
+    patch.reopen_note = note;
+    patch.reopened_at = at;
+  }
+  updateRow_('Jobs', job._row, patch);
+  recordStatus_(job.id, job.status, to, 'service_writer', '',
+    note ? 'Reopened: ' + note : 'Moved back by service writer');
 }
 
 /* ============================== entries ================================ */
@@ -4641,7 +4751,7 @@ function openJobs(token, fresh) {
  *  - SPLIT ACROSS ENTRIES. CacheService caps a value at 100 KB, and a missing
  *    piece reads as a miss, never as half a list.
  */
-const OPEN_JOBS_V_ = 3;
+const OPEN_JOBS_V_ = 4;
 const OPEN_JOBS_KEY_ = 'OPENJOBS_v' + OPEN_JOBS_V_ + '_';
 // Shared by every cached list: one write drops them all.
 const LISTS_GEN_KEY_ = 'LISTS_GEN';
@@ -4773,6 +4883,8 @@ function openJobsFromSheet_() {
         // Carried so the list can flag the job before it is opened — an alert
         // nobody sees until they have picked the job is half an alert.
         alert: job.alert || '',
+        // Sent back on purpose by the office, and why.
+        reopenNote: job.reopen_note || '',
         // A walk-in winterize, and how much of its checklist is left.
         winterLeft: (function () { const w = winterView_(winterSpecOf_(job)); return w ? w.winterizeLeft : -1; })(),
         // A split ticket: the mechanic has a half, the detailer the other.
@@ -4790,6 +4902,10 @@ function openJobsFromSheet_() {
     // whole point of the alert is that it is read before work starts.
     const byAlert = (b.alert ? 1 : 0) - (a.alert ? 1 : 0);
     if (byAlert !== 0) return byAlert;
+    // Then a job the office sent back: it was finished once, so nobody is
+    // standing next to it, and it is easy to walk past.
+    const byReopen = (b.reopenNote ? 1 : 0) - (a.reopenNote ? 1 : 0);
+    if (byReopen !== 0) return byReopen;
     const byStatus = (rank[a.status] === undefined ? 9 : rank[a.status]) -
                      (rank[b.status] === undefined ? 9 : rank[b.status]);
     return byStatus !== 0 ? byStatus : String(a.id).localeCompare(String(b.id));

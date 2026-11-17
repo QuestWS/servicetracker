@@ -422,7 +422,7 @@ function drawOpenJobs(jobs, strip, tone) {
     ${strip ? `<div class="banner ${tone || 'info'}" id="liststrip" style="margin-bottom:12px">${esc(strip)}</div>` : ''}
     ${jobs.length ? `<div class="stack">
       ${jobs.map((job, index) => `
-        <button class="btn ghost block joblist${job.alert ? ' flagged' : ''}" type="button" data-pick="${index}"
+        <button class="btn ghost block joblist${job.alert ? ' flagged' : job.reopenNote ? ' reopened' : ''}" type="button" data-pick="${index}"
                 style="text-align:left;padding:14px">
           <div style="font-family:var(--mono);font-weight:bold">${esc(job.id)}</div>
           <div style="font-size:15px;margin-top:2px">${esc(job.customerName || '(no name)')}</div>
@@ -430,6 +430,8 @@ function drawOpenJobs(jobs, strip, tone) {
           ${job.alert ? `<div style="margin-top:7px"><span class="alertflag">${ALERT_MARK} Read first</span></div>
             <div style="font-size:14px;line-height:1.4;color:var(--alert);font-weight:600;margin-top:5px">${esc(job.alert)}</div>`
           : `<div style="font-size:12px;opacity:.7;margin-top:4px">${esc(job.statusLabel)}</div>`}
+          ${job.reopenNote ? `<div style="margin-top:7px"><span class="reopenflag">↺ Back on purpose</span></div>
+            <div style="font-size:14px;line-height:1.4;font-weight:600;margin-top:5px">${esc(job.reopenNote)}</div>` : ''}
           ${job.winterLeft > 0 ? `<div class="winterpill" style="margin-top:7px">❄ Winterize: ${job.winterLeft} left</div>`
             : job.winterLeft === 0 ? `<div class="winterpill" style="margin-top:7px">❄ Winterize done</div>` : ''}
         </button>`).join('')}
@@ -446,7 +448,7 @@ function drawOpenJobs(jobs, strip, tone) {
       state.jobFrom = renderOpenJobs;
       state.job = { id: job.id, token: job.token, boatInfo: job.boatInfo,
                     customerName: job.customerName, workRequested: job.workRequested,
-                    alert: job.alert, status: job.status, statusLabel: job.statusLabel };
+                    alert: job.alert, reopenNote: job.reopenNote, status: job.status, statusLabel: job.statusLabel };
       // loadJob, not renderJob: the log and the hours have to come with it.
       loadJob();
     };
@@ -1174,6 +1176,11 @@ function jobHeadHtml(job, hint) {
       <div class="tag">${ALERT_MARK} Read this first</div>
       <div class="msg">${esc(job.alert)}</div>
       ${job.alertAt ? `<div class="when">From the office · ${formatDateTime(job.alertAt)}</div>` : ''}
+    </div>` : ''}
+    ${job.reopenNote ? `<div class="reopenbanner" role="status" data-reopened>
+      <div class="tag">↺ Back on purpose — more work added</div>
+      <div class="msg">${esc(job.reopenNote)}</div>
+      <div class="when">The office reopened this job${job.reopenedAt ? ` · ${formatDateTime(job.reopenedAt)}` : ''}. Tap Work finished when it is done.</div>
     </div>` : ''}
     <div class="card" style="margin-bottom:14px">
       <div class="row" style="justify-content:space-between">
@@ -2420,6 +2427,8 @@ async function finishWork() {
       state.job.detail.mechDoneAt = new Date().toISOString();
       state.job.detail.waitingOn = result.waitingOn;
     }
+    // Finished again: the server took the "back on purpose" banner down.
+    if (result.status === 'work_finished') { state.job.reopenNote = null; state.job.reopenedAt = null; }
     // The server has confirmed it, so the saved screen may say it too.
     if (savedJob(state.job.token)) saveJob(state.job, state.hours);
     renderJob();

@@ -163,7 +163,7 @@ describe('files in Drive', () => {
 });
 
 describe('the job lifecycle', () => {
-  it('advances on the first scan and never runs backwards', () => {
+  it('advances on the first scan and never runs backwards by itself', () => {
     backend.fn('createJob', adminToken, { invoiceNumber: '01-9000', customerEmail: 'a@b.com' });
     const token = backend.fn('jobRow_', '01-9000').token;
     expect(backend.fn('jobRow_', '01-9000').status).toBe('received');
@@ -175,7 +175,8 @@ describe('the job lifecycle', () => {
     backend.fn('finishWork', mech, token);
     expect(backend.fn('jobRow_', '01-9000').status).toBe('work_finished');
 
-    expect(() => backend.fn('setStatusByWriter', adminToken, '01-9000', 'received')).not.toThrow();
+    // A second scan of a finished job does not drag it back to the floor.
+    backend.fn('lookupJob', token, 'scan');
     expect(backend.fn('jobRow_', '01-9000').status).toBe('work_finished');
   });
 
@@ -190,6 +191,103 @@ describe('the job lifecycle', () => {
     seedJob('01-8886');
     expect(() => backend.fn('createJob', adminToken, { invoiceNumber: '01-8886' }))
       .toThrow(/already exists/);
+  });
+});
+
+describe('sending a job back to the floor', () => {
+  it('lets the writer move a mis-tapped Work finished back from the dropdown', () => {
+    const { id, token, mech } = seedJob();
+    backend.fn('finishWork', mech, token);
+    backend.fn('setStatusByWriter', adminToken, id, 'work_underway');
+    const row = backend.fn('jobRow_', id);
+    expect(row.status).toBe('work_underway');
+    expect(row.work_finished_at).toBe('');
+    // A quiet correction: no banner on the floor.
+    expect(row.reopen_note).toBe('');
+    expect(backend.fn('openJobs', mech, true).jobs.map((j) => j.id)).toContain(id);
+  });
+
+  it('undoes a Mark done pressed by mistake, back to Work finished', () => {
+    const { id, token, mech } = seedJob();
+    backend.fn('finishWork', mech, token);
+    backend.fn('markDone', adminToken, id);
+    backend.fn('archiveJobs', adminToken, [id], true);
+    backend.fn('reopenJob', adminToken, id, 'work_finished', '');
+    const row = backend.fn('jobRow_', id);
+    expect(row.status).toBe('work_finished');
+    expect(row.done_at).toBe('');
+    expect(row.archived_at).toBe('');
+    expect(row.work_finished_at).not.toBe('');
+    // Marking it done again stamps it afresh.
+    backend.fn('markDone', adminToken, id);
+    expect(backend.fn('jobRow_', id).done_at).not.toBe('');
+  });
+
+  it('reopens a closed job for added work, with a banner the mechanic sees', () => {
+    const { id, token, mech } = seedJob();
+    backend.fn('finishWork', mech, token);
+    backend.fn('markDone', adminToken, id);
+    const before = backend.fn('jobRow_', id).entry_count;
+
+    const out = backend.fn('reopenJob', adminToken, id, 'work_underway', 'Customer added a bottom paint.');
+    expect(out.job.status).toBe('work_underway');
+    expect(out.job.reopenNote).toBe('Customer added a bottom paint.');
+
+    const listed = backend.fn('openJobs', mech, true).jobs.find((j) => j.id === id);
+    expect(listed.reopenNote).toBe('Customer added a bottom paint.');
+    const screen = backend.fn('lookupJob', token, 'scan', mech).job;
+    expect(screen.reopenNote).toBe('Customer added a bottom paint.');
+
+    // Into the shop log, so the record outlives the banner.
+    expect(Number(backend.fn('jobRow_', id).entry_count)).toBe(Number(before) + 1);
+    const timeline = backend.fn('jobHistory', adminToken, id).timeline;
+    expect(JSON.stringify(timeline)).toContain('Reopened');
+
+    // Finished again: the banner comes down by itself.
+    backend.fn('finishWork', mech, token);
+    const row = backend.fn('jobRow_', id);
+    expect(row.status).toBe('work_finished');
+    expect(row.reopen_note).toBe('');
+    expect(backend.fn('getJob', adminToken, id).job.reopenNote).toBe(null);
+  });
+
+  it('never tells the customer why', () => {
+    const { id, token, mech } = seedJob();
+    backend.fn('props_').setProperty('CUSTOMER_TRACKING', 'on');
+    backend.fn('finishWork', mech, token);
+    backend.fn('markDone', adminToken, id);
+    backend.fn('reopenJob', adminToken, id, 'work_underway', 'Redo the impeller, it leaks.');
+    const seen = JSON.stringify(backend.fn('publicJob', token, ''));
+    expect(seen).not.toContain('Redo the impeller');
+    expect(seen).not.toMatch(/reopen/i);
+  });
+
+  it('opens the mechanic\'s half again on a split ticket', () => {
+    const { id, token, mech } = seedJob();
+    backend.fn('updateRow_', 'Jobs', backend.fn('jobRow_', id)._row, { detail_split: 'both', detail_done_at: '2026-11-01T10:00:00.000Z' });
+    backend.fn('forget_', 'Jobs');
+    backend.fn('finishWork', mech, token);
+    expect(backend.fn('jobRow_', id).status).toBe('work_finished');
+    backend.fn('reopenJob', adminToken, id, 'work_underway', 'Customer wants the trim tabs looked at.');
+    expect(backend.fn('jobRow_', id).mech_done_at).toBe('');
+    expect(backend.fn('openJobs', mech, true).jobs.map((j) => j.id)).toContain(id);
+  });
+
+  it('is the writer\'s, and only runs backwards', () => {
+    const { id, token, mech } = seedJob();
+    expect(() => backend.fn('reopenJob', mech, id, 'work_underway', 'x')).toThrow();
+    // Already on the floor: nothing to move back.
+    expect(() => backend.fn('reopenJob', adminToken, id, 'work_underway', 'x')).toThrow(/nothing to move back/);
+    backend.fn('finishWork', mech, token);
+    expect(() => backend.fn('reopenJob', adminToken, id, 'done', 'x')).toThrow(/not allowed/);
+  });
+
+  it('says to run setup() rather than saving a banner into a column that is not there', () => {
+    const { id, token, mech } = seedJob();
+    backend.fn('finishWork', mech, token);
+    const jobs = backend.sheet('Jobs');
+    jobs.rows[0] = jobs.rows[0].filter((c) => c !== 'reopen_note' && c !== 'reopened_at');
+    expect(() => backend.fn('reopenJob', adminToken, id, 'work_underway', 'More work.')).toThrow(/run setup\(\)/i);
   });
 });
 

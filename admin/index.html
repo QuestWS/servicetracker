@@ -1174,6 +1174,28 @@ async function drawJob(id, data, savedAt) {
   // A customer's parts order: same row, same money, no mechanic.
   const order = job.kind === 'parts';
 
+  // Sending a finished or closed job back to the floor. Two different acts:
+  // undoing a Mark done pressed by mistake is a quiet correction, and a
+  // customer adding work when called to collect is something the mechanic has
+  // to be told — so the second one carries a note, and the note is the banner.
+  const reopenable = !order && (job.status === 'done' || job.status === 'work_finished');
+  const reopenBlock = reopenable ? `
+          <hr style="border:0;border-top:1px solid var(--ice);margin:18px 0">
+          <h3 style="font-family:var(--disp);font-size:17px;color:var(--navy);margin:0 0 4px">Reopen this job</h3>
+          ${job.status === 'done' ? `
+            <p class="hint" style="margin:0 0 8px">Closed by mistake? This puts it back to Work finished.
+              Nothing is sent and the floor is not told.</p>
+            <button class="btn ghost block" type="button" id="undodone">Undo Mark done</button>` : ''}
+          <form id="reopenform" style="margin-top:12px">
+            <label class="fld" for="reopennote">Customer added work? Say what, and it goes back to the floor</label>
+            <textarea class="txt" id="reopennote" rows="2" maxlength="500"
+              placeholder="e.g. Customer added a bottom paint when we called to say it was ready"></textarea>
+            <p class="hint" style="margin:6px 0 8px">Moves it to Work underway and puts this across the top of the
+              mechanic's screen until they mark it finished again. It also goes in the shop log.
+              Sends nothing to the customer — once it is done again, send the new invoice as usual.</p>
+            <button class="btn gold block" type="submit" id="reopenjob">Reopen for more work</button>
+          </form>` : '';
+
   // The cards a customer's parts order shares with a work order, drawn once
   // here so both pages carry the same markup and the same element ids — the
   // handlers further down wire whichever page is on screen.
@@ -1753,6 +1775,7 @@ ${invoiceForm}
                 <button class="btn ghost sm" type="submit">Set</button>
               </div>
             </form>`}
+${reopenBlock}
         </section>
 
 ${paymentCard}
@@ -1763,6 +1786,13 @@ ${paymentCard}
           <h2>For the mechanic</h2>
           <p class="hint" style="margin-top:0">Two ways to reach the floor, neither of which the
             customer ever sees. An alert is for what cannot be missed; a note is for everything else.</p>
+          ${job.reopenNote ? `
+            <div class="reopenbox" data-reopened>
+              <div class="reopenbox-tag">Reopened — showing on the mechanic's screen</div>
+              <div class="reopenbox-text">${esc(job.reopenNote)}</div>
+              <div class="alertbox-when">${job.reopenedAt ? `Sent back ${formatDateTime(job.reopenedAt)}. ` : ''}Comes down by
+                itself when the job is marked Work finished again.</div>
+            </div>` : ''}
 
           <div class="subhead">Alert banner</div>
           ${job.alert ? `
@@ -2740,6 +2770,42 @@ ${emailLogCard}
       renderJob(job.id, jobPage);
       toast('Status updated.');
     } catch (error) { notice('warn', error.message); }
+  };
+
+  const undodone = $('undodone');
+  if (undodone) undodone.onclick = async () => {
+    undodone.disabled = true;
+    undodone.textContent = 'Reopening…';
+    try {
+      const { jobPage } = await api('reopenJob', [job.id, 'work_finished', ''], withPage(job.id));
+      renderJob(job.id, jobPage);
+      toast('Back to Work finished.');
+    } catch (error) {
+      undodone.disabled = false;
+      undodone.textContent = 'Undo Mark done';
+      notice('warn', error.message);
+    }
+  };
+
+  const reopenform = $('reopenform');
+  if (reopenform) reopenform.onsubmit = async (event) => {
+    event.preventDefault();
+    const note = $('reopennote').value.trim();
+    // The note is the point: without it the mechanic is handed a finished
+    // job with no idea why it is back. A quiet move is the dropdown's job.
+    if (!note) { notice('warn', 'Say what the customer added — that is what the mechanic will see.'); $('reopennote').focus(); return; }
+    const button = $('reopenjob');
+    button.disabled = true;
+    button.textContent = 'Reopening…';
+    try {
+      const { jobPage } = await api('reopenJob', [job.id, 'work_underway', note], withPage(job.id));
+      renderJob(job.id, jobPage);
+      toast('Reopened — it is back on the mechanic’s list with your note across the top.');
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = 'Reopen for more work';
+      notice('warn', error.message);
+    }
   };
 }
 

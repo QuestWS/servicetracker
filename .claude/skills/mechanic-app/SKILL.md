@@ -247,6 +247,14 @@ phone** — it comes down when the office takes it down, not when the floor taps
 it away. Setting and clearing it is the writer's; see the `writer-portal`
 skill.
 
+## Back on purpose
+
+A job the office reopened for added work carries `reopenNote`: an orange
+banner under the alert on the job screen and a **Back on purpose** flag on the
+list, which sorts it after alerted jobs. Not dismissible here either; the
+server takes it down when the job reaches Work finished, and `finishWork`
+clears the phone's copy at the same moment. See `writer-portal`.
+
 ## Winter work — read from the winter services system
 
 **Winter work** on the home screen lists every unit the winter services system

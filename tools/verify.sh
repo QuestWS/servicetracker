@@ -99,6 +99,15 @@ for fn in publicJob invoicePage; do
 done
 note "neither customer page reads the winterize checklist"
 
+# Why the office sent a job back to the floor is the shop's business — "customer
+# added a bottom paint when we called" is fine, "redo, Dale botched it" is not.
+for fn in publicJob invoicePage; do
+  if awk "/^function $fn/,/^}/" service-tracker.gs | grep -qiE "reopen"; then
+    bad "$fn reads the reopen note — it is shop-side only"
+  fi
+done
+note "neither customer page reads the reopen note"
+
 # The detail quote page (/q/) is a quote, not a record: the customer's first
 # name, the unit, and the lines sent to them with their prices. Never the
 # detailer's notes, who did what, who has it, or their own phone and email.
